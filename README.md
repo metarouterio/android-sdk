@@ -14,8 +14,9 @@ This SDK is currently under active development. This is **PR #1: Foundation & Ty
 - ✅ CodableValue for type-safe properties
 - ✅ InitOptions with validation
 - ✅ AnalyticsInterface (public API contract)
+- ✅ Kotlin-idiomatic varargs extensions (track, identify, group, screen, page)
 - ✅ Utility classes (Logger with android.util.Log, MessageIdGenerator)
-- ✅ Comprehensive unit tests (73 tests, 100% passing)
+- ✅ Comprehensive unit tests (89 tests, 100% passing)
 - ✅ Modern tooling (Gradle 8.11, Kotlin 2.2.21, AGP 8.7.2)
 - ⏳ Identity management (PR #2)
 - ⏳ Context collection (PR #3)
@@ -48,6 +49,7 @@ The MetaRouter Android SDK provides a robust, privacy-conscious analytics soluti
 metarouter-sdk/
 ├── src/main/java/com/metarouter/analytics/
 │   ├── AnalyticsInterface.kt         # Public API contract
+│   ├── AnalyticsExtensions.kt        # Kotlin-idiomatic varargs extensions
 │   ├── InitOptions.kt                # Configuration options with validation
 │   ├── types/
 │   │   ├── EventType.kt             # Event type enum (Track, Identify, etc.)
@@ -58,7 +60,7 @@ metarouter-sdk/
 │   └── utils/
 │       ├── Logger.kt                 # Thread-safe logging with android.util.Log
 │       └── MessageIdGenerator.kt     # Unique ID generation
-└── src/test/java/                    # Unit tests (73 tests, 100% passing)
+└── src/test/java/                    # Unit tests (89 tests, 100% passing)
 ```
 
 ## Requirements
@@ -131,23 +133,42 @@ val analytics = MetaRouter.initialize(
     )
 )
 
-// Track events
-analytics.track("Button Clicked", mapOf(
+// Track events - idiomatic Kotlin varargs style (recommended)
+analytics.track("Button Clicked",
     "button_name" to "Sign Up",
     "screen" to "Landing"
-))
+)
 
-// Identify users
-analytics.identify("user-123", mapOf(
+// Or use explicit map style for dynamic properties
+val properties = mutableMapOf<String, Any?>(
+    "item" to "Premium Plan",
+    "price" to 29.99
+)
+if (user.isPremium) {
+    properties["discount"] = 0.20
+}
+analytics.track("Purchase", properties)
+
+// Identify users - varargs style
+analytics.identify("user-123",
     "name" to "Alice",
     "email" to "alice@example.com",
     "plan" to "premium"
-))
+)
 
-// Track screen views
-analytics.screen("Home Screen", mapOf(
+// Track screen views - varargs style
+analytics.screen("Home Screen",
     "referrer" to "notification"
-))
+)
+
+// Group users - varargs style
+analytics.group("company-456",
+    "name" to "Acme Corp",
+    "plan" to "enterprise"
+)
+
+// Events with no properties - clean syntax
+analytics.track("App Opened")
 
 // Manually flush events
 lifecycleScope.launch {
@@ -231,8 +252,9 @@ This is the first PR in a series. See the project plan below for the complete ro
 ### PR Breakdown
 
 1. **PR #1: Foundation & Type System** ← You are here
-   - ✅ 73 unit tests passing
+   - ✅ 89 unit tests passing
    - ✅ 92KB release AAR
+   - ✅ Kotlin-idiomatic API (varargs extensions)
    - ✅ Modern tooling (Gradle 8.11, Kotlin 2.2.21, Java 17)
 
 2. **PR #2: Identity Management**
