@@ -1,5 +1,7 @@
 # MetaRouter Android SDK
 
+[![CI](https://github.com/metarouterio/android-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/metarouterio/android-sdk/actions/workflows/ci.yml)
+
 Native Kotlin/Android SDK for MetaRouter analytics platform.
 
 ## 🚧 Work in Progress
