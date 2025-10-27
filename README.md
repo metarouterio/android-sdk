@@ -6,7 +6,7 @@ Native Kotlin/Android SDK for MetaRouter analytics platform.
 
 ## 🚧 Work in Progress
 
-This SDK is currently under active development. This is **PR #1: Foundation & Type System**.
+This SDK is currently under active development. This is **PR #2: Identity Management**.
 
 ### Current Status
 
@@ -18,9 +18,12 @@ This SDK is currently under active development. This is **PR #1: Foundation & Ty
 - ✅ AnalyticsInterface (public API contract)
 - ✅ Kotlin-idiomatic varargs extensions (track, identify, group, screen, page)
 - ✅ Utility classes (Logger with android.util.Log, MessageIdGenerator)
-- ✅ Comprehensive unit tests (89 tests, 100% passing)
+- ✅ Identity management (IdentityStorage, IdentityManager with Mutex)
+- ✅ Anonymous ID generation with UUID fallback
+- ✅ Persistent storage for userId, groupId, advertisingId
+- ✅ Comprehensive unit tests (174 tests, 100% passing)
+- ✅ Concurrency safety tests
 - ✅ Modern tooling (Gradle 8.11, Kotlin 2.2.21, AGP 8.7.2)
-- ⏳ Identity management (PR #2)
 - ⏳ Context collection (PR #3)
 - ⏳ Event enrichment & queueing (PR #4)
 - ⏳ Network layer & circuit breaker (PR #5)
@@ -53,6 +56,10 @@ metarouter-sdk/
 │   ├── AnalyticsInterface.kt         # Public API contract
 │   ├── AnalyticsExtensions.kt        # Kotlin-idiomatic varargs extensions
 │   ├── InitOptions.kt                # Configuration options with validation
+│   ├── identity/
+│   │   └── IdentityManager.kt       # Thread-safe identity management (Mutex)
+│   ├── storage/
+│   │   └── IdentityStorage.kt       # SharedPreferences wrapper
 │   ├── types/
 │   │   ├── EventType.kt             # Event type enum (Track, Identify, etc.)
 │   │   ├── LifecycleState.kt        # SDK lifecycle states
@@ -62,7 +69,7 @@ metarouter-sdk/
 │   └── utils/
 │       ├── Logger.kt                 # Thread-safe logging with android.util.Log
 │       └── MessageIdGenerator.kt     # Unique ID generation
-└── src/test/java/                    # Unit tests (89 tests, 100% passing)
+└── src/test/java/                    # Unit tests (174 tests, 100% passing)
 ```
 
 ## Requirements
@@ -75,15 +82,17 @@ metarouter-sdk/
 
 ## Dependencies
 
-### Production (PR #1)
+### Production (PR #1-2)
 - `kotlinx-serialization-json:1.9.0` - JSON serialization for CodableValue
+- `kotlinx-coroutines-android:1.9.0` - Async operations and thread-safe Mutex
 
-### Testing (PR #1)
+### Testing (PR #1-2)
 - `junit:4.13.2` - Unit testing framework
 - `robolectric:4.13` - Android unit testing
+- `kotlinx-coroutines-test:1.9.0` - Coroutine testing utilities
+- `androidx.test:core:1.6.1` - AndroidX test utilities
 
 ### Future Dependencies (Coming in Later PRs)
-- `kotlinx-coroutines-android:1.9.0` - Async operations (PR #4+)
 - `androidx.lifecycle:lifecycle-process:2.8.7` - App lifecycle (PR #8)
 - `okhttp:4.12.0` - HTTP client (PR #5)
 - `play-services-ads-identifier:18.1.0` - Google Advertising ID (PR #9)
@@ -253,16 +262,19 @@ This is the first PR in a series. See the project plan below for the complete ro
 
 ### PR Breakdown
 
-1. **PR #1: Foundation & Type System** ← You are here
-   - ✅ 89 unit tests passing
+1. **PR #1: Foundation & Type System**
+   - ✅ 96 unit tests passing
    - ✅ 92KB release AAR
    - ✅ Kotlin-idiomatic API (varargs extensions)
    - ✅ Modern tooling (Gradle 8.11, Kotlin 2.2.21, Java 17)
 
-2. **PR #2: Identity Management**
-   - IdentityStorage (SharedPreferences wrapper)
-   - IdentityManager (thread-safe with Mutex)
-   - Anonymous ID generation and persistence
+2. **PR #2: Identity Management** ← You are here
+   - ✅ IdentityStorage (SharedPreferences wrapper)
+   - ✅ IdentityManager (thread-safe with Mutex)
+   - ✅ Anonymous ID generation with UUID fallback
+   - ✅ Persistent storage (anonymousId, userId, groupId, advertisingId)
+   - ✅ 78 new tests (174 total, 100% passing)
+   - ✅ Comprehensive concurrency tests
 
 3. **PR #3: Context Collection**
    - Device, App, OS, Screen, Network context providers
