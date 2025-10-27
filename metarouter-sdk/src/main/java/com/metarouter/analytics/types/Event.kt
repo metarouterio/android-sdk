@@ -4,14 +4,11 @@ import kotlinx.serialization.Serializable
 
 /**
  * Base event structure from user input.
- * Contains optional fields that will be enriched before transmission.
  */
 @Serializable
 data class BaseEvent(
     val type: EventType,
     val event: String? = null,
-    val userId: String? = null,
-    val groupId: String? = null,
     val traits: Map<String, CodableValue>? = null,
     val properties: Map<String, CodableValue>? = null,
     val timestamp: String? = null
