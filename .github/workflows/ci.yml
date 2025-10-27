@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build project
+        run: ./gradlew build --stacktrace
+
+      - name: Run unit tests
+        run: ./gradlew :metarouter-sdk:test --stacktrace
+
+      - name: Generate test report
+        if: always()
+        run: ./gradlew :metarouter-sdk:testDebugUnitTest
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            metarouter-sdk/build/test-results/
+            metarouter-sdk/build/reports/tests/
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          check_name: Test Results
+          files: |
+            metarouter-sdk/build/test-results/**/*.xml
+
+      - name: Build AAR
+        run: ./gradlew :metarouter-sdk:assembleRelease
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metarouter-sdk-aar
+          path: metarouter-sdk/build/outputs/aar/*.aar
+
+      - name: Check AAR size
+        run: |
+          AAR_SIZE=$(du -h metarouter-sdk/build/outputs/aar/metarouter-sdk-release.aar | cut -f1)
+          echo "AAR Size: $AAR_SIZE"
+          echo "aar_size=$AAR_SIZE" >> $GITHUB_OUTPUT
+        id: aar-check
+
+  lint:
+    name: Lint Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run Kotlin linter
+        run: ./gradlew :metarouter-sdk:lintDebug --stacktrace
+        continue-on-error: true
+
+      - name: Upload lint results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-results
+          path: metarouter-sdk/build/reports/lint-results-*.html
