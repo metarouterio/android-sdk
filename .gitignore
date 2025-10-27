@@ -1,0 +1,48 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+
+# Kotlin
+*.kotlin_module
+
+# Test
+/out/
+
+# Android Studio
+.navigation/
+captures/
+
+# Keystore files
+*.jks
+*.keystore
+
+# External native build folder
+.cxx/
+
+# Version control
+.svn/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude
