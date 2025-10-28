@@ -8,11 +8,17 @@ android {
     namespace = "com.metarouter.analytics"
     compileSdk = 35
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         minSdk = 21
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+
+        buildConfigField("String", "SDK_VERSION", "\"${project.findProperty("SDK_VERSION") ?: "1.0.0"}\"")
     }
 
     buildTypes {
