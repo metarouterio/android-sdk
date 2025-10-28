@@ -48,12 +48,7 @@ class IdentityManager(context: Context) {
     private val advertisingIdLock = Any()
 
     /**
-     * Get the current anonymous ID. If not set, generates and persists a new one.
-     * This method is thread-safe and idempotent.
-     *
-     * Performance: Lock-free after first load. Initial load uses per-key lock with double-check.
-     * Durability: Generation writes use commit() for guaranteed persistence.
-     *
+     * Get the current anonymous ID. Generates and persists a new one if not set.
      * @return The anonymous ID (never null)
      */
     suspend fun getAnonymousId(): String {
@@ -93,12 +88,8 @@ class IdentityManager(context: Context) {
     }
 
     /**
-     * Get the current user ID, or null if not set.
-     * This method is thread-safe.
-     *
-     * Performance: Lock-free after first load. Initial load uses per-key lock with double-check.
-     *
-     * @return The user ID, or null if not identified
+     * Get the current user ID.
+     * @return The user ID, or null if not set
      */
     suspend fun getUserId(): String? {
         // Fast path: check if already loaded
@@ -124,13 +115,6 @@ class IdentityManager(context: Context) {
 
     /**
      * Set the user ID and persist to storage.
-     * Called by identify() and alias() methods.
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks.
-     * Durability: Uses commit() for guaranteed persistence before returning.
-     * Consistency: Memory cache updated only after successful storage write.
-     *
      * @param userId The user ID to set (must not be blank)
      * @return true if set successfully, false otherwise
      */
@@ -156,11 +140,6 @@ class IdentityManager(context: Context) {
 
     /**
      * Clear the user ID from storage and cache.
-     * Used during reset().
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks. Uses apply() for async writes.
-     *
      * @return true (always, as apply() doesn't report failures)
      */
     suspend fun clearUserId(): Boolean {
@@ -179,11 +158,7 @@ class IdentityManager(context: Context) {
     }
 
     /**
-     * Get the current group ID, or null if not set.
-     * This method is thread-safe.
-     *
-     * Performance: Lock-free after first load. Initial load uses per-key lock with double-check.
-     *
+     * Get the current group ID.
      * @return The group ID, or null if not set
      */
     suspend fun getGroupId(): String? {
@@ -210,13 +185,6 @@ class IdentityManager(context: Context) {
 
     /**
      * Set the group ID and persist to storage.
-     * Called by group() method.
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks.
-     * Durability: Uses commit() for guaranteed persistence before returning.
-     * Consistency: Memory cache updated only after successful storage write.
-     *
      * @param groupId The group ID to set (must not be blank)
      * @return true if set successfully, false otherwise
      */
@@ -242,11 +210,6 @@ class IdentityManager(context: Context) {
 
     /**
      * Clear the group ID from storage and cache.
-     * Used during reset().
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks. Uses apply() for async writes.
-     *
      * @return true (always, as apply() doesn't report failures)
      */
     suspend fun clearGroupId(): Boolean {
@@ -265,12 +228,8 @@ class IdentityManager(context: Context) {
     }
 
     /**
-     * Get the current advertising ID, or null if not set.
-     * This method is thread-safe.
-     *
-     * Performance: Lock-free after first load. Initial load uses per-key lock with double-check.
-     *
-     * @return The advertising ID (IDFA/GAID), or null if not set
+     * Get the current advertising ID (IDFA/GAID).
+     * @return The advertising ID, or null if not set
      */
     suspend fun getAdvertisingId(): String? {
         // Fast path: check if already loaded
@@ -296,13 +255,6 @@ class IdentityManager(context: Context) {
 
     /**
      * Set the advertising ID and persist to storage.
-     * Called by setAdvertisingId() method.
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks.
-     * Durability: Uses commit() for guaranteed persistence before returning.
-     * Consistency: Memory cache updated only after successful storage write.
-     *
      * @param advertisingId The advertising ID to set (must not be blank)
      * @return true if set successfully, false otherwise
      */
@@ -329,10 +281,6 @@ class IdentityManager(context: Context) {
     /**
      * Clear the advertising ID from storage and cache.
      * Used when user opts out of ad tracking (GDPR/CCPA compliance).
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks. Uses apply() for async writes.
-     *
      * @return true (always, as apply() doesn't report failures)
      */
     suspend fun clearAdvertisingId(): Boolean {
@@ -353,11 +301,6 @@ class IdentityManager(context: Context) {
     /**
      * Reset all identity data to initial state.
      * Clears all IDs from storage and cache. A new anonymous ID will be generated on next access.
-     * Used during reset().
-     * This method is thread-safe and lock-free.
-     *
-     * Performance: Lock-free write with I/O outside any locks. Uses apply() for async writes.
-     * Note: Anonymous ID is set to NotLoaded and will be regenerated lazily on next access.
      */
     suspend fun reset() {
         Logger.log("Resetting identity manager")
@@ -378,11 +321,8 @@ class IdentityManager(context: Context) {
     }
 
     /**
-     * Generate a new anonymous ID following spec v1.3.0:
-     * - Primary: UUID v4 format
-     * - Fallback: "fallback-{timestamp}-{random8chars}" if UUID generation fails
-     *
-     * @return A new anonymous ID (never null)
+     * Generate a new anonymous ID (spec v1.3.0):
+     * Primary: UUID v4, Fallback: "fallback-{timestamp}-{random8chars}"
      */
     private fun generateAnonymousId(): String {
         return try {
@@ -400,12 +340,7 @@ class IdentityManager(context: Context) {
         }
     }
 
-    /**
-     * Mask an ID for logging (show first 8 chars only).
-     *
-     * @param id The ID to mask
-     * @return Masked ID string
-     */
+    /** Mask an ID for logging (show first 8 chars only). */
     private fun maskId(id: String): String {
         return if (id.length <= 8) {
             "***"
