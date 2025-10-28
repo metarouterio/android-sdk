@@ -7,7 +7,10 @@ import android.content.SharedPreferences
  * Thread-safe persistent storage for identity information.
  *
  * Wraps SharedPreferences to store anonymous ID, user ID, group ID, and advertising ID.
- * All operations are synchronous and thread-safe.
+ *
+ * Write Strategy:
+ * - Setters use commit() for durability guarantees (synchronous, blocking)
+ * - Clears use apply() for performance (asynchronous, non-blocking)
  *
  * Storage keys follow the spec:
  * - metarouter:anonymous_id
@@ -30,7 +33,8 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Store the anonymous ID.
+     * Store the anonymous ID with synchronous commit for durability.
+     * Uses commit() to ensure the write is persisted to disk before returning.
      * @param anonymousId The anonymous ID to store (must not be empty)
      * @return true if stored successfully, false otherwise
      */
@@ -51,7 +55,8 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Store the user ID.
+     * Store the user ID with synchronous commit for durability.
+     * Uses commit() to ensure the write is persisted to disk before returning.
      * @param userId The user ID to store (must not be empty)
      * @return true if stored successfully, false otherwise
      */
@@ -65,13 +70,15 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Clear the user ID from storage.
-     * @return true if cleared successfully, false otherwise
+     * Clear the user ID from storage using asynchronous apply().
+     * Uses apply() for better performance as clear operations are less critical than sets.
+     * @return true (always, as apply() doesn't report failures)
      */
     fun clearUserId(): Boolean {
-        return preferences.edit()
+        preferences.edit()
             .remove(KEY_USER_ID)
-            .commit()
+            .apply()
+        return true
     }
 
     /**
@@ -82,7 +89,8 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Store the group ID.
+     * Store the group ID with synchronous commit for durability.
+     * Uses commit() to ensure the write is persisted to disk before returning.
      * @param groupId The group ID to store (must not be empty)
      * @return true if stored successfully, false otherwise
      */
@@ -96,13 +104,15 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Clear the group ID from storage.
-     * @return true if cleared successfully, false otherwise
+     * Clear the group ID from storage using asynchronous apply().
+     * Uses apply() for better performance as clear operations are less critical than sets.
+     * @return true (always, as apply() doesn't report failures)
      */
     fun clearGroupId(): Boolean {
-        return preferences.edit()
+        preferences.edit()
             .remove(KEY_GROUP_ID)
-            .commit()
+            .apply()
+        return true
     }
 
     /**
@@ -113,7 +123,8 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Store the advertising ID (IDFA on iOS, GAID on Android).
+     * Store the advertising ID with synchronous commit for durability.
+     * Uses commit() to ensure the write is persisted to disk before returning.
      * @param advertisingId The advertising ID to store (must not be empty)
      * @return true if stored successfully, false otherwise
      */
@@ -127,28 +138,32 @@ class IdentityStorage(context: Context) {
     }
 
     /**
-     * Clear the advertising ID from storage.
+     * Clear the advertising ID from storage using asynchronous apply().
      * Used when user opts out of ad tracking (GDPR/CCPA compliance).
-     * @return true if cleared successfully, false otherwise
+     * Uses apply() for better performance as clear operations are less critical than sets.
+     * @return true (always, as apply() doesn't report failures)
      */
     fun clearAdvertisingId(): Boolean {
-        return preferences.edit()
+        preferences.edit()
             .remove(KEY_ADVERTISING_ID)
-            .commit()
+            .apply()
+        return true
     }
 
     /**
-     * Clear all identity data from storage.
+     * Clear all identity data from storage using asynchronous apply().
      * Used during reset() to completely clear SDK state.
-     * @return true if all data cleared successfully, false otherwise
+     * Uses apply() for better performance as clear operations are less critical than sets.
+     * @return true (always, as apply() doesn't report failures)
      */
     fun clearAll(): Boolean {
-        return preferences.edit()
+        preferences.edit()
             .remove(KEY_ANONYMOUS_ID)
             .remove(KEY_USER_ID)
             .remove(KEY_GROUP_ID)
             .remove(KEY_ADVERTISING_ID)
-            .commit()
+            .apply()
+        return true
     }
 
     companion object {
