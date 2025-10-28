@@ -2,6 +2,7 @@ package com.metarouter.analytics.context
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.metarouter.analytics.BuildConfig
 import com.metarouter.analytics.types.EventContext
 import org.junit.Before
 import org.junit.Test
@@ -58,7 +59,7 @@ class DeviceContextProviderTest {
         val library = eventContext.library
 
         assertEquals("metarouter-android-sdk", library.name)
-        assertEquals("1.0.0", library.version)
+        assertEquals(BuildConfig.SDK_VERSION, library.version)
     }
 
     @Test

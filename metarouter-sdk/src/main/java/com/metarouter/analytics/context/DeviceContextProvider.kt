@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import com.metarouter.analytics.BuildConfig
 import com.metarouter.analytics.types.*
 import com.metarouter.analytics.utils.Logger
 import java.util.Locale
@@ -17,7 +18,6 @@ import kotlin.math.roundToInt
 /**
  * Provides device, app, OS, screen, network, locale, and timezone context information.
  *
- * Caching Strategy (per spec v1.4.0):
  * - Context is calculated once and cached for app lifetime
  * - Cache is invalidated when advertising ID changes (set/cleared)
  * - Cache includes advertising ID value to detect changes
@@ -45,7 +45,7 @@ class DeviceContextProvider(private val context: Context) {
 
     companion object {
         private const val SDK_NAME = "metarouter-android-sdk"
-        private const val SDK_VERSION = "1.0.0" // TODO: Read from BuildConfig or gradle.properties
+        private val SDK_VERSION = BuildConfig.SDK_VERSION
         private const val UNKNOWN = "unknown"
     }
 
