@@ -13,6 +13,7 @@ import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -68,6 +69,20 @@ class MetaRouterAnalyticsClient private constructor(
     // Coroutine scope for async operations
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // Event processing channel - mimics Swift actor behavior by serializing event enrichment.
+    // This provides natural backpressure: if enrichment can't keep up with incoming events,
+    // the channel buffer fills up and trySend() will drop events with a clear signal.
+    //
+    // Similar to Swift's actor mailbox, this ensures:
+    // - Events are processed sequentially (one enrichment at a time)
+    // - No unbounded coroutine spawning under load
+    // - Clear backpressure behavior when overwhelmed
+    //
+    // Channel capacity is set to half of maxQueueEvents to provide a buffer for incoming
+    // events while they're being enriched. This prevents blocking the caller while still
+    // maintaining bounded memory usage. Total system capacity = channelSize + queueSize.
+    private lateinit var eventChannel: Channel<BaseEvent>
+
     // Core components
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
@@ -92,6 +107,14 @@ class MetaRouterAnalyticsClient private constructor(
                 Logger.debugEnabled = true
             }
 
+            // Initialize event channel with capacity based on maxQueueEvents
+            // Using half of maxQueueEvents for channel buffer provides a reasonable
+            // balance between burst handling and memory usage. The remaining capacity
+            // is in the EventQueue for enriched events.
+            val channelCapacity = (options.maxQueueEvents / 2).coerceAtLeast(100)
+            eventChannel = Channel(capacity = channelCapacity)
+            Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
+
             // Initialize components
             identityManager = IdentityManager(context)
             contextProvider = DeviceContextProvider(context)
@@ -105,6 +128,9 @@ class MetaRouterAnalyticsClient private constructor(
             // Pre-load anonymous ID to ensure it's generated during init
             val anonymousId = identityManager.getAnonymousId()
             Logger.log("SDK initialized with anonymous ID: ${maskId(anonymousId)}")
+
+            // Start event processor coroutine (similar to Swift actor executor)
+            startEventProcessor()
 
             lifecycleState.set(LifecycleState.READY)
             Logger.log("MetaRouter Analytics SDK ready")
@@ -134,20 +160,18 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then enqueue event
+        // Update identity manager then send to channel for enrichment
         scope.launch {
             try {
                 identityManager.setUserId(userId)
-                val enrichedEvent = enrichmentService.enrichEvent(
+                enqueueEvent(
                     BaseEvent(
                         type = EventType.IDENTIFY,
                         traits = traits?.toCodableValueMap()
                     )
                 )
-                eventQueue.enqueue(enrichedEvent)
-                Logger.log("Enqueued identify event (messageId: ${enrichedEvent.messageId})")
             } catch (e: Exception) {
-                Logger.error("Failed to enqueue identify event: ${e.message}")
+                Logger.error("Failed to queue identify event: ${e.message}")
             }
         }
     }
@@ -158,20 +182,18 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then enqueue event
+        // Update identity manager then send to channel for enrichment
         scope.launch {
             try {
                 identityManager.setGroupId(groupId)
-                val enrichedEvent = enrichmentService.enrichEvent(
+                enqueueEvent(
                     BaseEvent(
                         type = EventType.GROUP,
                         traits = traits?.toCodableValueMap()
                     )
                 )
-                eventQueue.enqueue(enrichedEvent)
-                Logger.log("Enqueued group event (messageId: ${enrichedEvent.messageId})")
             } catch (e: Exception) {
-                Logger.error("Failed to enqueue group event: ${e.message}")
+                Logger.error("Failed to queue group event: ${e.message}")
             }
         }
     }
@@ -202,26 +224,42 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then enqueue event
+        // Update identity manager then send to channel for enrichment
         scope.launch {
             try {
                 identityManager.setUserId(newUserId)
-                val enrichedEvent = enrichmentService.enrichEvent(
+                enqueueEvent(
                     BaseEvent(
                         type = EventType.ALIAS
                     )
                 )
-                eventQueue.enqueue(enrichedEvent)
-                Logger.log("Enqueued alias event (messageId: ${enrichedEvent.messageId})")
             } catch (e: Exception) {
-                Logger.error("Failed to enqueue alias event: ${e.message}")
+                Logger.error("Failed to queue alias event: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Start the event processor coroutine (similar to Swift actor executor).
+     * This single consumer processes events sequentially, preventing unbounded concurrency.
+     */
+    private fun startEventProcessor() {
+        scope.launch {
+            for (baseEvent in eventChannel) {
+                try {
+                    val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
+                    eventQueue.enqueue(enrichedEvent)
+                    Logger.log("Enqueued ${baseEvent.type} event (messageId: ${enrichedEvent.messageId})")
+                } catch (e: Exception) {
+                    Logger.error("Failed to enqueue event: ${e.message}")
+                }
             }
         }
     }
 
     /**
      * Internal helper to enqueue events.
-     * Enriches the event and adds to queue.
+     * Sends event to processing channel (non-blocking, with backpressure).
      */
     private fun enqueueEvent(baseEvent: BaseEvent) {
         if (lifecycleState.get() != LifecycleState.READY) {
@@ -229,15 +267,10 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Launch coroutine to enrich and enqueue
-        scope.launch {
-            try {
-                val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
-                eventQueue.enqueue(enrichedEvent)
-                Logger.log("Enqueued ${baseEvent.type} event (messageId: ${enrichedEvent.messageId})")
-            } catch (e: Exception) {
-                Logger.error("Failed to enqueue event: ${e.message}")
-            }
+        // Try to send to channel - drops if buffer is full (backpressure)
+        val result = eventChannel.trySend(baseEvent)
+        if (result.isFailure) {
+            Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
         }
     }
 
