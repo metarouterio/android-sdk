@@ -7,7 +7,10 @@ package com.metarouter.analytics
  * @property ingestionHost Backend endpoint URL (required, valid URL without trailing slash)
  * @property flushIntervalSeconds Interval in seconds between automatic flushes (default: 10)
  * @property debug Enable debug logging (default: false)
- * @property maxQueueEvents Maximum events held in memory; oldest are dropped once cap is hit (default: 2000)
+ * @property maxQueueEvents Maximum enriched events held in queue (default: 2000).
+ *   This value also determines the incoming event channel capacity (maxQueueEvents / 2).
+ *   Total system capacity = channelCapacity + queueCapacity.
+ *   When limits are exceeded, oldest events are dropped.
  *
  * @throws IllegalArgumentException if validation fails
  */
