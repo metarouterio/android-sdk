@@ -60,7 +60,6 @@ class DeviceContextProvider(private val context: Context) {
         // Check if we have a valid cache for this advertising ID
         val cached = cachedContext.get()
         if (cached !== NotCached && cachedAdvertisingId.get() == advertisingId) {
-            Logger.log("Returning cached context")
             return cached as EventContext
         }
 
@@ -72,7 +71,6 @@ class DeviceContextProvider(private val context: Context) {
                 return recheck as EventContext
             }
 
-            Logger.log("Generating fresh context (advertisingId=${if (advertisingId != null) "present" else "null"})")
             val newContext = generateContext(advertisingId)
 
             // Update cache
@@ -85,13 +83,11 @@ class DeviceContextProvider(private val context: Context) {
 
     /**
      * Clear the context cache. Called when advertising ID changes.
-     * Per spec: "when advertising ID is set or cleared, cache is cleared and regenerated"
      */
     fun clearCache() {
         synchronized(cacheLock) {
             cachedContext.set(NotCached)
             cachedAdvertisingId.set(null)
-            Logger.log("Context cache cleared")
         }
     }
 
