@@ -18,6 +18,23 @@ class MetaRouterAnalyticsClientTest {
     private lateinit var context: Context
     private lateinit var options: InitOptions
 
+    /**
+     * Wait for a condition to become true, polling every 50ms.
+     * More reliable than fixed delays on slow CI runners.
+     */
+    private suspend fun awaitCondition(
+        timeoutMs: Long = 2000,
+        condition: suspend () -> Boolean
+    ) {
+        val start = System.currentTimeMillis()
+        while (!condition()) {
+            if (System.currentTimeMillis() - start > timeoutMs) {
+                throw AssertionError("Condition not met within ${timeoutMs}ms")
+            }
+            delay(50)
+        }
+    }
+
     @Before
     fun setup() {
         context = mockk(relaxed = true)
@@ -192,7 +209,11 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.screen("Home Screen")
-        delay(500) // Allow time for channel processing (release builds may be slower)
+
+        // Poll until event is queued (more reliable than fixed delay on CI)
+        awaitCondition {
+            (client.getDebugInfo()["queueLength"] as Int) > 0
+        }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
