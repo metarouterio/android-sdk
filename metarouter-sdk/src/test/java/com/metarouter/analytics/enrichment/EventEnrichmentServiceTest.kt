@@ -13,9 +13,12 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import java.text.SimpleDateFormat
 import java.util.*
 
+@RunWith(RobolectricTestRunner::class)
 class EventEnrichmentServiceTest {
 
     private lateinit var context: Context

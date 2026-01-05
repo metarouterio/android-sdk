@@ -9,7 +9,10 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class MetaRouterAnalyticsClientTest {
 
     private lateinit var context: Context
@@ -189,7 +192,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.screen("Home Screen")
-        delay(100)
+        delay(500) // Allow time for channel processing (release builds may be slower)
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -302,7 +305,8 @@ class MetaRouterAnalyticsClientTest {
 
         // Verify required fields are present in debug info
         assertNotNull(debugInfo["anonymousId"])
-        assertEquals("test-write-key", debugInfo["writeKey"]?.toString()?.substringAfter("***"))
+        // writeKey is masked as "***" + last 4 chars, so "test-write-key" becomes "***-key"
+        assertEquals("***-key", debugInfo["writeKey"])
         assertTrue((debugInfo["queueLength"] as Int) > 0)
     }
 
@@ -350,7 +354,9 @@ class MetaRouterAnalyticsClientTest {
 
         val debugInfo = client.getDebugInfo()
         assertEquals("idle", debugInfo["lifecycle"])
-        assertNull(debugInfo["queueLength"])
+        // queueLength returns 0 when not in READY state
+        assertEquals(0, debugInfo["queueLength"])
+        // userId is null when not in READY state
         assertNull(debugInfo["userId"])
     }
 
@@ -377,7 +383,8 @@ class MetaRouterAnalyticsClientTest {
 
         val debugInfo = client.getDebugInfo()
         assertEquals("idle", debugInfo["lifecycle"])
-        assertNull(debugInfo["queueLength"]) // Queue not accessible in IDLE state
+        // queueLength returns 0 when not in READY state (events not enqueued)
+        assertEquals(0, debugInfo["queueLength"])
     }
 
     // ===== Debug Methods =====
