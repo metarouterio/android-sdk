@@ -49,8 +49,6 @@ class AnalyticsExtensionsTest {
         }
 
         override fun alias(newUserId: String) {}
-        override suspend fun setAdvertisingId(advertisingId: String) {}
-        override suspend fun clearAdvertisingId() {}
         override suspend fun flush() {}
         override suspend fun reset() {}
         override fun enableDebugLogging() {}

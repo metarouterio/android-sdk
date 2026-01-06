@@ -6,7 +6,7 @@ import android.content.SharedPreferences
 /**
  * Thread-safe persistent storage for identity information.
  *
- * Wraps SharedPreferences to store anonymous ID, user ID, group ID, and advertising ID.
+ * Wraps SharedPreferences to store anonymous ID, user ID, and group ID.
  *
  * Write Strategy:
  * - Setters use commit() for durability guarantees (synchronous, blocking)
@@ -16,7 +16,6 @@ import android.content.SharedPreferences
  * - metarouter:anonymous_id
  * - metarouter:user_id
  * - metarouter:group_id
- * - metarouter:advertising_id
  */
 class IdentityStorage(context: Context) {
 
@@ -90,38 +89,12 @@ class IdentityStorage(context: Context) {
         return true
     }
 
-    fun getAdvertisingId(): String? {
-        return preferences.getString(KEY_ADVERTISING_ID, null)
-    }
-
-    /**
-     * @param advertisingId The advertising ID to store (must not be empty)
-     * @return true if stored successfully, false otherwise
-     */
-    fun setAdvertisingId(advertisingId: String): Boolean {
-        if (advertisingId.isBlank()) {
-            return false
-        }
-        return preferences.edit()
-            .putString(KEY_ADVERTISING_ID, advertisingId)
-            .commit()
-    }
-
-    /** Used when user opts out of ad tracking (GDPR/CCPA compliance). */
-    fun clearAdvertisingId(): Boolean {
-        preferences.edit()
-            .remove(KEY_ADVERTISING_ID)
-            .apply()
-        return true
-    }
-
     /** Clear all identity data from storage. Used during reset(). */
     fun clearAll(): Boolean {
         preferences.edit()
             .remove(KEY_ANONYMOUS_ID)
             .remove(KEY_USER_ID)
             .remove(KEY_GROUP_ID)
-            .remove(KEY_ADVERTISING_ID)
             .apply()
         return true
     }
@@ -133,6 +106,5 @@ class IdentityStorage(context: Context) {
         const val KEY_ANONYMOUS_ID = "metarouter:anonymous_id"
         const val KEY_USER_ID = "metarouter:user_id"
         const val KEY_GROUP_ID = "metarouter:group_id"
-        const val KEY_ADVERTISING_ID = "metarouter:advertising_id"
     }
 }

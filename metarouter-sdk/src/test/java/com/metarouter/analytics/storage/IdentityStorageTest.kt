@@ -193,64 +193,6 @@ class IdentityStorageTest {
         assertTrue(cleared)
     }
 
-    // Advertising ID tests
-
-    @Test
-    fun `getAdvertisingId returns null when not set`() {
-        val id = storage.getAdvertisingId()
-        assertNull(id)
-    }
-
-    @Test
-    fun `setAdvertisingId stores and retrieves value`() {
-        val testId = "12345678-1234-1234-1234-123456789abc"
-
-        val stored = storage.setAdvertisingId(testId)
-        assertTrue(stored)
-
-        val retrieved = storage.getAdvertisingId()
-        assertEquals(testId, retrieved)
-    }
-
-    @Test
-    fun `setAdvertisingId rejects empty string`() {
-        val stored = storage.setAdvertisingId("")
-        assertFalse(stored)
-
-        val retrieved = storage.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `setAdvertisingId rejects blank string`() {
-        val stored = storage.setAdvertisingId("   ")
-        assertFalse(stored)
-
-        val retrieved = storage.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `clearAdvertisingId removes value`() {
-        storage.setAdvertisingId("12345678-1234-1234-1234-123456789abc")
-
-        val cleared = storage.clearAdvertisingId()
-        assertTrue(cleared)
-
-        val retrieved = storage.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `clearAdvertisingId is idempotent`() {
-        storage.setAdvertisingId("12345678-1234-1234-1234-123456789abc")
-        storage.clearAdvertisingId()
-
-        // Clear again - should still return true
-        val cleared = storage.clearAdvertisingId()
-        assertTrue(cleared)
-    }
-
     // ClearAll tests
 
     @Test
@@ -259,7 +201,6 @@ class IdentityStorageTest {
         storage.setAnonymousId("anon-123")
         storage.setUserId("user-123")
         storage.setGroupId("company-456")
-        storage.setAdvertisingId("ad-id-789")
 
         // Clear all
         val cleared = storage.clearAll()
@@ -269,7 +210,6 @@ class IdentityStorageTest {
         assertNull(storage.getAnonymousId())
         assertNull(storage.getUserId())
         assertNull(storage.getGroupId())
-        assertNull(storage.getAdvertisingId())
     }
 
     @Test
@@ -290,7 +230,6 @@ class IdentityStorageTest {
         storage1.setAnonymousId("anon-persistent")
         storage1.setUserId("user-persistent")
         storage1.setGroupId("group-persistent")
-        storage1.setAdvertisingId("ad-persistent")
 
         // Create new instance
         val storage2 = IdentityStorage(context)
@@ -298,7 +237,6 @@ class IdentityStorageTest {
         assertEquals("anon-persistent", storage2.getAnonymousId())
         assertEquals("user-persistent", storage2.getUserId())
         assertEquals("group-persistent", storage2.getGroupId())
-        assertEquals("ad-persistent", storage2.getAdvertisingId())
     }
 
     // Storage key tests
@@ -308,7 +246,6 @@ class IdentityStorageTest {
         assertEquals("metarouter:anonymous_id", IdentityStorage.KEY_ANONYMOUS_ID)
         assertEquals("metarouter:user_id", IdentityStorage.KEY_USER_ID)
         assertEquals("metarouter:group_id", IdentityStorage.KEY_GROUP_ID)
-        assertEquals("metarouter:advertising_id", IdentityStorage.KEY_ADVERTISING_ID)
     }
 
     // Edge cases

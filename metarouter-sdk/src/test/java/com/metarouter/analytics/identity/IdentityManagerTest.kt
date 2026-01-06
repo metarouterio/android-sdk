@@ -206,65 +206,6 @@ class IdentityManagerTest {
         assertEquals("company-persistent", retrieved)
     }
 
-    // Advertising ID tests
-
-    @Test
-    fun `getAdvertisingId returns null when not set`() = runTest {
-        val id = manager.getAdvertisingId()
-        assertNull(id)
-    }
-
-    @Test
-    fun `setAdvertisingId stores and retrieves value`() = runTest {
-        val adId = "12345678-1234-1234-1234-123456789abc"
-
-        val stored = manager.setAdvertisingId(adId)
-        assertTrue(stored)
-
-        val retrieved = manager.getAdvertisingId()
-        assertEquals(adId, retrieved)
-    }
-
-    @Test
-    fun `setAdvertisingId rejects empty string`() = runTest {
-        val stored = manager.setAdvertisingId("")
-        assertFalse(stored)
-
-        val retrieved = manager.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `setAdvertisingId rejects blank string`() = runTest {
-        val stored = manager.setAdvertisingId("   ")
-        assertFalse(stored)
-
-        val retrieved = manager.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `clearAdvertisingId removes value`() = runTest {
-        manager.setAdvertisingId("ad-id-123")
-
-        val cleared = manager.clearAdvertisingId()
-        assertTrue(cleared)
-
-        val retrieved = manager.getAdvertisingId()
-        assertNull(retrieved)
-    }
-
-    @Test
-    fun `getAdvertisingId persists across IdentityManager instances`() = runTest {
-        val manager1 = IdentityManager(context)
-        manager1.setAdvertisingId("ad-persistent")
-
-        val manager2 = IdentityManager(context)
-        val retrieved = manager2.getAdvertisingId()
-
-        assertEquals("ad-persistent", retrieved)
-    }
-
     // Reset tests
 
     @Test
@@ -273,7 +214,6 @@ class IdentityManagerTest {
         manager.getAnonymousId() // generates one
         manager.setUserId("user-123")
         manager.setGroupId("company-456")
-        manager.setAdvertisingId("ad-id-789")
 
         // Reset
         manager.reset()
@@ -283,7 +223,6 @@ class IdentityManagerTest {
         assertNull(storage.getAnonymousId())
         assertNull(storage.getUserId())
         assertNull(storage.getGroupId())
-        assertNull(storage.getAdvertisingId())
     }
 
     @Test
@@ -383,12 +322,10 @@ class IdentityManagerTest {
         val anonymousId = manager.getAnonymousId()
         manager.setUserId("user-123")
         manager.setGroupId("company-456")
-        manager.setAdvertisingId("ad-id-789")
 
         assertNotNull(manager.getAnonymousId())
         assertEquals("user-123", manager.getUserId())
         assertEquals("company-456", manager.getGroupId())
-        assertEquals("ad-id-789", manager.getAdvertisingId())
     }
 
     @Test

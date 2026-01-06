@@ -13,24 +13,6 @@ import java.util.TimeZone
 
 /**
  * Service responsible for enriching events with identity, context, and metadata.
- *
- * Enrichment Pipeline:
- * 1. BaseEvent (user input)
- * 2. Add identity (anonymousId, userId, groupId) -> EventWithIdentity
- * 3. Add context, messageId, writeKey -> EnrichedEventPayload
- * 4. Add sentAt timestamp at drain time (not handled here)
- *
- * Thread Safety:
- * - All methods are suspend and safe to call from any thread
- * - Uses thread-safe IdentityManager and DeviceContextProvider
- * - No mutable state in this service
- *
- * Per spec v1.4.0:
- * - messageId format: {epochMs}-{uuid}
- * - timestamp: ISO 8601 format with timezone
- * - anonymousId: always included (never null)
- * - context: includes device, app, OS, screen, network, library, locale, timezone
- * - advertisingId: included in device context if set
  */
 class EventEnrichmentService(
     private val identityManager: IdentityManager,
@@ -85,12 +67,9 @@ class EventEnrichmentService(
     /**
      * Add context, messageId, and writeKey to create fully enriched payload.
      */
-    private suspend fun addMetadata(eventWithIdentity: EventWithIdentity): EnrichedEventPayload {
-        // Get advertising ID from identity manager
-        val advertisingId = identityManager.getAdvertisingId()
-
-        // Get context with advertising ID
-        val context = contextProvider.getContext(advertisingId)
+    private fun addMetadata(eventWithIdentity: EventWithIdentity): EnrichedEventPayload {
+        // Get device/app context
+        val context = contextProvider.getContext()
 
         // Generate unique message ID
         val messageId = MessageIdGenerator.generate()

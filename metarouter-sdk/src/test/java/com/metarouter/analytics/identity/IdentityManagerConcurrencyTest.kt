@@ -89,10 +89,8 @@ class IdentityManagerConcurrencyTest {
             async { manager.getAnonymousId() },
             async { manager.setUserId("user-1") },
             async { manager.setGroupId("group-1") },
-            async { manager.setAdvertisingId("ad-1") },
             async { manager.getUserId() },
-            async { manager.getGroupId() },
-            async { manager.getAdvertisingId() }
+            async { manager.getGroupId() }
         )
 
         // All operations should complete without exception
@@ -102,20 +100,17 @@ class IdentityManagerConcurrencyTest {
         assertNotNull(manager.getAnonymousId())
         assertNotNull(manager.getUserId())
         assertNotNull(manager.getGroupId())
-        assertNotNull(manager.getAdvertisingId())
     }
 
     @Test
     fun `concurrent clear operations are safe`() = runTest {
         manager.setUserId("user-123")
         manager.setGroupId("group-456")
-        manager.setAdvertisingId("ad-789")
 
         val clearers = (1..50).map {
             async {
                 manager.clearUserId()
                 manager.clearGroupId()
-                manager.clearAdvertisingId()
             }
         }
 
@@ -124,7 +119,6 @@ class IdentityManagerConcurrencyTest {
         // All should be cleared
         assertNull(manager.getUserId())
         assertNull(manager.getGroupId())
-        assertNull(manager.getAdvertisingId())
     }
 
     @Test
@@ -181,7 +175,6 @@ class IdentityManagerConcurrencyTest {
                 manager.getAnonymousId()
                 manager.getUserId()
                 manager.getGroupId()
-                manager.getAdvertisingId()
             }
         }
 
@@ -221,17 +214,15 @@ class IdentityManagerConcurrencyTest {
     fun `concurrent operations across all ID types`() = runTest {
         val operations = (1..200).map { i ->
             async {
-                when (i % 8) {
+                when (i % 6) {
                     0 -> manager.getAnonymousId()
                     1 -> manager.setUserId("user-$i")
                     2 -> manager.getUserId()
                     3 -> manager.setGroupId("group-$i")
                     4 -> manager.getGroupId()
-                    5 -> manager.setAdvertisingId("ad-$i")
-                    6 -> manager.getAdvertisingId()
-                    7 -> {
-                        if (i % 16 == 7) manager.clearUserId()
-                        if (i % 16 == 15) manager.clearGroupId()
+                    5 -> {
+                        if (i % 12 == 5) manager.clearUserId()
+                        if (i % 12 == 11) manager.clearGroupId()
                     }
                 }
             }

@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Thread-safe identity management for the MetaRouter SDK.
  *
- * Manages anonymous ID, user ID, group ID, and advertising ID with persistent storage.
+ * Manages anonymous ID, user ID, and group ID with persistent storage.
  *
  * Concurrency Architecture:
  * - Per-key AtomicReference with sentinel pattern for lazy initialization
@@ -39,13 +39,11 @@ class IdentityManager(context: Context) {
     private val anonymousIdRef = AtomicReference<Any>(NotLoaded)
     private val userIdRef = AtomicReference<Any>(NotLoaded)
     private val groupIdRef = AtomicReference<Any>(NotLoaded)
-    private val advertisingIdRef = AtomicReference<Any>(NotLoaded)
 
     // Per-key locks only for initial load
     private val anonymousIdLock = Any()
     private val userIdLock = Any()
     private val groupIdLock = Any()
-    private val advertisingIdLock = Any()
 
     /**
      * Get the current anonymous ID. Generates and persists a new one if not set.
@@ -228,77 +226,6 @@ class IdentityManager(context: Context) {
     }
 
     /**
-     * Get the current advertising ID (IDFA/GAID).
-     * @return The advertising ID, or null if not set
-     */
-    suspend fun getAdvertisingId(): String? {
-        // Fast path: check if already loaded
-        val cached = advertisingIdRef.get()
-        if (cached !== NotLoaded) {
-            return cached as String?
-        }
-
-        // Slow path: need to load from storage (lock only for initialization)
-        synchronized(advertisingIdLock) {
-            // Double-check after acquiring lock
-            val recheck = advertisingIdRef.get()
-            if (recheck !== NotLoaded) {
-                return recheck as String?
-            }
-
-            // Load from storage
-            val storedId = storage.getAdvertisingId()
-            advertisingIdRef.set(storedId)
-            return storedId
-        }
-    }
-
-    /**
-     * Set the advertising ID and persist to storage.
-     * @param advertisingId The advertising ID to set (must not be blank)
-     * @return true if set successfully, false otherwise
-     */
-    suspend fun setAdvertisingId(advertisingId: String): Boolean {
-        if (advertisingId.isBlank()) {
-            Logger.warn("Cannot set empty advertising ID")
-            return false
-        }
-
-        // I/O happens outside any lock
-        val stored = storage.setAdvertisingId(advertisingId)
-
-        if (stored) {
-            // Lock-free atomic update
-            advertisingIdRef.set(advertisingId)
-            Logger.log("Set advertising ID: ${Logger.redactPII(advertisingId)}")
-        } else {
-            Logger.error("Failed to persist advertising ID")
-        }
-
-        return stored
-    }
-
-    /**
-     * Clear the advertising ID from storage and cache.
-     * Used when user opts out of ad tracking (GDPR/CCPA compliance).
-     * @return true (always, as apply() doesn't report failures)
-     */
-    suspend fun clearAdvertisingId(): Boolean {
-        // I/O happens outside any lock
-        val cleared = storage.clearAdvertisingId()
-
-        if (cleared) {
-            // Lock-free atomic update
-            advertisingIdRef.set(null)
-            Logger.log("Cleared advertising ID")
-        } else {
-            Logger.error("Failed to clear advertising ID")
-        }
-
-        return cleared
-    }
-
-    /**
      * Reset all identity data to initial state.
      * Clears all IDs from storage and cache. A new anonymous ID will be generated on next access.
      */
@@ -315,7 +242,6 @@ class IdentityManager(context: Context) {
         anonymousIdRef.set(NotLoaded)
         userIdRef.set(null)
         groupIdRef.set(null)
-        advertisingIdRef.set(null)
 
         Logger.log("Identity manager reset complete")
     }

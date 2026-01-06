@@ -67,42 +67,6 @@ interface AnalyticsInterface {
     fun alias(newUserId: String)
 
     /**
-     * Dynamically set the advertising identifier (GAID) after initialization.
-     *
-     * This method is used for ad tracking and attribution. On Android, this is the
-     * Google Advertising ID (GAID) retrieved from Google Play Services.
-     *
-     * The advertising ID is considered Personally Identifiable Information (PII) and
-     * requires user consent under GDPR and CCPA. Always check that the user has not
-     * opted out of ad tracking before calling this method.
-     *
-     * Example:
-     * ```
-     * CoroutineScope(Dispatchers.IO).launch {
-     *     try {
-     *         val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
-     *         if (!adInfo.isLimitAdTrackingEnabled) {
-     *             analytics.setAdvertisingId(adInfo.id)
-     *         }
-     *     } catch (e: Exception) {
-     *         // Handle error
-     *     }
-     * }
-     * ```
-     *
-     * @param advertisingId The Google Advertising ID (GAID)
-     */
-    suspend fun setAdvertisingId(advertisingId: String)
-
-    /**
-     * Clear the advertising identifier from storage and context.
-     *
-     * This method is useful for GDPR/CCPA compliance when users opt out of ad tracking.
-     * After calling this method, the advertising ID will be excluded from all future events.
-     */
-    suspend fun clearAdvertisingId()
-
-    /**
      * Manually trigger a flush of all queued events.
      *
      * Events are automatically flushed based on the configured flush interval and queue size,
@@ -115,7 +79,7 @@ interface AnalyticsInterface {
     /**
      * Reset the SDK to a clean state.
      *
-     * This clears all identity information (userId, groupId, advertisingId), generates a
+     * This clears all identity information (userId, groupId), generates a
      * new anonymousId, clears the event queue, and resets the network circuit breaker.
      *
      * Use this method when a user logs out to ensure their data is not mixed with
