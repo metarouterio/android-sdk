@@ -30,15 +30,14 @@ data class AppContext(
 )
 
 /**
- * Device information including manufacturer, model, device name, type, and optional advertising ID.
+ * Device information including manufacturer, model, device name, and type.
  */
 @Serializable
 data class DeviceContext(
     val manufacturer: String,
     val model: String,
     val name: String,
-    val type: String,
-    val advertisingId: String? = null
+    val type: String
 )
 
 /**

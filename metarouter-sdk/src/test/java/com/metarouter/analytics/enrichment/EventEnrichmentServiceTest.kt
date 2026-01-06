@@ -30,7 +30,6 @@ class EventEnrichmentServiceTest {
     private val testAnonymousId = "test-anonymous-id"
     private val testUserId = "test-user-id"
     private val testGroupId = "test-group-id"
-    private val testAdvertisingId = "test-advertising-id"
 
     @Before
     fun setup() {
@@ -42,10 +41,9 @@ class EventEnrichmentServiceTest {
         coEvery { identityManager.getAnonymousId() } returns testAnonymousId
         coEvery { identityManager.getUserId() } returns testUserId
         coEvery { identityManager.getGroupId() } returns testGroupId
-        coEvery { identityManager.getAdvertisingId() } returns testAdvertisingId
 
         // Mock context provider
-        every { contextProvider.getContext(any()) } returns mockk(relaxed = true)
+        every { contextProvider.getContext() } returns mockk(relaxed = true)
 
         enrichmentService = EventEnrichmentService(
             identityManager = identityManager,
@@ -87,16 +85,6 @@ class EventEnrichmentServiceTest {
 
         assertEquals(testGroupId, enriched.groupId)
         coVerify { identityManager.getGroupId() }
-    }
-
-    @Test
-    fun `enrichEvent adds advertising ID to context`() = runBlocking {
-        val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
-
-        enrichmentService.enrichEvent(baseEvent)
-
-        coVerify { identityManager.getAdvertisingId() }
-        verify { contextProvider.getContext(testAdvertisingId) }
     }
 
     @Test
@@ -247,24 +235,13 @@ class EventEnrichmentServiceTest {
     }
 
     @Test
-    fun `enrichEvent handles null advertisingId`() = runBlocking {
-        coEvery { identityManager.getAdvertisingId() } returns null
-
-        val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
-        enrichmentService.enrichEvent(baseEvent)
-
-        // Should pass null to context provider
-        verify { contextProvider.getContext(null) }
-    }
-
-    @Test
     fun `enrichEvent includes context from provider`() = runBlocking {
         val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
 
         val enriched = enrichmentService.enrichEvent(baseEvent)
 
         assertNotNull(enriched.context)
-        verify { contextProvider.getContext(testAdvertisingId) }
+        verify { contextProvider.getContext() }
     }
 
     @Test

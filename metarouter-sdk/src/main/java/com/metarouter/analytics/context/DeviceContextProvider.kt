@@ -19,8 +19,6 @@ import kotlin.math.roundToInt
  * Provides device, app, OS, screen, network, locale, and timezone context information.
  *
  * - Context is calculated once and cached for app lifetime
- * - Cache is invalidated when advertising ID changes (set/cleared)
- * - Cache includes advertising ID value to detect changes
  *
  * Android Considerations:
  * - Requires Application context (not Activity context) to avoid memory leaks
@@ -37,9 +35,8 @@ class DeviceContextProvider(private val context: Context) {
     // Sentinel value to indicate "not cached yet"
     private object NotCached
 
-    // Cached context with advertising ID value as cache key
+    // Cached context
     private val cachedContext = AtomicReference<Any>(NotCached)
-    private val cachedAdvertisingId = AtomicReference<String?>(null)
 
     private val cacheLock = Any()
 
@@ -51,55 +48,43 @@ class DeviceContextProvider(private val context: Context) {
 
     /**
      * Get complete event context with all metadata.
-     * Returns cached context if available and advertising ID hasn't changed.
+     * Returns cached context if available.
      *
-     * @param advertisingId Optional advertising ID (GAID) to include in device context
      * @return Complete EventContext with all metadata
      */
-    fun getContext(advertisingId: String? = null): EventContext {
-        // Check if we have a valid cache for this advertising ID
+    fun getContext(): EventContext {
+        // Check if we have a valid cache
         val cached = cachedContext.get()
-        if (cached !== NotCached && cachedAdvertisingId.get() == advertisingId) {
+        if (cached !== NotCached) {
             return cached as EventContext
         }
 
-        // Cache miss or advertising ID changed - regenerate context
+        // Cache miss - generate context
         return synchronized(cacheLock) {
             // Double-check after acquiring lock
             val recheck = cachedContext.get()
-            if (recheck !== NotCached && cachedAdvertisingId.get() == advertisingId) {
+            if (recheck !== NotCached) {
                 return recheck as EventContext
             }
 
-            val newContext = generateContext(advertisingId)
+            val newContext = generateContext()
 
             // Update cache
             cachedContext.set(newContext)
-            cachedAdvertisingId.set(advertisingId)
 
             newContext
         }
     }
 
     /**
-     * Clear the context cache. Called when advertising ID changes.
-     */
-    fun clearCache() {
-        synchronized(cacheLock) {
-            cachedContext.set(NotCached)
-            cachedAdvertisingId.set(null)
-        }
-    }
-
-    /**
      * Generate fresh context information by collecting all metadata.
      */
-    private fun generateContext(advertisingId: String?): EventContext {
+    private fun generateContext(): EventContext {
         return EventContext(
             library = getLibraryContext(),
             locale = getLocale(),
             timezone = getTimezone(),
-            device = getDeviceContext(advertisingId),
+            device = getDeviceContext(),
             os = getOSContext(),
             app = getAppContext(),
             screen = getScreenContext(),
@@ -150,15 +135,14 @@ class DeviceContextProvider(private val context: Context) {
     }
 
     /**
-     * Get device information including manufacturer, model, name, type, and optional advertising ID.
+     * Get device information including manufacturer, model, name, and type.
      */
-    private fun getDeviceContext(advertisingId: String?): DeviceContext {
+    private fun getDeviceContext(): DeviceContext {
         return DeviceContext(
             manufacturer = Build.MANUFACTURER.takeIf { it.isNotBlank() } ?: UNKNOWN,
             model = Build.MODEL.takeIf { it.isNotBlank() } ?: UNKNOWN,
             name = Build.DEVICE.takeIf { it.isNotBlank() } ?: UNKNOWN,
-            type = "android",
-            advertisingId = advertisingId
+            type = "android"
         )
     }
 

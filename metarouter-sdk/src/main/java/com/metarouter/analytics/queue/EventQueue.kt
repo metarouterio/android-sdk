@@ -9,31 +9,14 @@ import kotlin.concurrent.write
 /**
  * Thread-safe FIFO queue for event management with overflow handling.
  *
- * Features:
- * - Thread-safe operations using ReadWriteLock
- * - FIFO (First-In-First-Out) ordering
- * - Configurable capacity with overflow protection
- * - Drop oldest events when capacity exceeded
- * - Support for bulk drain operations
- *
- * Concurrency Strategy:
- * - Read lock for non-mutating operations (size, peek)
- * - Write lock for mutating operations (enqueue, drain)
- * - Lock upgrade not needed - operations are atomic
- *
- * Per spec v1.4.0:
- * - Default maxQueueEvents: 2000
- * - Overflow behavior: drop oldest events
- * - Warning message: "[MetaRouter] Queue cap {maxQueueEvents} reached — dropped oldest event"
- *
  * @property maxCapacity Maximum number of events to hold in memory
  */
 class EventQueue(private val maxCapacity: Int = 2000) {
 
-    // Internal queue storage - ArrayDeque provides efficient FIFO operations
+
     private val queue = ArrayDeque<EnrichedEventPayload>()
 
-    // Read-write lock for thread safety
+
     private val lock = ReentrantReadWriteLock()
 
     /**
@@ -60,8 +43,6 @@ class EventQueue(private val maxCapacity: Int = 2000) {
      * Enqueue an event. If capacity is exceeded, drops the oldest event.
      * Thread-safe, blocking write operation.
      *
-     * Per spec: "drop oldest events when capacity exceeded"
-     *
      * @param event The enriched event to enqueue
      */
     fun enqueue(event: EnrichedEventPayload) = lock.write {
@@ -73,7 +54,6 @@ class EventQueue(private val maxCapacity: Int = 2000) {
             }
         }
 
-        // Add new event to the end (FIFO)
         queue.addLast(event)
     }
 
@@ -81,8 +61,6 @@ class EventQueue(private val maxCapacity: Int = 2000) {
      * Drain events from the queue in batches.
      * Returns up to maxBatchSize events and removes them from the queue.
      * Thread-safe, blocking write operation.
-     *
-     * Per spec: "FIFO order, splice from front of queue"
      *
      * @param maxBatchSize Maximum number of events to drain
      * @return List of events (may be empty, never exceeds maxBatchSize)

@@ -331,36 +331,6 @@ class MetaRouterAnalyticsClientTest {
         assertTrue((debugInfo["queueLength"] as Int) > 0)
     }
 
-    // ===== Advertising ID =====
-
-    @Test
-    fun `setAdvertisingId updates advertising ID`() = runBlocking {
-        val client = MetaRouterAnalyticsClient.initialize(context, options)
-
-        client.setAdvertisingId("test-gaid-12345")
-
-        // Advertising ID is set successfully (no exception thrown)
-    }
-
-    @Test
-    fun `setAdvertisingId with empty string logs warning`() = runBlocking {
-        val client = MetaRouterAnalyticsClient.initialize(context, options)
-
-        client.setAdvertisingId("")
-
-        // Should log warning but not throw
-    }
-
-    @Test
-    fun `clearAdvertisingId removes advertising ID`() = runBlocking {
-        val client = MetaRouterAnalyticsClient.initialize(context, options)
-
-        client.setAdvertisingId("test-gaid-12345")
-        client.clearAdvertisingId()
-
-        // Advertising ID is cleared successfully (no exception thrown)
-    }
-
     // ===== Reset =====
 
     @Test
@@ -379,18 +349,6 @@ class MetaRouterAnalyticsClientTest {
         assertEquals(0, debugInfo["queueLength"])
         // userId is null when not in READY state
         assertNull(debugInfo["userId"])
-    }
-
-    @Test
-    fun `reset clears advertising ID`() = runBlocking {
-        val client = MetaRouterAnalyticsClient.initialize(context, options)
-
-        client.setAdvertisingId("test-gaid-12345")
-        client.reset()
-
-        // After reset, advertising ID should be cleared
-        val debugInfo = client.getDebugInfo()
-        assertEquals("idle", debugInfo["lifecycle"])
     }
 
     @Test

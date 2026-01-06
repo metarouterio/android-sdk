@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
  * - READY → DISABLED (terminal state for fatal errors)
  *
  * Architecture:
- * - IdentityManager: Manages anonymousId, userId, groupId, advertisingId
+ * - IdentityManager: Manages anonymousId, userId, groupId
  * - DeviceContextProvider: Provides device, app, OS, screen, network context
  * - EventEnrichmentService: Enriches events with identity, context, messageId
  * - EventQueue: Thread-safe FIFO queue with overflow handling
@@ -274,41 +274,6 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
-    // ===== Identity Management =====
-
-    override suspend fun setAdvertisingId(advertisingId: String) {
-        if (lifecycleState.get() != LifecycleState.READY) {
-            Logger.warn("Cannot set advertising ID - SDK not ready")
-            return
-        }
-
-        if (advertisingId.isBlank()) {
-            Logger.warn("Cannot set empty advertising ID")
-            return
-        }
-
-        val success = identityManager.setAdvertisingId(advertisingId)
-        if (success) {
-            // Clear context cache so it regenerates with new advertising ID
-            contextProvider.clearCache()
-            Logger.log("Advertising ID set and context cache cleared")
-        }
-    }
-
-    override suspend fun clearAdvertisingId() {
-        if (lifecycleState.get() != LifecycleState.READY) {
-            Logger.warn("Cannot clear advertising ID - SDK not ready")
-            return
-        }
-
-        val success = identityManager.clearAdvertisingId()
-        if (success) {
-            // Clear context cache so it regenerates without advertising ID
-            contextProvider.clearCache()
-            Logger.log("Advertising ID cleared and context cache cleared")
-        }
-    }
-
     // ===== Lifecycle Management =====
 
     override suspend fun flush() {
@@ -329,11 +294,8 @@ class MetaRouterAnalyticsClient private constructor(
             // Clear event queue
             eventQueue.clear()
 
-            // Reset identity manager (clears all IDs including advertising ID)
+            // Reset identity manager (clears all IDs)
             identityManager.reset()
-
-            // Clear context cache
-            contextProvider.clearCache()
 
             lifecycleState.set(LifecycleState.IDLE)
             Logger.log("SDK reset complete")
