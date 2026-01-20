@@ -6,7 +6,6 @@ import kotlinx.serialization.Serializable
 /**
  * Supported event types in the MetaRouter SDK.
  *
- * Based on the Segment spec for analytics events.
  */
 @Serializable
 enum class EventType {
@@ -28,12 +27,5 @@ enum class EventType {
     @SerialName("alias")
     ALIAS;
 
-    override fun toString(): String = when (this) {
-        TRACK -> "track"
-        IDENTIFY -> "identify"
-        GROUP -> "group"
-        SCREEN -> "screen"
-        PAGE -> "page"
-        ALIAS -> "alias"
-    }
+    override fun toString(): String = name.lowercase()
 }
