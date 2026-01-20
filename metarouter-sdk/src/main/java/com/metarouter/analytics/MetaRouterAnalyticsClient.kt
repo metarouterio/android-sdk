@@ -6,10 +6,10 @@ import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.queue.EventQueue
 import com.metarouter.analytics.types.BaseEvent
-import com.metarouter.analytics.types.CodableValue
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.LifecycleState
 import com.metarouter.analytics.utils.Logger
+import com.metarouter.analytics.utils.toJsonElementMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -149,7 +149,7 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = EventType.TRACK,
                 event = event,
-                properties = properties?.toCodableValueMap()
+                properties = properties?.toJsonElementMap()
             )
         )
     }
@@ -167,7 +167,7 @@ class MetaRouterAnalyticsClient private constructor(
                 enqueueEvent(
                     BaseEvent(
                         type = EventType.IDENTIFY,
-                        traits = traits?.toCodableValueMap()
+                        traits = traits?.toJsonElementMap()
                     )
                 )
             } catch (e: Exception) {
@@ -189,7 +189,7 @@ class MetaRouterAnalyticsClient private constructor(
                 enqueueEvent(
                     BaseEvent(
                         type = EventType.GROUP,
-                        traits = traits?.toCodableValueMap()
+                        traits = traits?.toJsonElementMap()
                     )
                 )
             } catch (e: Exception) {
@@ -203,7 +203,7 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = EventType.SCREEN,
                 event = name,
-                properties = properties?.toCodableValueMap()
+                properties = properties?.toJsonElementMap()
             )
         )
     }
@@ -213,7 +213,7 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = EventType.PAGE,
                 event = name,
-                properties = properties?.toCodableValueMap()
+                properties = properties?.toJsonElementMap()
             )
         )
     }
@@ -341,13 +341,6 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     // ===== Helper Methods =====
-
-    /**
-     * Convert Map<String, Any?> to Map<String, CodableValue>.
-     */
-    private fun Map<String, Any?>.toCodableValueMap(): Map<String, CodableValue> {
-        return mapValues { (_, value) -> CodableValue.fromAny(value) }
-    }
 
     /**
      * Mask an ID for logging (show first 8 chars).

@@ -4,11 +4,13 @@ import android.content.Context
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.types.BaseEvent
-import com.metarouter.analytics.types.CodableValue
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.utils.MessageIdGenerator
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -172,9 +174,9 @@ class EventEnrichmentServiceTest {
     @Test
     fun `enrichEvent preserves properties`() = runBlocking {
         val properties = mapOf(
-            "price" to CodableValue.DoubleValue(29.99),
-            "currency" to CodableValue.StringValue("USD"),
-            "quantity" to CodableValue.IntValue(2)
+            "price" to JsonPrimitive(29.99),
+            "currency" to JsonPrimitive("USD"),
+            "quantity" to JsonPrimitive(2)
         )
         val baseEvent = BaseEvent(
             type = EventType.TRACK,
@@ -190,9 +192,9 @@ class EventEnrichmentServiceTest {
     @Test
     fun `enrichEvent preserves traits`() = runBlocking {
         val traits = mapOf(
-            "email" to CodableValue.StringValue("user@example.com"),
-            "name" to CodableValue.StringValue("John Doe"),
-            "age" to CodableValue.IntValue(30)
+            "email" to JsonPrimitive("user@example.com"),
+            "name" to JsonPrimitive("John Doe"),
+            "age" to JsonPrimitive(30)
         )
         val baseEvent = BaseEvent(
             type = EventType.IDENTIFY,
@@ -286,23 +288,23 @@ class EventEnrichmentServiceTest {
     @Test
     fun `enrichEvent handles complex nested properties`() = runBlocking {
         val properties = mapOf(
-            "product" to CodableValue.ObjectValue(
+            "product" to JsonObject(
                 mapOf(
-                    "id" to CodableValue.StringValue("prod-123"),
-                    "name" to CodableValue.StringValue("Widget"),
-                    "price" to CodableValue.DoubleValue(29.99),
-                    "tags" to CodableValue.ArrayValue(
+                    "id" to JsonPrimitive("prod-123"),
+                    "name" to JsonPrimitive("Widget"),
+                    "price" to JsonPrimitive(29.99),
+                    "tags" to JsonArray(
                         listOf(
-                            CodableValue.StringValue("electronics"),
-                            CodableValue.StringValue("gadgets")
+                            JsonPrimitive("electronics"),
+                            JsonPrimitive("gadgets")
                         )
                     )
                 )
             ),
-            "metadata" to CodableValue.ObjectValue(
+            "metadata" to JsonObject(
                 mapOf(
-                    "source" to CodableValue.StringValue("mobile"),
-                    "version" to CodableValue.IntValue(2)
+                    "source" to JsonPrimitive("mobile"),
+                    "version" to JsonPrimitive(2)
                 )
             )
         )

@@ -210,26 +210,30 @@ class DeviceContextProvider(private val context: Context) {
     private fun getScreenContext(): ScreenContext {
         return try {
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val displayMetrics = DisplayMetrics()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                context.display?.getRealMetrics(displayMetrics)
+            val (widthPx, heightPx, density) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val windowMetrics = windowManager.currentWindowMetrics
+                val bounds = windowMetrics.bounds
+                val displayMetrics = context.resources.displayMetrics
+                Triple(bounds.width(), bounds.height(), displayMetrics.density)
             } else {
+                val displayMetrics = DisplayMetrics()
                 @Suppress("DEPRECATION")
                 windowManager.defaultDisplay.getRealMetrics(displayMetrics)
+                Triple(displayMetrics.widthPixels, displayMetrics.heightPixels, displayMetrics.density)
             }
 
             // Convert pixels to dp for width/height
-            val widthDp = (displayMetrics.widthPixels / displayMetrics.density).roundToInt()
-            val heightDp = (displayMetrics.heightPixels / displayMetrics.density).roundToInt()
+            val widthDp = (widthPx / density).roundToInt()
+            val heightDp = (heightPx / density).roundToInt()
 
             // Round density to 2 decimal places
-            val density = (displayMetrics.density * 100).roundToInt() / 100.0
+            val roundedDensity = (density * 100).roundToInt() / 100.0
 
             ScreenContext(
                 width = widthDp,
                 height = heightDp,
-                density = density
+                density = roundedDensity
             )
         } catch (e: Exception) {
             Logger.warn("Failed to get screen context: ${e.message}")
