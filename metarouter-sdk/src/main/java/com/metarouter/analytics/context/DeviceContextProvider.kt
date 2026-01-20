@@ -35,7 +35,6 @@ class DeviceContextProvider(private val context: Context) {
     // Sentinel value to indicate "not cached yet"
     private object NotCached
 
-    // Cached context
     private val cachedContext = AtomicReference<Any>(NotCached)
 
     private val cacheLock = Any()
