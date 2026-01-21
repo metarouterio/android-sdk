@@ -19,9 +19,6 @@ import android.os.Build
  * Test Coverage:
  * - All context fields populated correctly
  * - Caching behavior (returns same instance)
- * - Cache invalidation on advertising ID change
- * - Advertising ID included when provided
- * - Advertising ID excluded when not provided
  * - Graceful fallbacks for missing data
  * - Network permission handling
  */
@@ -98,21 +95,6 @@ class DeviceContextProviderTest {
     }
 
     @Test
-    fun `device context includes advertising ID when provided`() {
-        val testAdId = "test-advertising-id-12345"
-        val eventContext = provider.getContext(advertisingId = testAdId)
-
-        assertEquals(testAdId, eventContext.device?.advertisingId)
-    }
-
-    @Test
-    fun `device context excludes advertising ID when not provided`() {
-        val eventContext = provider.getContext(advertisingId = null)
-
-        assertNull(eventContext.device?.advertisingId)
-    }
-
-    @Test
     fun `OS context has name and version`() {
         val eventContext = provider.getContext()
         val os = eventContext.os!!
@@ -158,69 +140,12 @@ class DeviceContextProviderTest {
     }
 
     @Test
-    fun `caching returns same context instance for same advertising ID`() {
-        val context1 = provider.getContext(advertisingId = "test-ad-id")
-        val context2 = provider.getContext(advertisingId = "test-ad-id")
+    fun `caching returns same context instance`() {
+        val context1 = provider.getContext()
+        val context2 = provider.getContext()
 
         // Should return exact same instance due to caching
         assertSame("Should return cached instance", context1, context2)
-    }
-
-    @Test
-    fun `caching returns same context instance when no advertising ID`() {
-        val context1 = provider.getContext(advertisingId = null)
-        val context2 = provider.getContext(advertisingId = null)
-
-        // Should return exact same instance due to caching
-        assertSame("Should return cached instance", context1, context2)
-    }
-
-    @Test
-    fun `changing advertising ID invalidates cache and returns new context`() {
-        val context1 = provider.getContext(advertisingId = "ad-id-1")
-        val context2 = provider.getContext(advertisingId = "ad-id-2")
-
-        // Should return different instances because advertising ID changed
-        assertNotSame("Should return new context when advertising ID changes", context1, context2)
-
-        // Verify advertising IDs are different
-        assertEquals("ad-id-1", context1.device?.advertisingId)
-        assertEquals("ad-id-2", context2.device?.advertisingId)
-    }
-
-    @Test
-    fun `setting advertising ID to null invalidates cache`() {
-        val context1 = provider.getContext(advertisingId = "test-ad-id")
-        val context2 = provider.getContext(advertisingId = null)
-
-        // Should return different instances
-        assertNotSame("Should return new context when advertising ID is cleared", context1, context2)
-
-        // Verify advertising IDs
-        assertEquals("test-ad-id", context1.device?.advertisingId)
-        assertNull(context2.device?.advertisingId)
-    }
-
-    @Test
-    fun `clearCache invalidates cached context`() {
-        val context1 = provider.getContext(advertisingId = "test-ad-id")
-
-        provider.clearCache()
-
-        val context2 = provider.getContext(advertisingId = "test-ad-id")
-
-        // Should return different instances after cache clear
-        assertNotSame("Should return new context after clearCache()", context1, context2)
-    }
-
-    @Test
-    fun `multiple clearCache calls are safe`() {
-        provider.clearCache()
-        provider.clearCache()
-        provider.clearCache()
-
-        val eventContext = provider.getContext()
-        assertNotNull(eventContext)
     }
 
     @Test
@@ -230,7 +155,7 @@ class DeviceContextProviderTest {
         // Generate contexts from multiple threads concurrently
         val threads = List(10) {
             Thread {
-                val context = provider.getContext(advertisingId = "thread-test")
+                val context = provider.getContext()
                 synchronized(contexts) {
                     contexts.add(context)
                 }
@@ -245,23 +170,6 @@ class DeviceContextProviderTest {
         contexts.forEach { context ->
             assertSame("All contexts should be same cached instance", firstContext, context)
         }
-    }
-
-    @Test
-    fun `context with advertising ID then without uses cache correctly`() {
-        val context1 = provider.getContext(advertisingId = "test-id")
-        val context2 = provider.getContext(advertisingId = "test-id")
-        val context3 = provider.getContext(advertisingId = null)
-        val context4 = provider.getContext(advertisingId = null)
-
-        // First two should be same instance
-        assertSame(context1, context2)
-
-        // Last two should be same instance
-        assertSame(context3, context4)
-
-        // But first and third should be different
-        assertNotSame(context1, context3)
     }
 
     @Test
@@ -343,67 +251,5 @@ class DeviceContextProviderTest {
         assertTrue(app.version.isNotBlank())
         assertTrue(app.build.isNotBlank())
         assertTrue(app.namespace.isNotBlank())
-    }
-
-    @Test
-    fun `whitespace-only advertising ID is treated as present`() {
-        // Provider doesn't validate advertising ID content, just passes it through
-        val eventContext = provider.getContext(advertisingId = "   ")
-
-        assertEquals("   ", eventContext.device?.advertisingId)
-    }
-
-    @Test
-    fun `empty string advertising ID is treated as present`() {
-        // Provider doesn't validate advertising ID content, just passes it through
-        val eventContext = provider.getContext(advertisingId = "")
-
-        assertEquals("", eventContext.device?.advertisingId)
-    }
-
-    @Test
-    fun `advertising ID with special characters is preserved`() {
-        val specialAdId = "test-id-!@#$%^&*()"
-        val eventContext = provider.getContext(advertisingId = specialAdId)
-
-        assertEquals(specialAdId, eventContext.device?.advertisingId)
-    }
-
-    @Test
-    fun `very long advertising ID is preserved`() {
-        val longAdId = "a".repeat(1000)
-        val eventContext = provider.getContext(advertisingId = longAdId)
-
-        assertEquals(longAdId, eventContext.device?.advertisingId)
-    }
-
-    @Test
-    fun `concurrent cache clears and gets are safe`() {
-        val contexts = mutableListOf<EventContext>()
-
-        val threads = List(20) { index ->
-            Thread {
-                if (index % 2 == 0) {
-                    provider.clearCache()
-                } else {
-                    val context = provider.getContext(advertisingId = "concurrent-test")
-                    synchronized(contexts) {
-                        contexts.add(context)
-                    }
-                }
-            }
-        }
-
-        threads.forEach { it.start() }
-        threads.forEach { it.join() }
-
-        // Should have some contexts collected
-        assertTrue("Should have some contexts", contexts.isNotEmpty())
-
-        // All contexts should be valid
-        contexts.forEach { context ->
-            assertNotNull(context.library)
-            assertNotNull(context.device)
-        }
     }
 }
