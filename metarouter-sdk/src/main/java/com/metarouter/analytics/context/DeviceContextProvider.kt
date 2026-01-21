@@ -12,15 +12,12 @@ import com.metarouter.analytics.types.*
 import com.metarouter.analytics.utils.Logger
 import java.util.Locale
 import java.util.TimeZone
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /**
  * Provides device, app, OS, screen, network, locale, and timezone context information.
  *
  * - Context is calculated once and cached for app lifetime
- * - Cache is invalidated when advertising ID changes (set/cleared)
- * - Cache includes advertising ID value to detect changes
  *
  * Android Considerations:
  * - Requires Application context (not Activity context) to avoid memory leaks
@@ -34,72 +31,31 @@ import kotlin.math.roundToInt
  */
 class DeviceContextProvider(private val context: Context) {
 
-    // Sentinel value to indicate "not cached yet"
-    private object NotCached
-
-    // Cached context with advertising ID value as cache key
-    private val cachedContext = AtomicReference<Any>(NotCached)
-    private val cachedAdvertisingId = AtomicReference<String?>(null)
-
-    private val cacheLock = Any()
-
     companion object {
         private const val SDK_NAME = "metarouter-android-sdk"
         private val SDK_VERSION = BuildConfig.SDK_VERSION
         private const val UNKNOWN = "unknown"
     }
 
+    private val cachedContext: EventContext by lazy { generateContext() }
+
     /**
      * Get complete event context with all metadata.
-     * Returns cached context if available and advertising ID hasn't changed.
+     * Cached on first call for app lifetime.
      *
-     * @param advertisingId Optional advertising ID (GAID) to include in device context
      * @return Complete EventContext with all metadata
      */
-    fun getContext(advertisingId: String? = null): EventContext {
-        // Check if we have a valid cache for this advertising ID
-        val cached = cachedContext.get()
-        if (cached !== NotCached && cachedAdvertisingId.get() == advertisingId) {
-            return cached as EventContext
-        }
-
-        // Cache miss or advertising ID changed - regenerate context
-        return synchronized(cacheLock) {
-            // Double-check after acquiring lock
-            val recheck = cachedContext.get()
-            if (recheck !== NotCached && cachedAdvertisingId.get() == advertisingId) {
-                return recheck as EventContext
-            }
-
-            val newContext = generateContext(advertisingId)
-
-            // Update cache
-            cachedContext.set(newContext)
-            cachedAdvertisingId.set(advertisingId)
-
-            newContext
-        }
-    }
-
-    /**
-     * Clear the context cache. Called when advertising ID changes.
-     */
-    fun clearCache() {
-        synchronized(cacheLock) {
-            cachedContext.set(NotCached)
-            cachedAdvertisingId.set(null)
-        }
-    }
+    fun getContext(): EventContext = cachedContext
 
     /**
      * Generate fresh context information by collecting all metadata.
      */
-    private fun generateContext(advertisingId: String?): EventContext {
+    private fun generateContext(): EventContext {
         return EventContext(
             library = getLibraryContext(),
             locale = getLocale(),
             timezone = getTimezone(),
-            device = getDeviceContext(advertisingId),
+            device = getDeviceContext(),
             os = getOSContext(),
             app = getAppContext(),
             screen = getScreenContext(),
@@ -150,15 +106,14 @@ class DeviceContextProvider(private val context: Context) {
     }
 
     /**
-     * Get device information including manufacturer, model, name, type, and optional advertising ID.
+     * Get device information including manufacturer, model, name, and type.
      */
-    private fun getDeviceContext(advertisingId: String?): DeviceContext {
+    private fun getDeviceContext(): DeviceContext {
         return DeviceContext(
             manufacturer = Build.MANUFACTURER.takeIf { it.isNotBlank() } ?: UNKNOWN,
             model = Build.MODEL.takeIf { it.isNotBlank() } ?: UNKNOWN,
             name = Build.DEVICE.takeIf { it.isNotBlank() } ?: UNKNOWN,
-            type = "android",
-            advertisingId = advertisingId
+            type = "android"
         )
     }
 
@@ -227,26 +182,30 @@ class DeviceContextProvider(private val context: Context) {
     private fun getScreenContext(): ScreenContext {
         return try {
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val displayMetrics = DisplayMetrics()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                context.display?.getRealMetrics(displayMetrics)
+            val (widthPx, heightPx, density) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val windowMetrics = windowManager.currentWindowMetrics
+                val bounds = windowMetrics.bounds
+                val displayMetrics = context.resources.displayMetrics
+                Triple(bounds.width(), bounds.height(), displayMetrics.density)
             } else {
+                val displayMetrics = DisplayMetrics()
                 @Suppress("DEPRECATION")
                 windowManager.defaultDisplay.getRealMetrics(displayMetrics)
+                Triple(displayMetrics.widthPixels, displayMetrics.heightPixels, displayMetrics.density)
             }
 
             // Convert pixels to dp for width/height
-            val widthDp = (displayMetrics.widthPixels / displayMetrics.density).roundToInt()
-            val heightDp = (displayMetrics.heightPixels / displayMetrics.density).roundToInt()
+            val widthDp = (widthPx / density).roundToInt()
+            val heightDp = (heightPx / density).roundToInt()
 
             // Round density to 2 decimal places
-            val density = (displayMetrics.density * 100).roundToInt() / 100.0
+            val roundedDensity = (density * 100).roundToInt() / 100.0
 
             ScreenContext(
                 width = widthDp,
                 height = heightDp,
-                density = density
+                density = roundedDensity
             )
         } catch (e: Exception) {
             Logger.warn("Failed to get screen context: ${e.message}")

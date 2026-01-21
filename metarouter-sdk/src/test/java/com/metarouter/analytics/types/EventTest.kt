@@ -2,11 +2,12 @@ package com.metarouter.analytics.types
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Test
 import org.junit.Assert.*
 
 /**
- * Tests for Event data models (BaseEvent, EventWithIdentity, EnrichedEventPayload).
+ * Tests for Event data models (BaseEvent, EnrichedEventPayload).
  */
 class EventTest {
 
@@ -17,8 +18,8 @@ class EventTest {
             event = "Purchase",
             traits = null,
             properties = mapOf(
-                "item" to CodableValue.StringValue("Premium Plan"),
-                "price" to CodableValue.DoubleValue(29.99)
+                "item" to JsonPrimitive("Premium Plan"),
+                "price" to JsonPrimitive(29.99)
             ),
             timestamp = null
         )
@@ -37,8 +38,8 @@ class EventTest {
             type = EventType.IDENTIFY,
             event = null,
             traits = mapOf(
-                "name" to CodableValue.StringValue("Alice"),
-                "age" to CodableValue.IntValue(30)
+                "name" to JsonPrimitive("Alice"),
+                "age" to JsonPrimitive(30)
             ),
             properties = null,
             timestamp = "2024-01-15T10:30:00.000Z"
@@ -53,48 +54,6 @@ class EventTest {
     }
 
     @Test
-    fun `EventWithIdentity requires anonymousId and timestamp`() {
-        val event = EventWithIdentity(
-            type = EventType.TRACK,
-            event = "Purchase",
-            userId = "user-123",
-            anonymousId = "anon-abc-def",
-            groupId = "company-456",
-            traits = null,
-            properties = mapOf("item" to CodableValue.StringValue("Plan")),
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        assertEquals(EventType.TRACK, event.type)
-        assertEquals("Purchase", event.event)
-        assertEquals("user-123", event.userId)
-        assertEquals("anon-abc-def", event.anonymousId)
-        assertEquals("company-456", event.groupId)
-        assertEquals("2024-01-15T10:30:00.000Z", event.timestamp)
-    }
-
-    @Test
-    fun `EventWithIdentity serializes identity fields correctly`() {
-        val event = EventWithIdentity(
-            type = EventType.IDENTIFY,
-            event = null,
-            userId = "user-123",
-            anonymousId = "anon-abc-def",
-            groupId = null,
-            traits = mapOf("name" to CodableValue.StringValue("Alice")),
-            properties = null,
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        val json = Json.encodeToString(event)
-
-        assertTrue(json.contains("\"type\":\"identify\""))
-        assertTrue(json.contains("\"userId\":\"user-123\""))
-        assertTrue(json.contains("\"anonymousId\":\"anon-abc-def\""))
-        assertTrue(json.contains("\"name\":\"Alice\""))
-    }
-
-    @Test
     fun `EnrichedEventPayload contains all required fields`() {
         val event = EnrichedEventPayload(
             type = EventType.TRACK,
@@ -103,7 +62,7 @@ class EventTest {
             anonymousId = "anon-abc-def",
             groupId = null,
             traits = null,
-            properties = mapOf("item" to CodableValue.StringValue("Plan")),
+            properties = mapOf("item" to JsonPrimitive("Plan")),
             timestamp = "2024-01-15T10:30:00.000Z",
             context = EventContext(
                 app = AppContext(
@@ -159,7 +118,7 @@ class EventTest {
             anonymousId = "anon-123",
             groupId = null,
             traits = null,
-            properties = mapOf("button" to CodableValue.StringValue("Sign Up")),
+            properties = mapOf("button" to JsonPrimitive("Sign Up")),
             timestamp = "2024-01-15T10:30:00.000Z",
             context = EventContext(
                 app = AppContext(
@@ -228,31 +187,12 @@ class EventTest {
     }
 
     @Test
-    fun `EventWithIdentity with minimal fields`() {
-        val event = EventWithIdentity(
-            type = EventType.TRACK,
-            event = "App Opened",
-            userId = null,
-            anonymousId = "anon-123",
-            groupId = null,
-            traits = null,
-            properties = null,
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        assertEquals(EventType.TRACK, event.type)
-        assertNull(event.userId)
-        assertEquals("anon-123", event.anonymousId)
-        assertNull(event.groupId)
-    }
-
-    @Test
     fun `Event types have correct field combinations`() {
         // TRACK event
         val trackEvent = BaseEvent(
             type = EventType.TRACK,
             event = "Purchase",
-            properties = mapOf("item" to CodableValue.StringValue("Plan")),
+            properties = mapOf("item" to JsonPrimitive("Plan")),
             traits = null,
             timestamp = null
         )
@@ -266,7 +206,7 @@ class EventTest {
             type = EventType.IDENTIFY,
             event = null,
             properties = null,
-            traits = mapOf("name" to CodableValue.StringValue("Alice")),
+            traits = mapOf("name" to JsonPrimitive("Alice")),
             timestamp = null
         )
         assertEquals(EventType.IDENTIFY, identifyEvent.type)
@@ -278,7 +218,7 @@ class EventTest {
         val screenEvent = BaseEvent(
             type = EventType.SCREEN,
             event = "Home Screen",
-            properties = mapOf("referrer" to CodableValue.StringValue("notification")),
+            properties = mapOf("referrer" to JsonPrimitive("notification")),
             traits = null,
             timestamp = null
         )
