@@ -7,7 +7,7 @@ import org.junit.Test
 import org.junit.Assert.*
 
 /**
- * Tests for Event data models (BaseEvent, EventWithIdentity, EnrichedEventPayload).
+ * Tests for Event data models (BaseEvent, EnrichedEventPayload).
  */
 class EventTest {
 
@@ -51,48 +51,6 @@ class EventTest {
         assertTrue(json.contains("\"name\":\"Alice\""))
         assertTrue(json.contains("\"age\":30"))
         assertTrue(json.contains("\"timestamp\":\"2024-01-15T10:30:00.000Z\""))
-    }
-
-    @Test
-    fun `EventWithIdentity requires anonymousId and timestamp`() {
-        val event = EventWithIdentity(
-            type = EventType.TRACK,
-            event = "Purchase",
-            userId = "user-123",
-            anonymousId = "anon-abc-def",
-            groupId = "company-456",
-            traits = null,
-            properties = mapOf("item" to JsonPrimitive("Plan")),
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        assertEquals(EventType.TRACK, event.type)
-        assertEquals("Purchase", event.event)
-        assertEquals("user-123", event.userId)
-        assertEquals("anon-abc-def", event.anonymousId)
-        assertEquals("company-456", event.groupId)
-        assertEquals("2024-01-15T10:30:00.000Z", event.timestamp)
-    }
-
-    @Test
-    fun `EventWithIdentity serializes identity fields correctly`() {
-        val event = EventWithIdentity(
-            type = EventType.IDENTIFY,
-            event = null,
-            userId = "user-123",
-            anonymousId = "anon-abc-def",
-            groupId = null,
-            traits = mapOf("name" to JsonPrimitive("Alice")),
-            properties = null,
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        val json = Json.encodeToString(event)
-
-        assertTrue(json.contains("\"type\":\"identify\""))
-        assertTrue(json.contains("\"userId\":\"user-123\""))
-        assertTrue(json.contains("\"anonymousId\":\"anon-abc-def\""))
-        assertTrue(json.contains("\"name\":\"Alice\""))
     }
 
     @Test
@@ -226,25 +184,6 @@ class EventTest {
         assertNull(event.traits)
         assertNull(event.properties)
         assertNull(event.timestamp)
-    }
-
-    @Test
-    fun `EventWithIdentity with minimal fields`() {
-        val event = EventWithIdentity(
-            type = EventType.TRACK,
-            event = "App Opened",
-            userId = null,
-            anonymousId = "anon-123",
-            groupId = null,
-            traits = null,
-            properties = null,
-            timestamp = "2024-01-15T10:30:00.000Z"
-        )
-
-        assertEquals(EventType.TRACK, event.type)
-        assertNull(event.userId)
-        assertEquals("anon-123", event.anonymousId)
-        assertNull(event.groupId)
     }
 
     @Test
