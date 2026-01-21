@@ -12,7 +12,6 @@ import com.metarouter.analytics.types.*
 import com.metarouter.analytics.utils.Logger
 import java.util.Locale
 import java.util.TimeZone
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /**
@@ -32,48 +31,21 @@ import kotlin.math.roundToInt
  */
 class DeviceContextProvider(private val context: Context) {
 
-    // Sentinel value to indicate "not cached yet"
-    private object NotCached
-
-    private val cachedContext = AtomicReference<Any>(NotCached)
-
-    private val cacheLock = Any()
-
     companion object {
         private const val SDK_NAME = "metarouter-android-sdk"
         private val SDK_VERSION = BuildConfig.SDK_VERSION
         private const val UNKNOWN = "unknown"
     }
 
+    private val cachedContext: EventContext by lazy { generateContext() }
+
     /**
      * Get complete event context with all metadata.
-     * Returns cached context if available.
+     * Cached on first call for app lifetime.
      *
      * @return Complete EventContext with all metadata
      */
-    fun getContext(): EventContext {
-        // Check if we have a valid cache
-        val cached = cachedContext.get()
-        if (cached !== NotCached) {
-            return cached as EventContext
-        }
-
-        // Cache miss - generate context
-        return synchronized(cacheLock) {
-            // Double-check after acquiring lock
-            val recheck = cachedContext.get()
-            if (recheck !== NotCached) {
-                return recheck as EventContext
-            }
-
-            val newContext = generateContext()
-
-            // Update cache
-            cachedContext.set(newContext)
-
-            newContext
-        }
-    }
+    fun getContext(): EventContext = cachedContext
 
     /**
      * Generate fresh context information by collecting all metadata.

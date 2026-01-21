@@ -15,35 +15,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Main client for the MetaRouter Analytics SDK.
- *
- * Lifecycle:
- * - IDLE → INITIALIZING → READY → RESETTING → IDLE
- * - READY → DISABLED (terminal state for fatal errors)
- *
- * Architecture:
- * - IdentityManager: Manages anonymousId, userId, groupId
- * - DeviceContextProvider: Provides device, app, OS, screen, network context
- * - EventEnrichmentService: Enriches events with identity, context, messageId
- * - EventQueue: Thread-safe FIFO queue with overflow handling
- *
- * Thread Safety:
- * - All public methods are thread-safe
- * - Lifecycle state managed with AtomicReference
- * - Event operations are lock-free after initialization
- * - Initialization and reset use mutex for coordination
- *
- * This is a stub implementation for PR scope: event creation and queueing only.
- * Networking, flushing, circuit breaker will be added in future PRs.
- */
 class MetaRouterAnalyticsClient private constructor(
     private val context: Context,
-    private val options: InitOptions
+    private val options: InitOptions,
+    private val injectedIdentityManager: IdentityManager? = null,
+    private val injectedContextProvider: DeviceContextProvider? = null,
+    private val injectedEnrichmentService: EventEnrichmentService? = null,
+    private val injectedEventQueue: EventQueue? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -60,27 +40,37 @@ class MetaRouterAnalyticsClient private constructor(
             client.initializeInternal()
             return client
         }
+
+        /**
+         * Initialize with injected dependencies (for testing).
+         */
+        internal suspend fun initialize(
+            context: Context,
+            options: InitOptions,
+            identityManager: IdentityManager? = null,
+            contextProvider: DeviceContextProvider? = null,
+            enrichmentService: EventEnrichmentService? = null,
+            eventQueue: EventQueue? = null
+        ): MetaRouterAnalyticsClient {
+            val client = MetaRouterAnalyticsClient(
+                context.applicationContext,
+                options,
+                identityManager,
+                contextProvider,
+                enrichmentService,
+                eventQueue
+            )
+            client.initializeInternal()
+            return client
+        }
     }
 
     // Lifecycle state
     private val lifecycleState = AtomicReference(LifecycleState.IDLE)
-    private val initMutex = Mutex()
 
     // Coroutine scope for async operations
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Event processing channel - mimics Swift actor behavior by serializing event enrichment.
-    // This provides natural backpressure: if enrichment can't keep up with incoming events,
-    // the channel buffer fills up and trySend() will drop events with a clear signal.
-    //
-    // Similar to Swift's actor mailbox, this ensures:
-    // - Events are processed sequentially (one enrichment at a time)
-    // - No unbounded coroutine spawning under load
-    // - Clear backpressure behavior when overwhelmed
-    //
-    // Channel capacity is set to half of maxQueueEvents to provide a buffer for incoming
-    // events while they're being enriched. This prevents blocking the caller while still
-    // maintaining bounded memory usage. Total system capacity = channelSize + queueSize.
     private lateinit var eventChannel: Channel<BaseEvent>
 
     // Core components
@@ -92,13 +82,11 @@ class MetaRouterAnalyticsClient private constructor(
     /**
      * Internal initialization. Sets up all components.
      */
-    private suspend fun initializeInternal() = initMutex.withLock {
-        if (lifecycleState.get() != LifecycleState.IDLE) {
+    private suspend fun initializeInternal() {
+        if (!lifecycleState.compareAndSet(LifecycleState.IDLE, LifecycleState.INITIALIZING)) {
             Logger.warn("Attempted to initialize client that is not in IDLE state")
             return
         }
-
-        lifecycleState.set(LifecycleState.INITIALIZING)
         Logger.log("Initializing MetaRouter Analytics SDK...")
 
         try {
@@ -115,15 +103,15 @@ class MetaRouterAnalyticsClient private constructor(
             eventChannel = Channel(capacity = channelCapacity)
             Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
 
-            // Initialize components
-            identityManager = IdentityManager(context)
-            contextProvider = DeviceContextProvider(context)
-            enrichmentService = EventEnrichmentService(
+            // Initialize components (use injected or create new)
+            identityManager = injectedIdentityManager ?: IdentityManager(context)
+            contextProvider = injectedContextProvider ?: DeviceContextProvider(context)
+            enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
                 writeKey = options.writeKey
             )
-            eventQueue = EventQueue(maxCapacity = options.maxQueueEvents)
+            eventQueue = injectedEventQueue ?: EventQueue(maxCapacity = options.maxQueueEvents)
 
             // Pre-load anonymous ID to ensure it's generated during init
             val anonymousId = identityManager.getAnonymousId()
@@ -281,14 +269,13 @@ class MetaRouterAnalyticsClient private constructor(
         Logger.log("Flush called (stub - networking not yet implemented)")
     }
 
-    override suspend fun reset() = initMutex.withLock {
-        if (lifecycleState.get() == LifecycleState.IDLE) {
-            Logger.log("SDK already in IDLE state")
+    override suspend fun reset() {
+        if (!lifecycleState.compareAndSet(LifecycleState.READY, LifecycleState.RESETTING)) {
+            Logger.warn("Cannot reset - SDK not in READY state (current: ${lifecycleState.get()})")
             return
         }
 
         Logger.log("Resetting SDK...")
-        lifecycleState.set(LifecycleState.RESETTING)
 
         try {
             // Clear event queue
