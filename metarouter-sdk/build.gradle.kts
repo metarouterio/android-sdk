@@ -53,6 +53,7 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
@@ -61,4 +62,5 @@ dependencies {
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("io.mockk:mockk:1.13.9")
     testImplementation("io.mockk:mockk-android:1.13.9")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
