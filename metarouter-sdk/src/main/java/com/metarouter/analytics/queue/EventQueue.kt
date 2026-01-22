@@ -31,4 +31,28 @@ class EventQueue(private val maxCapacity: Int = 2000) {
             Logger.log("Cleared $count events from queue")
         }
     }
+
+    /**
+     * Remove and return up to [max] events from the front of the queue.
+     * Used by Dispatcher to get events for batch transmission.
+     *
+     * @param max Maximum number of events to drain
+     * @return List of events removed from the front
+     */
+    @Synchronized
+    fun drain(max: Int): List<EnrichedEventPayload> {
+        val n = minOf(max, queue.size)
+        return (0 until n).map { queue.removeFirst() }
+    }
+
+    /**
+     * Add events back to the front of the queue.
+     * Used to requeue failed batches for retry.
+     *
+     * @param events Events to add to front (order preserved)
+     */
+    @Synchronized
+    fun requeueToFront(events: List<EnrichedEventPayload>) {
+        events.asReversed().forEach { queue.addFirst(it) }
+    }
 }

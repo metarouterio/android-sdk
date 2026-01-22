@@ -394,8 +394,10 @@ class MetaRouterAnalyticsClientTest {
         assertNotNull(debugInfo["flushIntervalSeconds"])
         assertNotNull(debugInfo["maxQueueEvents"])
         assertNotNull(debugInfo["anonymousId"])
-        assertNotNull(debugInfo["flushInFlight"])
+        assertNotNull(debugInfo["dispatcherRunning"])
+        assertNotNull(debugInfo["maxBatchSize"])
         assertNotNull(debugInfo["circuitState"])
+        assertNotNull(debugInfo["circuitCooldownMs"])
 
         assertEquals("ready", debugInfo["lifecycle"])
         assertEquals("https://events.example.com", debugInfo["ingestionHost"])
