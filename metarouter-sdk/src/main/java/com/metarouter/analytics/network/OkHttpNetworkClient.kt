@@ -38,8 +38,10 @@ class OkHttpNetworkClient : NetworkClient {
             .post(requestBody)
             .header("Content-Type", "application/json")
 
-        additionalHeaders?.forEach { (key, value) ->
-            requestBuilder.header(key, value)
+        if (additionalHeaders != null) {
+            for ((key, value) in additionalHeaders) {
+                requestBuilder.header(key, value)
+            }
         }
 
         val request = requestBuilder.build()
@@ -66,8 +68,8 @@ class OkHttpNetworkClient : NetworkClient {
         enqueue(object : Callback {
             override fun onResponse(call: Call, response: Response) {
                 val headers = mutableMapOf<String, String>()
-                response.headers.forEach { (name, value) ->
-                    headers[name] = value
+                for (i in 0 until response.headers.size) {
+                    headers[response.headers.name(i)] = response.headers.value(i)
                 }
 
                 val body = response.body?.bytes()
