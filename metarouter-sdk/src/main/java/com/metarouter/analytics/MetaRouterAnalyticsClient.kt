@@ -349,8 +349,15 @@ class MetaRouterAnalyticsClient private constructor(
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })
-                put("flushInFlight", false) // TODO: Implement in networking PR
-                put("circuitState", "CLOSED") // TODO: Implement in networking PR
+
+                // Dispatcher info
+                val dispatcherInfo = dispatcher.getDebugInfo()
+                put("dispatcherRunning", dispatcherInfo.isRunning)
+                put("maxBatchSize", dispatcherInfo.maxBatchSize)
+
+                // Circuit breaker info
+                put("circuitState", circuitBreaker.getState()::class.simpleName)
+                put("circuitCooldownMs", circuitBreaker.getRemainingCooldownMs())
             } else {
                 put("anonymousId", null)
                 put("userId", null)
