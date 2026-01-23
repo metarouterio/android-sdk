@@ -1,6 +1,7 @@
 package com.metarouter.analytics.network
 
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Fake NetworkClient for unit testing.
@@ -24,8 +25,8 @@ class FakeNetworkClient : NetworkClient {
     /** If set, postJson will throw this exception instead of returning a response. */
     var nextException: IOException? = null
 
-    /** Records all requests made for verification. */
-    val requests = mutableListOf<Request>()
+    /** Records all requests made for verification (thread-safe). */
+    val requests: MutableList<Request> = CopyOnWriteArrayList()
 
     data class Request(
         val url: String,

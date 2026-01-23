@@ -2,8 +2,13 @@ package com.metarouter.analytics
 
 import android.content.Context
 import com.metarouter.analytics.context.DeviceContextProvider
+import com.metarouter.analytics.dispatcher.Dispatcher
+import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.NetworkClient
+import com.metarouter.analytics.network.OkHttpNetworkClient
 import com.metarouter.analytics.queue.EventQueue
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.EventType
@@ -12,7 +17,9 @@ import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.utils.toJsonElementMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
@@ -23,7 +30,10 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedIdentityManager: IdentityManager? = null,
     private val injectedContextProvider: DeviceContextProvider? = null,
     private val injectedEnrichmentService: EventEnrichmentService? = null,
-    private val injectedEventQueue: EventQueue? = null
+    private val injectedEventQueue: EventQueue? = null,
+    private val injectedNetworkClient: NetworkClient? = null,
+    private val injectedCircuitBreaker: CircuitBreaker? = null,
+    private val injectedDispatcher: Dispatcher? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -50,7 +60,10 @@ class MetaRouterAnalyticsClient private constructor(
             identityManager: IdentityManager? = null,
             contextProvider: DeviceContextProvider? = null,
             enrichmentService: EventEnrichmentService? = null,
-            eventQueue: EventQueue? = null
+            eventQueue: EventQueue? = null,
+            networkClient: NetworkClient? = null,
+            circuitBreaker: CircuitBreaker? = null,
+            dispatcher: Dispatcher? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -58,7 +71,10 @@ class MetaRouterAnalyticsClient private constructor(
                 identityManager,
                 contextProvider,
                 enrichmentService,
-                eventQueue
+                eventQueue,
+                networkClient,
+                circuitBreaker,
+                dispatcher
             )
             client.initializeInternal()
             return client
@@ -78,6 +94,9 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var contextProvider: DeviceContextProvider
     private lateinit var enrichmentService: EventEnrichmentService
     private lateinit var eventQueue: EventQueue
+    private lateinit var networkClient: NetworkClient
+    private lateinit var circuitBreaker: CircuitBreaker
+    private lateinit var dispatcher: Dispatcher
 
     /**
      * Internal initialization. Sets up all components.
@@ -95,10 +114,6 @@ class MetaRouterAnalyticsClient private constructor(
                 Logger.debugEnabled = true
             }
 
-            // Initialize event channel with capacity based on maxQueueEvents
-            // Using half of maxQueueEvents for channel buffer provides a reasonable
-            // balance between burst handling and memory usage. The remaining capacity
-            // is in the EventQueue for enriched events.
             val channelCapacity = (options.maxQueueEvents / 2).coerceAtLeast(100)
             eventChannel = Channel(capacity = channelCapacity)
             Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
@@ -113,12 +128,25 @@ class MetaRouterAnalyticsClient private constructor(
             )
             eventQueue = injectedEventQueue ?: EventQueue(maxCapacity = options.maxQueueEvents)
 
+            networkClient = injectedNetworkClient ?: OkHttpNetworkClient()
+            circuitBreaker = injectedCircuitBreaker ?: CircuitBreaker()
+
+            dispatcher = injectedDispatcher ?: Dispatcher(
+                options = options,
+                queue = eventQueue,
+                networkClient = networkClient,
+                circuitBreaker = circuitBreaker,
+                scope = scope,
+                config = DispatcherConfig()
+            )
+
             // Pre-load anonymous ID to ensure it's generated during init
             val anonymousId = identityManager.getAnonymousId()
             Logger.log("SDK initialized with anonymous ID: ${maskId(anonymousId)}")
 
-            // Start event processor coroutine (similar to Swift actor executor)
             startEventProcessor()
+
+            dispatcher.start()
 
             lifecycleState.set(LifecycleState.READY)
             Logger.log("MetaRouter Analytics SDK ready")
@@ -228,7 +256,7 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     /**
-     * Start the event processor coroutine (similar to Swift actor executor).
+     * Start the event processor coroutine
      * This single consumer processes events sequentially, preventing unbounded concurrency.
      */
     private fun startEventProcessor() {
@@ -265,8 +293,11 @@ class MetaRouterAnalyticsClient private constructor(
     // ===== Lifecycle Management =====
 
     override suspend fun flush() {
-        // TODO: Implement flush in networking PR
-        Logger.log("Flush called (stub - networking not yet implemented)")
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.warn("Cannot flush - SDK not ready (state: ${lifecycleState.get()})")
+            return
+        }
+        dispatcher.flush()
     }
 
     override suspend fun reset() {
@@ -278,6 +309,15 @@ class MetaRouterAnalyticsClient private constructor(
         Logger.log("Resetting SDK...")
 
         try {
+            // Stop dispatcher first
+            dispatcher.stop()
+
+            // Close event channel to stop processor coroutine
+            eventChannel.close()
+
+            // Cancel all coroutines in scope
+            scope.cancel()
+
             // Clear event queue
             eventQueue.clear()
 
@@ -317,8 +357,15 @@ class MetaRouterAnalyticsClient private constructor(
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })
-                put("flushInFlight", false) // TODO: Implement in networking PR
-                put("circuitState", "CLOSED") // TODO: Implement in networking PR
+
+                // Dispatcher info
+                val dispatcherInfo = dispatcher.getDebugInfo()
+                put("dispatcherRunning", dispatcherInfo.isRunning)
+                put("maxBatchSize", dispatcherInfo.maxBatchSize)
+
+                // Circuit breaker info
+                put("circuitState", circuitBreaker.getState()::class.simpleName)
+                put("circuitCooldownMs", circuitBreaker.getRemainingCooldownMs())
             } else {
                 put("anonymousId", null)
                 put("userId", null)

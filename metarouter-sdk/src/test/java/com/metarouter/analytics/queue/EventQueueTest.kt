@@ -158,6 +158,115 @@ class EventQueueTest {
         assertEquals(5000, largeQueue.size())
     }
 
+    // ===== Drain Tests =====
+
+    @Test
+    fun `drain removes and returns events from front`() {
+        repeat(5) { i ->
+            queue.enqueue(createMockEvent("msg-$i"))
+        }
+
+        val drained = queue.drain(3)
+
+        assertEquals(3, drained.size)
+        assertEquals("msg-0", drained[0].messageId)
+        assertEquals("msg-1", drained[1].messageId)
+        assertEquals("msg-2", drained[2].messageId)
+        assertEquals(2, queue.size())
+    }
+
+    @Test
+    fun `drain returns all events when max exceeds queue size`() {
+        repeat(3) { i ->
+            queue.enqueue(createMockEvent("msg-$i"))
+        }
+
+        val drained = queue.drain(10)
+
+        assertEquals(3, drained.size)
+        assertEquals(0, queue.size())
+    }
+
+    @Test
+    fun `drain returns empty list when queue is empty`() {
+        val drained = queue.drain(5)
+
+        assertTrue(drained.isEmpty())
+    }
+
+    @Test
+    fun `drain with zero max returns empty list`() {
+        queue.enqueue(createMockEvent("msg-1"))
+
+        val drained = queue.drain(0)
+
+        assertTrue(drained.isEmpty())
+        assertEquals(1, queue.size())
+    }
+
+    // ===== RequeueToFront Tests =====
+
+    @Test
+    fun `requeueToFront adds events to front in order`() {
+        queue.enqueue(createMockEvent("existing-1"))
+        queue.enqueue(createMockEvent("existing-2"))
+
+        val eventsToRequeue = listOf(
+            createMockEvent("requeue-1"),
+            createMockEvent("requeue-2")
+        )
+        queue.requeueToFront(eventsToRequeue)
+
+        // Drain all to verify order
+        val all = queue.drain(10)
+        assertEquals(4, all.size)
+        assertEquals("requeue-1", all[0].messageId)
+        assertEquals("requeue-2", all[1].messageId)
+        assertEquals("existing-1", all[2].messageId)
+        assertEquals("existing-2", all[3].messageId)
+    }
+
+    @Test
+    fun `requeueToFront to empty queue works`() {
+        val events = listOf(
+            createMockEvent("msg-1"),
+            createMockEvent("msg-2")
+        )
+        queue.requeueToFront(events)
+
+        assertEquals(2, queue.size())
+        val drained = queue.drain(10)
+        assertEquals("msg-1", drained[0].messageId)
+        assertEquals("msg-2", drained[1].messageId)
+    }
+
+    @Test
+    fun `requeueToFront with empty list does nothing`() {
+        queue.enqueue(createMockEvent("msg-1"))
+
+        queue.requeueToFront(emptyList())
+
+        assertEquals(1, queue.size())
+    }
+
+    @Test
+    fun `drain and requeueToFront roundtrip preserves events`() {
+        repeat(5) { i ->
+            queue.enqueue(createMockEvent("msg-$i"))
+        }
+
+        val drained = queue.drain(3)
+        queue.requeueToFront(drained)
+
+        assertEquals(5, queue.size())
+        val all = queue.drain(10)
+        assertEquals("msg-0", all[0].messageId)
+        assertEquals("msg-1", all[1].messageId)
+        assertEquals("msg-2", all[2].messageId)
+        assertEquals("msg-3", all[3].messageId)
+        assertEquals("msg-4", all[4].messageId)
+    }
+
     private fun createMockEvent(messageId: String): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,

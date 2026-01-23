@@ -89,7 +89,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.track("Button Clicked")
-        delay(100) // Allow time for async enqueue
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -106,7 +106,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         client.track("Button Clicked", properties)
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -118,7 +118,7 @@ class MetaRouterAnalyticsClientTest {
 
         // Empty event name is technically allowed per spec
         client.track("")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) >= 0)
@@ -129,7 +129,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.identify("user-123")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -147,7 +147,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         client.identify("user-123", traits)
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -158,7 +158,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.identify("")
-        delay(100)
+        delay(50) // Brief delay - queue should stay empty
 
         val debugInfo = client.getDebugInfo()
         assertEquals(0, debugInfo["queueLength"])
@@ -169,7 +169,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.group("company-456")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -187,7 +187,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         client.group("company-456", traits)
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -198,7 +198,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.group("")
-        delay(100)
+        delay(50) // Brief delay - queue should stay empty
 
         val debugInfo = client.getDebugInfo()
         assertEquals(0, debugInfo["queueLength"])
@@ -229,7 +229,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         client.screen("Home Screen", properties)
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -240,7 +240,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.page("Landing Page")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -256,7 +256,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         client.page("Landing Page", properties)
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -267,7 +267,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.alias("new-user-id")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
         assertTrue((debugInfo["queueLength"] as Int) > 0)
@@ -279,7 +279,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.alias("")
-        delay(100)
+        delay(50) // Brief delay - queue should stay empty
 
         val debugInfo = client.getDebugInfo()
         assertEquals(0, debugInfo["queueLength"])
@@ -309,7 +309,7 @@ class MetaRouterAnalyticsClientTest {
         // Alias event
         client.alias("new-user-123")
 
-        delay(200) // Allow time for all async operations
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) == 6 }
 
         val debugInfo = client.getDebugInfo()
         assertEquals(6, debugInfo["queueLength"]) // All 6 events enqueued
@@ -320,7 +320,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.track("Test Event")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
 
@@ -339,7 +339,7 @@ class MetaRouterAnalyticsClientTest {
 
         client.track("Event 1")
         client.identify("user-123")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) >= 2 }
 
         client.reset()
 
@@ -358,7 +358,7 @@ class MetaRouterAnalyticsClientTest {
         client.reset()
 
         client.track("Event After Reset")
-        delay(100)
+        delay(50) // Brief delay - queue should stay empty since SDK is not ready
 
         val debugInfo = client.getDebugInfo()
         assertEquals("idle", debugInfo["lifecycle"])
@@ -382,7 +382,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.track("Test Event")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
 
@@ -394,8 +394,10 @@ class MetaRouterAnalyticsClientTest {
         assertNotNull(debugInfo["flushIntervalSeconds"])
         assertNotNull(debugInfo["maxQueueEvents"])
         assertNotNull(debugInfo["anonymousId"])
-        assertNotNull(debugInfo["flushInFlight"])
+        assertNotNull(debugInfo["dispatcherRunning"])
+        assertNotNull(debugInfo["maxBatchSize"])
         assertNotNull(debugInfo["circuitState"])
+        assertNotNull(debugInfo["circuitCooldownMs"])
 
         assertEquals("ready", debugInfo["lifecycle"])
         assertEquals("https://events.example.com", debugInfo["ingestionHost"])
@@ -425,7 +427,8 @@ class MetaRouterAnalyticsClientTest {
         repeat(10) { i ->
             client.track("Event $i")
         }
-        delay(200)
+        // Wait until queue has processed and is at capacity (5 events)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) == 5 }
 
         val debugInfo = client.getDebugInfo()
 
@@ -440,7 +443,7 @@ class MetaRouterAnalyticsClientTest {
         val client = MetaRouterAnalyticsClient.initialize(context, options)
 
         client.track("Event 1")
-        delay(100)
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         client.flush()
 
@@ -458,7 +461,10 @@ class MetaRouterAnalyticsClientTest {
 
         client1.track("Event 1")
         client2.track("Event 2")
-        delay(100)
+        awaitCondition {
+            (client1.getDebugInfo()["queueLength"] as Int) > 0 &&
+            (client2.getDebugInfo()["queueLength"] as Int) > 0
+        }
 
         val debugInfo1 = client1.getDebugInfo()
         val debugInfo2 = client2.getDebugInfo()
