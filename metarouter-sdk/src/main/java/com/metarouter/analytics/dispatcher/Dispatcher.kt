@@ -18,7 +18,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -187,7 +190,7 @@ class Dispatcher(
         val events = queue.drain(maxBatchSize.get())
         if (events.isEmpty()) return emptyList()
 
-        val sentAt = Instant.now().toString()
+        val sentAt = getIso8601Timestamp()
         Logger.log("Drained ${events.size} events for batch (sentAt: $sentAt)")
 
         return events.map { event ->
@@ -255,7 +258,8 @@ class Dispatcher(
                 circuitBreaker.onNonRetryable()
                 val currentSize = maxBatchSize.get()
                 if (currentSize > 1) {
-                    val newSize = maxBatchSize.updateAndGet { maxOf(1, it / 2) }
+                    val newSize = maxOf(1, currentSize / 2)
+                    maxBatchSize.set(newSize)
                     queue.requeueToFront(batch)
                     Logger.warn("Payload too large (413) - reduced batch size to $newSize, retrying")
                     scheduleRetry(500)
@@ -291,6 +295,17 @@ class Dispatcher(
             flush()
         }
         Logger.log("Scheduled retry in ${delayMs}ms")
+    }
+
+    /**
+     * Generate an ISO 8601 timestamp.
+     * Creates a new SimpleDateFormat instance each time for thread safety.
+     */
+    private fun getIso8601Timestamp(): String {
+        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        return format.format(Date())
     }
 }
 
