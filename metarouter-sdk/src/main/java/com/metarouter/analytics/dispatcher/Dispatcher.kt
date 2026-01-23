@@ -18,7 +18,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Orchestrates batching and transmission of events from EventQueue to the ingestion endpoint.
@@ -45,15 +48,16 @@ class Dispatcher(
     private val scope: CoroutineScope,
     private val config: DispatcherConfig = DispatcherConfig()
 ) {
-    // State
     private var maxBatchSize: Int = config.initialMaxBatchSize
     private var flushJob: Job? = null
     private var retryJob: Job? = null
     private val flushMutex = Mutex()
     private var tracingEnabled = false
 
-    // JSON serializer for batch payloads
     private val json = Json { encodeDefaults = true }
+    private val iso8601Format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
 
     /**
      * Callback invoked when a fatal configuration error occurs (401, 403, 404).
@@ -187,7 +191,7 @@ class Dispatcher(
         val events = queue.drain(maxBatchSize)
         if (events.isEmpty()) return emptyList()
 
-        val sentAt = Instant.now().toString()
+        val sentAt = iso8601Format.format(Date())
         Logger.log("Drained ${events.size} events for batch (sentAt: $sentAt)")
 
         return events.map { event ->

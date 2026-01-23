@@ -112,10 +112,6 @@ class MetaRouterAnalyticsClient private constructor(
                 Logger.debugEnabled = true
             }
 
-            // Initialize event channel with capacity based on maxQueueEvents
-            // Using half of maxQueueEvents for channel buffer provides a reasonable
-            // balance between burst handling and memory usage. The remaining capacity
-            // is in the EventQueue for enriched events.
             val channelCapacity = (options.maxQueueEvents / 2).coerceAtLeast(100)
             eventChannel = Channel(capacity = channelCapacity)
             Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
@@ -130,11 +126,9 @@ class MetaRouterAnalyticsClient private constructor(
             )
             eventQueue = injectedEventQueue ?: EventQueue(maxCapacity = options.maxQueueEvents)
 
-            // Initialize network components
             networkClient = injectedNetworkClient ?: OkHttpNetworkClient()
             circuitBreaker = injectedCircuitBreaker ?: CircuitBreaker()
 
-            // Initialize dispatcher
             dispatcher = injectedDispatcher ?: Dispatcher(
                 options = options,
                 queue = eventQueue,
@@ -148,10 +142,8 @@ class MetaRouterAnalyticsClient private constructor(
             val anonymousId = identityManager.getAnonymousId()
             Logger.log("SDK initialized with anonymous ID: ${maskId(anonymousId)}")
 
-            // Start event processor coroutine (similar to Swift actor executor)
             startEventProcessor()
 
-            // Start dispatcher for periodic flush
             dispatcher.start()
 
             lifecycleState.set(LifecycleState.READY)
@@ -262,7 +254,7 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     /**
-     * Start the event processor coroutine (similar to Swift actor executor).
+     * Start the event processor coroutine
      * This single consumer processes events sequentially, preventing unbounded concurrency.
      */
     private fun startEventProcessor() {
@@ -357,17 +349,8 @@ class MetaRouterAnalyticsClient private constructor(
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })
-
-                // Dispatcher info
-                val dispatcherInfo = dispatcher.getDebugInfo()
-                put("dispatcherRunning", dispatcherInfo.isRunning)
-                put("maxBatchSize", dispatcherInfo.maxBatchSize)
-                put("pendingRetry", dispatcherInfo.pendingRetry)
-                put("tracingEnabled", dispatcherInfo.tracingEnabled)
-
-                // Circuit breaker info
-                put("circuitState", circuitBreaker.getState().toString())
-                put("circuitCooldownMs", circuitBreaker.getRemainingCooldownMs())
+                put("flushInFlight", false) // TODO: Implement in networking PR
+                put("circuitState", "CLOSED") // TODO: Implement in networking PR
             } else {
                 put("anonymousId", null)
                 put("userId", null)
