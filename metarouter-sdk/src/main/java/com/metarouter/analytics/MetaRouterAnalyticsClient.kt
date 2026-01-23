@@ -17,7 +17,9 @@ import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.utils.toJsonElementMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
@@ -309,6 +311,12 @@ class MetaRouterAnalyticsClient private constructor(
         try {
             // Stop dispatcher first
             dispatcher.stop()
+
+            // Close event channel to stop processor coroutine
+            eventChannel.close()
+
+            // Cancel all coroutines in scope
+            scope.cancel()
 
             // Clear event queue
             eventQueue.clear()

@@ -48,11 +48,19 @@ class EventQueue(private val maxCapacity: Int = 2000) {
     /**
      * Add events back to the front of the queue.
      * Used to requeue failed batches for retry.
+     * If at capacity, drops newest events to make room (preserves failed batch priority).
      *
      * @param events Events to add to front (order preserved)
      */
     @Synchronized
     fun requeueToFront(events: List<EnrichedEventPayload>) {
-        events.asReversed().forEach { queue.addFirst(it) }
+        events.asReversed().forEach { event ->
+            if (queue.size >= maxCapacity) {
+                queue.removeLastOrNull()?.let {
+                    Logger.warn("Queue at capacity during requeue - dropped newest event (messageId: ${it.messageId})")
+                }
+            }
+            queue.addFirst(event)
+        }
     }
 }

@@ -15,6 +15,8 @@ import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -396,6 +398,31 @@ class DispatcherTest {
 
         assertTrue("Should have made at least one request", networkClient.requests.size >= 1)
         dispatcher.stop()
+    }
+
+    // ===== Concurrent Flush Tests =====
+
+    @Test
+    fun `concurrent flush attempts are prevented by mutex`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        // Enqueue enough events for multiple batches
+        repeat(25) { i ->
+            queue.enqueue(createEvent("msg-$i"))
+        }
+
+        // Launch multiple concurrent flushes
+        val flushJobs = (1..5).map {
+            async { dispatcher.flush() }
+        }
+        flushJobs.awaitAll()
+
+        // Should process all events in batches (25 events / 10 batch size = 3 batches)
+        // But concurrent flushes should be skipped, so we expect exactly the right number
+        // of requests to process all events without duplication
+        assertEquals(0, queue.size()) // All events should be processed
+        assertEquals(3, networkClient.requests.size) // 3 batches of 10, 10, 5
     }
 
     // ===== Helper Methods =====

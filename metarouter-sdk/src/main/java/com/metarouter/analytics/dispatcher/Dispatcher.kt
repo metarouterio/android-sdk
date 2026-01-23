@@ -18,10 +18,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Orchestrates batching and transmission of events from EventQueue to the ingestion endpoint.
@@ -48,16 +46,14 @@ class Dispatcher(
     private val scope: CoroutineScope,
     private val config: DispatcherConfig = DispatcherConfig()
 ) {
-    private var maxBatchSize: Int = config.initialMaxBatchSize
+    private val maxBatchSize = AtomicInteger(config.initialMaxBatchSize)
     private var flushJob: Job? = null
     private var retryJob: Job? = null
     private val flushMutex = Mutex()
+    @Volatile
     private var tracingEnabled = false
 
     private val json = Json { encodeDefaults = true }
-    private val iso8601Format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
 
     /**
      * Callback invoked when a fatal configuration error occurs (401, 403, 404).
@@ -150,7 +146,7 @@ class Dispatcher(
     fun getDebugInfo(): DispatcherDebugInfo {
         return DispatcherDebugInfo(
             isRunning = flushJob?.isActive == true,
-            maxBatchSize = maxBatchSize,
+            maxBatchSize = maxBatchSize.get(),
             pendingRetry = retryJob?.isActive == true,
             tracingEnabled = tracingEnabled
         )
@@ -188,10 +184,10 @@ class Dispatcher(
      * Returns pairs of (original event, event with sentAt).
      */
     private fun drainBatch(): List<Pair<EnrichedEventPayload, EnrichedEventPayload>> {
-        val events = queue.drain(maxBatchSize)
+        val events = queue.drain(maxBatchSize.get())
         if (events.isEmpty()) return emptyList()
 
-        val sentAt = iso8601Format.format(Date())
+        val sentAt = Instant.now().toString()
         Logger.log("Drained ${events.size} events for batch (sentAt: $sentAt)")
 
         return events.map { event ->
@@ -257,10 +253,11 @@ class Dispatcher(
             }
             413 -> {
                 circuitBreaker.onNonRetryable()
-                if (maxBatchSize > 1) {
-                    maxBatchSize = maxOf(1, maxBatchSize / 2)
+                val currentSize = maxBatchSize.get()
+                if (currentSize > 1) {
+                    val newSize = maxBatchSize.updateAndGet { maxOf(1, it / 2) }
                     queue.requeueToFront(batch)
-                    Logger.warn("Payload too large (413) - reduced batch size to $maxBatchSize, retrying")
+                    Logger.warn("Payload too large (413) - reduced batch size to $newSize, retrying")
                     scheduleRetry(500)
                 } else {
                     Logger.warn("Dropping oversized event(s) at batchSize=1 - cannot reduce further")
