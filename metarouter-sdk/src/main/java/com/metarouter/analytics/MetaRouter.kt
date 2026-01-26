@@ -195,6 +195,9 @@ object MetaRouter {
                 // Clear the store
                 store.clear()
 
+                // Reset the proxy so it can be bound to a new client
+                proxy.unbind()
+
                 // Reset initialization flag
                 initializationStarted = false
 
@@ -210,6 +213,7 @@ object MetaRouter {
     internal suspend fun resetForTesting() {
         initMutex.withLock {
             store.clear()
+            proxy.resetForTesting()
             initializationStarted = false
         }
     }

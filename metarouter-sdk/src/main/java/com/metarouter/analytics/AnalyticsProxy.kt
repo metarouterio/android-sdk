@@ -185,4 +185,22 @@ class AnalyticsProxy(
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()
         }
     }
+
+    /**
+     * Unbind the proxy and clear pending calls.
+     * Used when resetting the SDK to allow re-initialization.
+     */
+    internal suspend fun unbind() {
+        mutex.withLock {
+            realClient.set(null)
+            synchronized(pendingCalls) {
+                pendingCalls.clear()
+            }
+        }
+    }
+
+    /**
+     * Reset proxy state for testing. Alias for unbind().
+     */
+    internal suspend fun resetForTesting() = unbind()
 }
