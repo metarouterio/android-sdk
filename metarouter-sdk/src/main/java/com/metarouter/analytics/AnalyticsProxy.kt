@@ -160,15 +160,18 @@ class AnalyticsProxy(
     }
 
     override suspend fun getDebugInfo(): Map<String, Any?> {
-        val client = realClient.get()
-        return if (client != null) {
-            client.getDebugInfo() + ("bound" to true)
-        } else {
-            mapOf(
-                "lifecycle" to "initializing",
-                "pendingCalls" to pendingCallCount(),
-                "bound" to false
-            )
+        // Use mutex to ensure consistent read with bind/unbind operations
+        return mutex.withLock {
+            val client = realClient.get()
+            if (client != null) {
+                client.getDebugInfo() + ("bound" to true)
+            } else {
+                mapOf(
+                    "lifecycle" to "initializing",
+                    "pendingCalls" to pendingCallCount(),
+                    "bound" to false
+                )
+            }
         }
     }
 
