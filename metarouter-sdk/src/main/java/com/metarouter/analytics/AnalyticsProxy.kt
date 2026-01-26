@@ -111,6 +111,24 @@ class AnalyticsProxy(
         }
     }
 
+    override fun setAdvertisingId(advertisingId: String) {
+        val client = realClient.get()
+        if (client != null) {
+            client.setAdvertisingId(advertisingId)
+        } else {
+            enqueue(PendingCall.SetAdvertisingId(advertisingId))
+        }
+    }
+
+    override fun clearAdvertisingId() {
+        val client = realClient.get()
+        if (client != null) {
+            client.clearAdvertisingId()
+        } else {
+            enqueue(PendingCall.ClearAdvertisingId)
+        }
+    }
+
     override suspend fun flush() {
         val client = realClient.get()
         if (client != null) {
@@ -180,6 +198,8 @@ class AnalyticsProxy(
             is PendingCall.Screen -> client.screen(call.name, call.properties)
             is PendingCall.Page -> client.page(call.name, call.properties)
             is PendingCall.Alias -> client.alias(call.newUserId)
+            is PendingCall.SetAdvertisingId -> client.setAdvertisingId(call.advertisingId)
+            is PendingCall.ClearAdvertisingId -> client.clearAdvertisingId()
             is PendingCall.Flush -> client.flush()
             is PendingCall.Reset -> client.reset()
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()

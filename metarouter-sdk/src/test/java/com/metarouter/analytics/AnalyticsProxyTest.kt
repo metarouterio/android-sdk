@@ -104,6 +104,20 @@ class AnalyticsProxyTest {
         assertTrue(Logger.debugEnabled)
     }
 
+    @Test
+    fun `queues setAdvertisingId calls before binding`() = runTest {
+        proxy.setAdvertisingId("test-gaid-123")
+
+        assertEquals(1, proxy.pendingCallCount())
+    }
+
+    @Test
+    fun `queues clearAdvertisingId calls before binding`() = runTest {
+        proxy.clearAdvertisingId()
+
+        assertEquals(1, proxy.pendingCallCount())
+    }
+
     // ===== Replay After Binding =====
 
     @Test
@@ -192,6 +206,24 @@ class AnalyticsProxyTest {
         verify { mockClient.enableDebugLogging() }
     }
 
+    @Test
+    fun `replays setAdvertisingId call`() = runTest {
+        proxy.setAdvertisingId("test-gaid-456")
+
+        proxy.bind(mockClient)
+
+        verify { mockClient.setAdvertisingId("test-gaid-456") }
+    }
+
+    @Test
+    fun `replays clearAdvertisingId call`() = runTest {
+        proxy.clearAdvertisingId()
+
+        proxy.bind(mockClient)
+
+        verify { mockClient.clearAdvertisingId() }
+    }
+
     // ===== Direct Forwarding After Binding =====
 
     @Test
@@ -229,6 +261,24 @@ class AnalyticsProxyTest {
         proxy.reset()
 
         coVerify { mockClient.reset() }
+    }
+
+    @Test
+    fun `forwards setAdvertisingId directly after binding`() = runTest {
+        proxy.bind(mockClient)
+
+        proxy.setAdvertisingId("direct-gaid")
+
+        verify { mockClient.setAdvertisingId("direct-gaid") }
+    }
+
+    @Test
+    fun `forwards clearAdvertisingId directly after binding`() = runTest {
+        proxy.bind(mockClient)
+
+        proxy.clearAdvertisingId()
+
+        verify { mockClient.clearAdvertisingId() }
     }
 
     @Test
