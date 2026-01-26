@@ -37,7 +37,8 @@ data class DeviceContext(
     val manufacturer: String,
     val model: String,
     val name: String,
-    val type: String
+    val type: String,
+    val advertisingId: String? = null
 )
 
 /**
