@@ -283,13 +283,14 @@ class AnalyticsProxyTest {
 
     @Test
     fun `forwards getDebugInfo to real client after binding`() = runTest {
-        val expectedInfo = mapOf("lifecycle" to "ready", "queueLength" to 5)
-        coEvery { mockClient.getDebugInfo() } returns expectedInfo
+        val clientInfo = mapOf("lifecycle" to "ready", "queueLength" to 5)
+        coEvery { mockClient.getDebugInfo() } returns clientInfo
 
         proxy.bind(mockClient)
         val debugInfo = proxy.getDebugInfo()
 
-        assertEquals(expectedInfo, debugInfo)
+        // Proxy adds "bound" to the client's debug info
+        assertEquals(clientInfo + ("bound" to true), debugInfo)
     }
 
     // ===== Queue Overflow =====

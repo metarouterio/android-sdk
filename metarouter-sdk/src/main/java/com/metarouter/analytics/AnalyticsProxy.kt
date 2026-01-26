@@ -162,7 +162,7 @@ class AnalyticsProxy(
     override suspend fun getDebugInfo(): Map<String, Any?> {
         val client = realClient.get()
         return if (client != null) {
-            client.getDebugInfo()
+            client.getDebugInfo() + ("bound" to true)
         } else {
             mapOf(
                 "lifecycle" to "initializing",
