@@ -255,6 +255,26 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
+    override fun setAdvertisingId(advertisingId: String) {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.warn("Cannot set advertisingId - SDK not ready")
+            return
+        }
+        scope.launch {
+            identityManager.setAdvertisingId(advertisingId)
+        }
+    }
+
+    override fun clearAdvertisingId() {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.warn("Cannot clear advertisingId - SDK not ready")
+            return
+        }
+        scope.launch {
+            identityManager.clearAdvertisingId()
+        }
+    }
+
     /**
      * Start the event processor coroutine
      * This single consumer processes events sequentially, preventing unbounded concurrency.
