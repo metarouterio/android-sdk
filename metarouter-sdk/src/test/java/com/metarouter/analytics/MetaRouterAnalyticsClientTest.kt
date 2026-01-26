@@ -474,4 +474,55 @@ class MetaRouterAnalyticsClientTest {
         assertTrue((debugInfo1["queueLength"] as Int) > 0)
         assertTrue((debugInfo2["queueLength"] as Int) > 0)
     }
+
+
+    @Test
+    fun `onBackground pauses dispatcher`() = runBlocking {
+        val client = MetaRouterAnalyticsClient.initialize(context, options)
+
+        // Verify dispatcher is running initially
+        val initialInfo = client.getDebugInfo()
+        assertTrue(initialInfo["dispatcherRunning"] as Boolean)
+
+        client.onBackground()
+
+        val afterBackgroundInfo = client.getDebugInfo()
+        assertFalse(afterBackgroundInfo["dispatcherRunning"] as Boolean)
+        assertTrue(afterBackgroundInfo["dispatcherPaused"] as Boolean)
+    }
+
+    @Test
+    fun `onForeground resumes dispatcher`() = runBlocking {
+        val client = MetaRouterAnalyticsClient.initialize(context, options)
+
+        // Go to background first
+        client.onBackground()
+        val afterBackgroundInfo = client.getDebugInfo()
+        assertTrue(afterBackgroundInfo["dispatcherPaused"] as Boolean)
+
+        // Come back to foreground
+        client.onForeground()
+
+        val afterForegroundInfo = client.getDebugInfo()
+        assertTrue(afterForegroundInfo["dispatcherRunning"] as Boolean)
+        assertFalse(afterForegroundInfo["dispatcherPaused"] as Boolean)
+    }
+
+    @Test
+    fun `onBackground is no-op when not ready`() = runBlocking {
+        val client = MetaRouterAnalyticsClient.initialize(context, options)
+        client.reset()
+
+        // Should not throw when called in non-ready state
+        client.onBackground()
+    }
+
+    @Test
+    fun `onForeground is no-op when not ready`() = runBlocking {
+        val client = MetaRouterAnalyticsClient.initialize(context, options)
+        client.reset()
+
+        // Should not throw when called in non-ready state
+        client.onForeground()
+    }
 }

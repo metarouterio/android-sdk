@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import android.content.Context
+import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,9 @@ object MetaRouter {
 
     @Volatile
     private var initializationStarted = false
+
+    @Volatile
+    private var lifecycleObserver: AppLifecycleObserver? = null
 
     /**
      * Create an analytics client with synchronous return.
@@ -99,6 +103,14 @@ object MetaRouter {
             if (!stored) {
                 Logger.warn("Another client was stored while initializing - this should not happen")
             }
+
+
+            lifecycleObserver = AppLifecycleObserver(
+                scope = scope,
+                onForeground = { client.onForeground() },
+                onBackground = { client.onBackground() }
+            )
+            lifecycleObserver?.register()
 
             proxy.bind(client)
             Logger.log("MetaRouter initialization complete")
@@ -188,6 +200,10 @@ object MetaRouter {
             initMutex.withLock {
                 Logger.log("Resetting MetaRouter...")
 
+                // Unregister lifecycle observer
+                lifecycleObserver?.unregister()
+                lifecycleObserver = null
+
                 // Get the stored client and reset it
                 val client = store.get()
                 client?.reset()
@@ -212,6 +228,8 @@ object MetaRouter {
      */
     internal suspend fun resetForTesting() {
         initMutex.withLock {
+            lifecycleObserver?.unregister()
+            lifecycleObserver = null
             store.clear()
             proxy.resetForTesting()
             initializationStarted = false
