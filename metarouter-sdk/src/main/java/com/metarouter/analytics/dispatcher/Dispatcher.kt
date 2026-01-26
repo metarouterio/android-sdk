@@ -55,6 +55,8 @@ class Dispatcher(
     private val flushMutex = Mutex()
     @Volatile
     private var tracingEnabled = false
+    @Volatile
+    private var paused = false
 
     private val json = Json { encodeDefaults = true }
 
@@ -89,8 +91,39 @@ class Dispatcher(
         flushJob = null
         retryJob?.cancel()
         retryJob = null
+        paused = false
         Logger.log("Dispatcher stopped")
     }
+
+    /**
+     * Pause the dispatcher - stops flush loop and cancels pending retries.
+     */
+    fun pause() {
+        flushJob?.cancel()
+        flushJob = null
+        retryJob?.cancel()
+        retryJob = null
+        paused = true
+        Logger.log("Dispatcher paused")
+    }
+
+    /**
+     * Resume the dispatcher - restarts flush loop if paused.
+     */
+    fun resume() {
+        if (!paused) {
+            Logger.log("Dispatcher resume called but not paused - no-op")
+            return
+        }
+        paused = false
+        start()
+        Logger.log("Dispatcher resumed")
+    }
+
+    /**
+     * Check if the dispatcher is currently paused.
+     */
+    fun isPaused(): Boolean = paused
 
     // ===== Operations =====
 

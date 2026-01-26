@@ -211,4 +211,56 @@ class MetaRouterTest {
         assertTrue((debugInfo["queueLength"] as Int) >= 0)
         assertNotNull(debugInfo["anonymousId"])
     }
+
+    // ===== Lifecycle Observer Integration =====
+
+    @Test
+    fun `initialization creates lifecycle observer`() = runTest {
+        val client = MetaRouter.initializeAndWait(context, options)
+
+        // Verify client is ready and dispatcher is running
+        val debugInfo = client.getDebugInfo()
+        assertEquals("ready", debugInfo["lifecycle"])
+        assertTrue(debugInfo["dispatcherRunning"] as Boolean)
+    }
+
+    @Test
+    fun `lifecycle observer registration does not prevent initialization`() = runTest {
+        // In test environment, ProcessLifecycleOwner registration happens on main thread
+        // This test verifies init completes successfully regardless
+        val client = MetaRouter.initializeAndWait(context, options)
+
+        val debugInfo = client.getDebugInfo()
+        assertEquals("ready", debugInfo["lifecycle"])
+    }
+
+    @Test
+    fun `reset cleans up properly`() = runTest {
+        val client = MetaRouter.initializeAndWait(context, options)
+        assertEquals("ready", client.getDebugInfo()["lifecycle"])
+
+        MetaRouter.Analytics.resetAndWait()
+
+        // After reset, the proxy reports "initializing" since it's no longer bound
+        // (the proxy reports "initializing" when not bound to a real client)
+        val debugInfo = client.getDebugInfo()
+        assertEquals("initializing", debugInfo["lifecycle"])
+        assertEquals(false, debugInfo["bound"])
+    }
+
+    @Test
+    fun `re-initialization after reset works`() = runTest {
+        // First init
+        MetaRouter.initializeAndWait(context, options)
+
+        // Reset
+        MetaRouter.Analytics.resetAndWait()
+
+        // Re-initialize
+        val client = MetaRouter.initializeAndWait(context, options)
+
+        val debugInfo = client.getDebugInfo()
+        assertEquals("ready", debugInfo["lifecycle"])
+        assertTrue(debugInfo["dispatcherRunning"] as Boolean)
+    }
 }

@@ -382,6 +382,97 @@ class DispatcherTest {
         assertFalse(dispatcher.getDebugInfo().isRunning)
     }
 
+    // ===== Pause/Resume Tests =====
+
+    @Test
+    fun `pause stops flush loop`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+        assertTrue(dispatcher.getDebugInfo().isRunning)
+
+        dispatcher.pause()
+
+        assertFalse(dispatcher.getDebugInfo().isRunning)
+        assertTrue(dispatcher.isPaused())
+    }
+
+    @Test
+    fun `pause cancels pending retry job`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+
+        dispatcher.pause()
+
+        assertFalse(dispatcher.getDebugInfo().pendingRetry)
+    }
+
+    @Test
+    fun `resume restarts flush loop when paused`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+        dispatcher.pause()
+        assertTrue(dispatcher.isPaused())
+
+        dispatcher.resume()
+
+        assertTrue(dispatcher.getDebugInfo().isRunning)
+        assertFalse(dispatcher.isPaused())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `resume is idempotent when already running`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+        assertFalse(dispatcher.isPaused())
+
+        dispatcher.resume()  // Should not throw or change state
+
+        assertTrue(dispatcher.getDebugInfo().isRunning)
+        assertFalse(dispatcher.isPaused())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `isPaused returns false when never started`() = runTest {
+        val dispatcher = createDispatcher()
+
+        assertFalse(dispatcher.isPaused())
+    }
+
+    @Test
+    fun `isPaused returns false when running`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+
+        assertFalse(dispatcher.isPaused())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `isPaused returns true after pause`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+        dispatcher.pause()
+
+        assertTrue(dispatcher.isPaused())
+    }
+
+    @Test
+    fun `pause is idempotent`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.start()
+
+        dispatcher.pause()
+        dispatcher.pause()  // Should not throw
+
+        assertTrue(dispatcher.isPaused())
+    }
+
     // ===== Periodic Flush Tests =====
 
     @Test

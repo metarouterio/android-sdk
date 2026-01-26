@@ -300,6 +300,36 @@ class MetaRouterAnalyticsClient private constructor(
         dispatcher.flush()
     }
 
+    /**
+     * Called when app goes to background.
+     * Flushes pending events and pauses the dispatcher.
+     */
+    internal suspend fun onBackground() {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.log("onBackground ignored - SDK not ready (state: ${lifecycleState.get()})")
+            return
+        }
+        Logger.log("App backgrounded - flushing and pausing dispatcher")
+        flush()
+        dispatcher.pause()
+    }
+
+    /**
+     * Called when app comes to foreground.
+     * Flushes pending events and resumes the dispatcher.
+     */
+    internal fun onForeground() {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.log("onForeground ignored - SDK not ready (state: ${lifecycleState.get()})")
+            return
+        }
+        Logger.log("App foregrounded - flushing and resuming dispatcher")
+        scope.launch {
+            flush()
+        }
+        dispatcher.resume()
+    }
+
     override suspend fun reset() {
         if (!lifecycleState.compareAndSet(LifecycleState.READY, LifecycleState.RESETTING)) {
             Logger.warn("Cannot reset - SDK not in READY state (current: ${lifecycleState.get()})")
@@ -361,6 +391,7 @@ class MetaRouterAnalyticsClient private constructor(
                 // Dispatcher info
                 val dispatcherInfo = dispatcher.getDebugInfo()
                 put("dispatcherRunning", dispatcherInfo.isRunning)
+                put("dispatcherPaused", dispatcher.isPaused())
                 put("maxBatchSize", dispatcherInfo.maxBatchSize)
 
                 // Circuit breaker info
