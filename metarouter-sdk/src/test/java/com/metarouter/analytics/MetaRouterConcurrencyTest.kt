@@ -20,6 +20,23 @@ class MetaRouterConcurrencyTest {
     private lateinit var context: Context
     private lateinit var options: InitOptions
 
+    /**
+     * Wait for a condition to become true, polling every 50ms.
+     * More reliable than fixed delays on slow CI runners.
+     */
+    private suspend fun awaitCondition(
+        timeoutMs: Long = 5000,
+        condition: suspend () -> Boolean
+    ) {
+        val start = System.currentTimeMillis()
+        while (!condition()) {
+            if (System.currentTimeMillis() - start > timeoutMs) {
+                throw AssertionError("Condition not met within ${timeoutMs}ms")
+            }
+            delay(50)
+        }
+    }
+
     @Before
     fun setup() {
         context = mockk(relaxed = true)
@@ -89,8 +106,11 @@ class MetaRouterConcurrencyTest {
 
         trackJobs.awaitAll()
 
-        // Wait for initialization to complete
-        delay(1000)
+        // Wait for initialization to complete using condition-based polling
+        awaitCondition {
+            val info = client.getDebugInfo()
+            info["lifecycle"] == "ready"
+        }
 
         // All events should have been processed (either queued then replayed, or forwarded)
         val debugInfo = client.getDebugInfo()
@@ -121,8 +141,11 @@ class MetaRouterConcurrencyTest {
 
         operations.awaitAll()
 
-        // Wait for initialization
-        delay(500)
+        // Wait for initialization using condition-based polling
+        awaitCondition {
+            val info = client.getDebugInfo()
+            info["lifecycle"] == "ready"
+        }
 
         // Should be in a consistent state
         val debugInfo = client.getDebugInfo()
