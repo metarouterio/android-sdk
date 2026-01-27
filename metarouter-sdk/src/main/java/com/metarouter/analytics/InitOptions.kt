@@ -1,5 +1,7 @@
 package com.metarouter.analytics
 
+import com.metarouter.analytics.utils.Logger
+
 /**
  * Configuration options for initializing the MetaRouter Analytics SDK.
  *

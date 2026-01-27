@@ -32,11 +32,16 @@ class AnalyticsProxy(
                 return
             }
 
-            Logger.log("Binding AnalyticsProxy to real client, replaying ${pendingCalls.size} pending calls")
+            val callsToReplay = synchronized(pendingCalls) {
+                val calls = pendingCalls.toList()
+                pendingCalls.clear()
+                calls
+            }
 
-            // Replay all pending calls
-            while (pendingCalls.isNotEmpty()) {
-                val call = pendingCalls.removeFirst()
+            Logger.log("Binding AnalyticsProxy to real client, replaying ${callsToReplay.size} pending calls")
+
+            // Replay all pending calls (outside synchronized block to avoid blocking enqueue)
+            for (call in callsToReplay) {
                 replayCall(client, call)
             }
 
@@ -175,6 +180,15 @@ class AnalyticsProxy(
         }
     }
 
+    override fun setTracing(enabled: Boolean) {
+        val client = realClient.get()
+        if (client != null) {
+            client.setTracing(enabled)
+        } else {
+            enqueue(PendingCall.SetTracing(enabled))
+        }
+    }
+
 
     /**
      * Enqueue a pending call, dropping oldest if at capacity.
@@ -201,6 +215,7 @@ class AnalyticsProxy(
             is PendingCall.Screen -> client.screen(call.name, call.properties)
             is PendingCall.Page -> client.page(call.name, call.properties)
             is PendingCall.Alias -> client.alias(call.newUserId)
+            is PendingCall.SetTracing -> client.setTracing(call.enabled)
             is PendingCall.SetAdvertisingId -> client.setAdvertisingId(call.advertisingId)
             is PendingCall.ClearAdvertisingId -> client.clearAdvertisingId()
             is PendingCall.Flush -> client.flush()

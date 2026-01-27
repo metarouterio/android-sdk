@@ -176,10 +176,15 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then send to channel for enrichment
+        // Set identity synchronously to prevent race conditions with subsequent track() calls
+        if (!identityManager.setUserId(userId)) {
+            Logger.warn("Failed to set user ID")
+            return
+        }
+
+        // Enqueue event async (non-blocking)
         scope.launch {
             try {
-                identityManager.setUserId(userId)
                 enqueueEvent(
                     BaseEvent(
                         type = EventType.IDENTIFY,
@@ -198,10 +203,15 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then send to channel for enrichment
+        // Set group synchronously to prevent race conditions with subsequent track() calls
+        if (!identityManager.setGroupId(groupId)) {
+            Logger.warn("Failed to set group ID")
+            return
+        }
+
+        // Enqueue event async (non-blocking)
         scope.launch {
             try {
-                identityManager.setGroupId(groupId)
                 enqueueEvent(
                     BaseEvent(
                         type = EventType.GROUP,
@@ -240,10 +250,15 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Update identity manager then send to channel for enrichment
+        // Set identity synchronously to prevent race conditions with subsequent track() calls
+        if (!identityManager.setUserId(newUserId)) {
+            Logger.warn("Failed to set user ID for alias")
+            return
+        }
+
+        // Enqueue event async (non-blocking)
         scope.launch {
             try {
-                identityManager.setUserId(newUserId)
                 enqueueEvent(
                     BaseEvent(
                         type = EventType.ALIAS
@@ -439,5 +454,9 @@ class MetaRouterAnalyticsClient private constructor(
      */
     private fun maskWriteKey(writeKey: String): String {
         return if (writeKey.length <= 4) "***" else "***${writeKey.takeLast(4)}"
+    }
+
+    override fun setTracing(enabled: Boolean) {
+        dispatcher.setTracing(enabled)
     }
 }

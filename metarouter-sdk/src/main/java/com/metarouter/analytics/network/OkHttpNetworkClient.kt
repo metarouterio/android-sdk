@@ -16,13 +16,23 @@ import kotlin.coroutines.resumeWithException
 /**
  * OkHttp implementation of [NetworkClient].
  *
- * Uses a single OkHttpClient instance with default connection pooling.
- * Timeouts are configured per-request.
+ * Uses a single OkHttpClient instance with connection pooling and default timeouts.
+ * Timeouts are configured at construction to maximize connection reuse.
  */
-class OkHttpNetworkClient : NetworkClient {
+class OkHttpNetworkClient(
+    timeoutMs: Long = DEFAULT_TIMEOUT_MS
+) : NetworkClient {
+
+    companion object {
+        const val DEFAULT_TIMEOUT_MS = 8_000L
+    }
 
     private val client = OkHttpClient.Builder()
         .retryOnConnectionFailure(false)  // Circuit breaker handles retries
+        .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+        .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+        .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+        .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
         .build()
 
     override suspend fun postJson(
@@ -46,15 +56,7 @@ class OkHttpNetworkClient : NetworkClient {
 
         val request = requestBuilder.build()
 
-        // Configure timeout for this specific call
-        val callClient = client.newBuilder()
-            .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-            .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-            .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-            .callTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-            .build()
-
-        return callClient.newCall(request).await()
+        return client.newCall(request).await()
     }
 
     /**

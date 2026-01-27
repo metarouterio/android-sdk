@@ -144,6 +144,9 @@ class OkHttpNetworkClientTest {
 
     @Test
     fun `respects timeout`() = runBlocking {
+        // Create client with short timeout for this test
+        val shortTimeoutClient = OkHttpNetworkClient(timeoutMs = 200L)
+
         // Use throttleBody to simulate a slow response that will trigger timeout
         // throttleBody(bytesPerPeriod, period, timeUnit) - very slow throughput triggers read timeout
         server.enqueue(MockResponse()
@@ -152,10 +155,10 @@ class OkHttpNetworkClientTest {
             .throttleBody(1, 1, java.util.concurrent.TimeUnit.SECONDS))  // 1 byte per second
 
         try {
-            client.postJson(
+            shortTimeoutClient.postJson(
                 url = server.url("/events").toString(),
                 body = "{}".toByteArray(),
-                timeoutMs = 200  // 200ms timeout, body takes ~1000 seconds at 1 byte/sec
+                timeoutMs = 200  // Ignored, uses construction-time timeout
             )
             fail("Expected timeout exception")
         } catch (e: IOException) {
