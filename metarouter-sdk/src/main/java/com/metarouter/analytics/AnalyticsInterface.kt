@@ -116,4 +116,14 @@ interface AnalyticsInterface {
      * @return Map of debug information
      */
     suspend fun getDebugInfo(): Map<String, Any?>
+
+    /**
+     * Enable or disable tracing for network requests.
+     *
+     * When enabled, the SDK will add a "Trace: true" header to batch requests,
+     * which can be used for debugging and monitoring on the server side.
+     *
+     * @param enabled Whether to enable tracing
+     */
+    fun setTracing(enabled: Boolean)
 }

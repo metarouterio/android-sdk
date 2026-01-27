@@ -53,6 +53,7 @@ class AnalyticsExtensionsTest {
         override suspend fun reset() {}
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
+        override fun setTracing(enabled: Boolean) {}
     }
 
     @Test

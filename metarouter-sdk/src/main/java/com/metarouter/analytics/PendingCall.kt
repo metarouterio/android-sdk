@@ -13,6 +13,7 @@ sealed class PendingCall {
     data class Screen(val name: String, val properties: Map<String, Any?>?) : PendingCall()
     data class Page(val name: String, val properties: Map<String, Any?>?) : PendingCall()
     data class Alias(val newUserId: String) : PendingCall()
+    data class SetTracing(val enabled: Boolean) : PendingCall()
     object Flush : PendingCall()
     object Reset : PendingCall()
     object EnableDebugLogging : PendingCall()

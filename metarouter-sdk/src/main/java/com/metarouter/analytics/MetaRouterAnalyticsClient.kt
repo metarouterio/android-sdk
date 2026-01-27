@@ -435,4 +435,8 @@ class MetaRouterAnalyticsClient private constructor(
     private fun maskWriteKey(writeKey: String): String {
         return if (writeKey.length <= 4) "***" else "***${writeKey.takeLast(4)}"
     }
+
+    override fun setTracing(enabled: Boolean) {
+        dispatcher.setTracing(enabled)
+    }
 }

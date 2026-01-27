@@ -160,6 +160,15 @@ class AnalyticsProxy(
         }
     }
 
+    override fun setTracing(enabled: Boolean) {
+        val client = realClient.get()
+        if (client != null) {
+            client.setTracing(enabled)
+        } else {
+            enqueue(PendingCall.SetTracing(enabled))
+        }
+    }
+
 
     /**
      * Enqueue a pending call, dropping oldest if at capacity.
@@ -186,6 +195,7 @@ class AnalyticsProxy(
             is PendingCall.Screen -> client.screen(call.name, call.properties)
             is PendingCall.Page -> client.page(call.name, call.properties)
             is PendingCall.Alias -> client.alias(call.newUserId)
+            is PendingCall.SetTracing -> client.setTracing(call.enabled)
             is PendingCall.Flush -> client.flush()
             is PendingCall.Reset -> client.reset()
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()
