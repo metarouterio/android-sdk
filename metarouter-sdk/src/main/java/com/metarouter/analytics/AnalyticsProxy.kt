@@ -32,11 +32,17 @@ class AnalyticsProxy(
                 return
             }
 
-            Logger.log("Binding AnalyticsProxy to real client, replaying ${pendingCalls.size} pending calls")
+            // Drain pending calls under synchronized lock to interlock with enqueue()
+            val callsToReplay = synchronized(pendingCalls) {
+                val calls = pendingCalls.toList()
+                pendingCalls.clear()
+                calls
+            }
 
-            // Replay all pending calls
-            while (pendingCalls.isNotEmpty()) {
-                val call = pendingCalls.removeFirst()
+            Logger.log("Binding AnalyticsProxy to real client, replaying ${callsToReplay.size} pending calls")
+
+            // Replay all pending calls (outside synchronized block to avoid blocking enqueue)
+            for (call in callsToReplay) {
                 replayCall(client, call)
             }
 

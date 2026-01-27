@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Singleton facade for the MetaRouter Analytics SDK.
@@ -24,8 +25,8 @@ object MetaRouter {
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    @Volatile
-    private var initializationStarted = false
+    /** Atomic flag to ensure only one initialization attempt proceeds. */
+    private val initializationStarted = AtomicBoolean(false)
 
     @Volatile
     private var lifecycleObserver: AppLifecycleObserver? = null
@@ -42,12 +43,12 @@ object MetaRouter {
      * @return AnalyticsInterface proxy that can be used immediately
      */
     fun createAnalyticsClient(context: Context, options: InitOptions): AnalyticsInterface {
-        if (initializationStarted) {
+        // Atomic check-and-set prevents race conditions when called from multiple threads
+        if (!initializationStarted.compareAndSet(false, true)) {
             Logger.warn("MetaRouter already initialized - returning existing proxy")
             return proxy
         }
 
-        initializationStarted = true
         Logger.log("MetaRouter.createAnalyticsClient starting async initialization")
 
         scope.launch {
@@ -56,7 +57,7 @@ object MetaRouter {
             } catch (e: Exception) {
                 Logger.error("Background initialization failed: ${e.message}")
                 // Reset flag to allow retry
-                initializationStarted = false
+                initializationStarted.set(false)
             }
         }
 
@@ -80,7 +81,7 @@ object MetaRouter {
             return proxy
         }
 
-        initializationStarted = true
+        initializationStarted.set(true)
         initializeInternal(context, options)
         return proxy
     }
@@ -147,7 +148,7 @@ object MetaRouter {
          * @throws IllegalStateException if not initialized
          */
         fun client(): AnalyticsInterface {
-            if (!initializationStarted) {
+            if (!initializationStarted.get()) {
                 throw IllegalStateException(
                     "MetaRouter not initialized. Call MetaRouter.Analytics.initialize() first."
                 )
@@ -162,7 +163,7 @@ object MetaRouter {
          * reinitialize before using the SDK.
          */
         fun reset() {
-            if (!initializationStarted) {
+            if (!initializationStarted.get()) {
                 Logger.warn("Cannot reset - MetaRouter not initialized")
                 return
             }
@@ -176,7 +177,7 @@ object MetaRouter {
          * Reset the SDK state and wait for completion.
          */
         suspend fun resetAndWait() {
-            if (!initializationStarted) {
+            if (!initializationStarted.get()) {
                 Logger.warn("Cannot reset - MetaRouter not initialized")
                 return
             }
@@ -215,7 +216,7 @@ object MetaRouter {
                 proxy.unbind()
 
                 // Reset initialization flag
-                initializationStarted = false
+                initializationStarted.set(false)
 
                 Logger.log("MetaRouter reset complete - re-initialization required")
             }
@@ -232,7 +233,7 @@ object MetaRouter {
             lifecycleObserver = null
             store.clear()
             proxy.resetForTesting()
-            initializationStarted = false
+            initializationStarted.set(false)
         }
     }
 }

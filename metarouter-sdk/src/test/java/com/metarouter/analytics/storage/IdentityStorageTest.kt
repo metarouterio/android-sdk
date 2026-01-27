@@ -42,9 +42,15 @@ class IdentityStorageTest {
 
     @Test
     fun `set stores and get retrieves value`() {
-        val stored = storage.set(KEY_ANONYMOUS_ID, "test-id")
-        assertTrue(stored)
+        storage.set(KEY_ANONYMOUS_ID, "test-id")
         assertEquals("test-id", storage.get(KEY_ANONYMOUS_ID))
+    }
+
+    @Test
+    fun `setSync stores value and returns true`() {
+        val stored = storage.setSync(KEY_ANONYMOUS_ID, "test-id-sync")
+        assertTrue(stored)
+        assertEquals("test-id-sync", storage.get(KEY_ANONYMOUS_ID))
     }
 
     @Test
