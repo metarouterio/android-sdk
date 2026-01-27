@@ -67,6 +67,29 @@ interface AnalyticsInterface {
     fun alias(newUserId: String)
 
     /**
+     * Set the advertising ID for attribution and advertising use cases.
+     *
+     * This is NOT automatically collected - the app must provide it after obtaining
+     * user consent and fetching the GAID from Google Play Services.
+     *
+     * The advertising ID is persisted and restored on SDK initialization.
+     * It will be included in the context.device.advertisingId field of all events.
+     *
+     * @param advertisingId The Google Advertising ID (GAID) or equivalent
+     */
+    fun setAdvertisingId(advertisingId: String)
+
+    /**
+     * Clear the advertising ID for privacy compliance.
+     *
+     * Call this when:
+     * - User opts out of ad tracking
+     * - User requests data deletion (GDPR/CCPA)
+     * - User revokes consent for advertising
+     */
+    fun clearAdvertisingId()
+
+    /**
      * Manually trigger a flush of all queued events.
      *
      * Events are automatically flushed based on the configured flush interval and queue size,

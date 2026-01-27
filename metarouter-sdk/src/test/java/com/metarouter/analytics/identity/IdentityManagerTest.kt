@@ -3,6 +3,7 @@ package com.metarouter.analytics.identity
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.metarouter.analytics.storage.IdentityStorage
+import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_ADVERTISING_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_ANONYMOUS_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_GROUP_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_USER_ID
@@ -140,6 +141,53 @@ class IdentityManagerTest {
         assertEquals("company-persistent", IdentityManager(context).getGroupId())
     }
 
+    // Advertising ID
+
+    @Test
+    fun `getAdvertisingId returns null when not set`() = runTest {
+        assertNull(manager.getAdvertisingId())
+    }
+
+    @Test
+    fun `setAdvertisingId stores and retrieves value`() = runTest {
+        assertTrue(manager.setAdvertisingId("test-gaid-123"))
+        assertEquals("test-gaid-123", manager.getAdvertisingId())
+    }
+
+    @Test
+    fun `setAdvertisingId rejects empty string`() = runTest {
+        assertFalse(manager.setAdvertisingId(""))
+        assertNull(manager.getAdvertisingId())
+    }
+
+    @Test
+    fun `setAdvertisingId rejects blank string`() = runTest {
+        assertFalse(manager.setAdvertisingId("   "))
+        assertNull(manager.getAdvertisingId())
+    }
+
+    @Test
+    fun `clearAdvertisingId removes value`() = runTest {
+        manager.setAdvertisingId("test-gaid-123")
+        assertEquals("test-gaid-123", manager.getAdvertisingId())
+
+        manager.clearAdvertisingId()
+        assertNull(manager.getAdvertisingId())
+    }
+
+    @Test
+    fun `getAdvertisingId persists across instances`() = runTest {
+        IdentityManager(context).setAdvertisingId("persistent-gaid")
+        assertEquals("persistent-gaid", IdentityManager(context).getAdvertisingId())
+    }
+
+    @Test
+    fun `clearAdvertisingId on non-existent value is safe`() = runTest {
+        assertNull(manager.getAdvertisingId())
+        manager.clearAdvertisingId() // Should not throw
+        assertNull(manager.getAdvertisingId())
+    }
+
     // Reset
 
     @Test
@@ -147,12 +195,14 @@ class IdentityManagerTest {
         manager.getAnonymousId()
         manager.setUserId("user-123")
         manager.setGroupId("company-456")
+        manager.setAdvertisingId("test-gaid")
 
         manager.reset()
 
         assertNull(storage.get(KEY_ANONYMOUS_ID))
         assertNull(storage.get(KEY_USER_ID))
         assertNull(storage.get(KEY_GROUP_ID))
+        assertNull(storage.get(KEY_ADVERTISING_ID))
     }
 
     @Test

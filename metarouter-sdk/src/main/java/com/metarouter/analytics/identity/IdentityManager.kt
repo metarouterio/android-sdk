@@ -2,6 +2,7 @@ package com.metarouter.analytics.identity
 
 import android.content.Context
 import com.metarouter.analytics.storage.IdentityStorage
+import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_ADVERTISING_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_ANONYMOUS_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_GROUP_ID
 import com.metarouter.analytics.storage.IdentityStorage.Companion.KEY_USER_ID
@@ -62,7 +63,23 @@ class IdentityManager(
         return true
     }
 
-    fun reset() {
+    suspend fun getAdvertisingId(): String? = storage.get(KEY_ADVERTISING_ID)
+
+    suspend fun setAdvertisingId(advertisingId: String): Boolean {
+        if (advertisingId.isBlank()) {
+            Logger.warn("Cannot set empty advertising ID")
+            return false
+        }
+        storage.set(KEY_ADVERTISING_ID, advertisingId)
+        return true
+    }
+
+    suspend fun clearAdvertisingId() {
+        storage.remove(KEY_ADVERTISING_ID)
+        Logger.log("Advertising ID cleared")
+    }
+
+    suspend fun reset() {
         storage.clear()
         Logger.log("Identity manager reset")
     }

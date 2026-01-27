@@ -4,7 +4,10 @@ import android.content.Context
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.types.BaseEvent
+import com.metarouter.analytics.types.DeviceContext
+import com.metarouter.analytics.types.EventContext
 import com.metarouter.analytics.types.EventType
+import com.metarouter.analytics.types.LibraryContext
 import com.metarouter.analytics.utils.MessageIdGenerator
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
@@ -318,5 +321,71 @@ class EventEnrichmentServiceTest {
         val enriched = enrichmentService.enrichEvent(baseEvent)
 
         assertEquals(properties, enriched.properties)
+    }
+
+    @Test
+    fun `enrichEvent includes advertisingId in device context when set`() = runBlocking {
+        val testAdvertisingId = "test-gaid-12345"
+        coEvery { identityManager.getAdvertisingId() } returns testAdvertisingId
+
+        val deviceContext = DeviceContext(
+            manufacturer = "Google",
+            model = "Pixel 6",
+            name = "pixel6",
+            type = "android"
+        )
+        val eventContext = EventContext(
+            device = deviceContext,
+            library = LibraryContext(name = "metarouter-android", version = "1.0.0")
+        )
+        every { contextProvider.getContext() } returns eventContext
+
+        val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
+        val enriched = enrichmentService.enrichEvent(baseEvent)
+
+        assertNotNull(enriched.context.device)
+        assertEquals(testAdvertisingId, enriched.context.device?.advertisingId)
+        coVerify { identityManager.getAdvertisingId() }
+    }
+
+    @Test
+    fun `enrichEvent excludes advertisingId when not set`() = runBlocking {
+        coEvery { identityManager.getAdvertisingId() } returns null
+
+        val deviceContext = DeviceContext(
+            manufacturer = "Google",
+            model = "Pixel 6",
+            name = "pixel6",
+            type = "android"
+        )
+        val eventContext = EventContext(
+            device = deviceContext,
+            library = LibraryContext(name = "metarouter-android", version = "1.0.0")
+        )
+        every { contextProvider.getContext() } returns eventContext
+
+        val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
+        val enriched = enrichmentService.enrichEvent(baseEvent)
+
+        assertNotNull(enriched.context.device)
+        assertNull(enriched.context.device?.advertisingId)
+    }
+
+    @Test
+    fun `enrichEvent handles null device context gracefully when advertisingId set`() = runBlocking {
+        val testAdvertisingId = "test-gaid-12345"
+        coEvery { identityManager.getAdvertisingId() } returns testAdvertisingId
+
+        val eventContext = EventContext(
+            device = null,
+            library = LibraryContext(name = "metarouter-android", version = "1.0.0")
+        )
+        every { contextProvider.getContext() } returns eventContext
+
+        val baseEvent = BaseEvent(type = EventType.TRACK, event = "Test Event")
+        val enriched = enrichmentService.enrichEvent(baseEvent)
+
+        // Should not crash, device remains null
+        assertNull(enriched.context.device)
     }
 }

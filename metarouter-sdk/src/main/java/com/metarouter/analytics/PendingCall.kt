@@ -14,6 +14,8 @@ sealed class PendingCall {
     data class Page(val name: String, val properties: Map<String, Any?>?) : PendingCall()
     data class Alias(val newUserId: String) : PendingCall()
     data class SetTracing(val enabled: Boolean) : PendingCall()
+    data class SetAdvertisingId(val advertisingId: String) : PendingCall()
+    object ClearAdvertisingId : PendingCall()
     object Flush : PendingCall()
     object Reset : PendingCall()
     object EnableDebugLogging : PendingCall()

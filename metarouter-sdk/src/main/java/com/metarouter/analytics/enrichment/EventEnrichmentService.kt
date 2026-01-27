@@ -30,12 +30,20 @@ class EventEnrichmentService(
         val anonymousId = identityManager.getAnonymousId()
         val userId = identityManager.getUserId()
         val groupId = identityManager.getGroupId()
+        val advertisingId = identityManager.getAdvertisingId()
 
         // Use provided timestamp or generate new one
         val timestamp = baseEvent.timestamp ?: getCurrentTimestamp()
 
         // Get device/app context
-        val context = contextProvider.getContext()
+        val baseContext = contextProvider.getContext()
+
+        // Merge advertisingId into device context if present
+        val context = if (advertisingId != null && baseContext.device != null) {
+            baseContext.copy(device = baseContext.device.copy(advertisingId = advertisingId))
+        } else {
+            baseContext
+        }
 
         // Generate unique message ID
         val messageId = MessageIdGenerator.generate()

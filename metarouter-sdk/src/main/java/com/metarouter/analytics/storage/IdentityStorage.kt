@@ -37,5 +37,6 @@ class IdentityStorage(context: Context) {
         const val KEY_ANONYMOUS_ID = "metarouter:anonymous_id"
         const val KEY_USER_ID = "metarouter:user_id"
         const val KEY_GROUP_ID = "metarouter:group_id"
+        const val KEY_ADVERTISING_ID = "metarouter:advertising_id"
     }
 }
