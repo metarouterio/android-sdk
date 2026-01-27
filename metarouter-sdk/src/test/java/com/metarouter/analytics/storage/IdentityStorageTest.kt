@@ -47,13 +47,6 @@ class IdentityStorageTest {
     }
 
     @Test
-    fun `setSync stores value and returns true`() {
-        val stored = storage.setSync(KEY_ANONYMOUS_ID, "test-id-sync")
-        assertTrue(stored)
-        assertEquals("test-id-sync", storage.get(KEY_ANONYMOUS_ID))
-    }
-
-    @Test
     fun `set overwrites previous value`() {
         storage.set(KEY_USER_ID, "first")
         storage.set(KEY_USER_ID, "second")

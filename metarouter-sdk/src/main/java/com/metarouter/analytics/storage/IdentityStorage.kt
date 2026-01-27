@@ -8,9 +8,6 @@ import android.content.Context
  * Uses SharedPreferences with apply() for non-blocking writes. SharedPreferences
  * guarantees that apply() calls are ordered and will be persisted, making this
  * safe for identity storage without risking ANRs on the main thread.
- *
- * Note: For critical data where write confirmation is needed before proceeding,
- * callers should use [setSync] which blocks until the write completes.
  */
 class IdentityStorage(context: Context) {
 
@@ -25,16 +22,6 @@ class IdentityStorage(context: Context) {
     fun set(key: String, value: String) {
         prefs.edit().putString(key, value).apply()
     }
-
-    /**
-     * Store a value synchronously (blocking).
-     * Use this only when you need confirmation the write completed before proceeding.
-     * WARNING: Do not call from the main thread as it may cause ANRs.
-     *
-     * @return true if the write succeeded, false otherwise
-     */
-    fun setSync(key: String, value: String): Boolean =
-        prefs.edit().putString(key, value).commit()
 
     fun remove(key: String) {
         prefs.edit().remove(key).apply()
