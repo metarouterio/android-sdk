@@ -258,24 +258,6 @@ This SDK is built to strictly follow the [MetaRouter SDK Standardization Specifi
 - ✅ Network resilience with circuit breaker and exponential backoff
 - ✅ Automatic lifecycle handling (flush on background)
 
-## Contributing
-
-### Development History
-
-The SDK was built incrementally through focused PRs:
-
-1. **Foundation & Type System** - Core types, event models, validation
-2. **Identity Management** - Persistent identity storage with thread safety
-3. **Context Collection** - Device, App, OS, Screen, Network providers
-4. **Event Enrichment & Queueing** - Enrichment pipeline, overflow handling
-5. **Network Layer & Circuit Breaker** - OkHttp client, resilience patterns
-6. **Dispatcher & Flush Logic** - Coroutine-based batch processing
-7. **Client Initialization & Proxy Pattern** - MetaRouter facade, pre-init queuing
-8. **Lifecycle Integration** - ProcessLifecycleOwner, auto-flush on background
-9. **Advertising ID (GAID)** - Optional advertising ID support
-
-All PRs included comprehensive tests and documentation.
-
 ## Development Setup
 
 ### Prerequisites
@@ -314,4 +296,3 @@ MIT
 
 For issues, questions, or contributions, please visit [GitHub Issues](https://github.com/metarouterio/android-sdk/issues).
 
-## Version History
