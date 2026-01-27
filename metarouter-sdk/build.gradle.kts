@@ -2,6 +2,7 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("maven-publish")
 }
 
 android {
@@ -64,4 +65,17 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.9")
     testImplementation("io.mockk:mockk-android:1.13.9")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                from(components["release"])
+                groupId = "com.metarouter"
+                artifactId = "android-sdk"
+                version = project.findProperty("SDK_VERSION").toString()
+            }
+        }
+    }
 }
