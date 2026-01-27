@@ -24,7 +24,7 @@ class OkHttpNetworkClient(
 ) : NetworkClient {
 
     companion object {
-        const val DEFAULT_TIMEOUT_MS = 30_000L
+        const val DEFAULT_TIMEOUT_MS = 8_000L
     }
 
     private val client = OkHttpClient.Builder()

@@ -45,7 +45,6 @@ object MetaRouter {
     fun createAnalyticsClient(context: Context, options: InitOptions): AnalyticsInterface {
         // Atomic check-and-set prevents race conditions when called from multiple threads
         if (!initializationStarted.compareAndSet(false, true)) {
-            Logger.warn("MetaRouter already initialized - returning existing proxy")
             return proxy
         }
 

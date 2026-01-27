@@ -50,15 +50,6 @@ data class InitOptions(
         require(!trimmedHost.endsWith("/")) {
             "MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash."
         }
-
-        // Security warning for HTTP connections
-        if (trimmedHost.startsWith("http://")) {
-            Logger.warn(
-                "SECURITY WARNING: ingestionHost uses HTTP instead of HTTPS. " +
-                "Analytics data may contain PII and should be transmitted securely. " +
-                "Consider using HTTPS: ${trimmedHost.replace("http://", "https://")}"
-            )
-        }
     }
 
     private fun validateFlushInterval() {
