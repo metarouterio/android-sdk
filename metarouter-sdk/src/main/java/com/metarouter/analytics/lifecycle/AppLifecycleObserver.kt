@@ -50,10 +50,11 @@ class AppLifecycleObserver(
     /**
      * Called when app comes to foreground.
      * Triggers flush and resumes dispatcher.
+     * Wrapped in coroutine to avoid blocking main thread (consistent with onStop).
      */
     override fun onStart(owner: LifecycleOwner) {
         Logger.log("App moved to foreground")
-        onForeground()
+        scope.launch { onForeground() }
     }
 
     /**

@@ -4,7 +4,10 @@ import android.content.Context
 
 /**
  * Thread-safe persistent storage for identity information.
- * Wraps SharedPreferences with commit() for writes (durability) and apply() for removes (performance).
+ *
+ * Uses SharedPreferences with apply() for non-blocking writes. SharedPreferences
+ * guarantees that apply() calls are ordered and will be persisted, making this
+ * safe for identity storage without risking ANRs on the main thread.
  */
 class IdentityStorage(context: Context) {
 
@@ -12,8 +15,13 @@ class IdentityStorage(context: Context) {
 
     fun get(key: String): String? = prefs.getString(key, null)
 
-    fun set(key: String, value: String): Boolean =
-        prefs.edit().putString(key, value).commit()
+    /**
+     * Store a value asynchronously (non-blocking).
+     * The write is guaranteed to be ordered with other apply() calls and will persist.
+     */
+    fun set(key: String, value: String) {
+        prefs.edit().putString(key, value).apply()
+    }
 
     fun remove(key: String) {
         prefs.edit().remove(key).apply()

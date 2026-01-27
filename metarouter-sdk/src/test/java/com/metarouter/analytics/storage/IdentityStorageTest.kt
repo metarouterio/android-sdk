@@ -42,8 +42,7 @@ class IdentityStorageTest {
 
     @Test
     fun `set stores and get retrieves value`() {
-        val stored = storage.set(KEY_ANONYMOUS_ID, "test-id")
-        assertTrue(stored)
+        storage.set(KEY_ANONYMOUS_ID, "test-id")
         assertEquals("test-id", storage.get(KEY_ANONYMOUS_ID))
     }
 

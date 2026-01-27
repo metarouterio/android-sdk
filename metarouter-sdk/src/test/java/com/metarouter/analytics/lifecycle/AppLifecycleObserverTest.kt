@@ -49,6 +49,7 @@ class AppLifecycleObserverTest {
         )
 
         observer.onStart(lifecycleOwner)
+        testScope.testScheduler.advanceUntilIdle()
 
         assertTrue("Foreground callback should be called", foregroundCalled)
         assertFalse("Background callback should not be called", backgroundCalled)
@@ -83,7 +84,9 @@ class AppLifecycleObserverTest {
         )
 
         observer.onStart(lifecycleOwner)
+        testScope.testScheduler.advanceUntilIdle()
         observer.onStart(lifecycleOwner)
+        testScope.testScheduler.advanceUntilIdle()
 
         assertEquals("Foreground callback should be called twice", 2, foregroundCount)
     }
@@ -118,9 +121,11 @@ class AppLifecycleObserverTest {
         )
 
         observer.onStart(lifecycleOwner)
+        testScope.testScheduler.advanceUntilIdle()
         observer.onStop(lifecycleOwner)
         testScope.testScheduler.advanceUntilIdle()
         observer.onStart(lifecycleOwner)
+        testScope.testScheduler.advanceUntilIdle()
         observer.onStop(lifecycleOwner)
         testScope.testScheduler.advanceUntilIdle()
 

@@ -11,14 +11,20 @@ import java.util.UUID
 
 /**
  * Identity management for the MetaRouter SDK.
- * Relies on SharedPreferences' built-in thread safety and caching.
+ *
+ * Thread-safe via SharedPreferences' built-in synchronization.
+ * All operations are non-blocking (uses apply() for writes).
  */
 class IdentityManager(
     private val storage: IdentityStorage
 ) {
     constructor(context: Context) : this(IdentityStorage(context))
 
-    suspend fun getAnonymousId(): String {
+    /**
+     * Get or generate the anonymous ID.
+     * If no ID exists, generates a new UUID and persists it.
+     */
+    fun getAnonymousId(): String {
         storage.get(KEY_ANONYMOUS_ID)?.let { return it }
 
         val newId = UUID.randomUUID().toString()
@@ -27,24 +33,34 @@ class IdentityManager(
         return newId
     }
 
-    suspend fun getUserId(): String? = storage.get(KEY_USER_ID)
+    fun getUserId(): String? = storage.get(KEY_USER_ID)
 
-    suspend fun setUserId(userId: String): Boolean {
+    /**
+     * Set the user ID.
+     * @return true if the ID was set, false if the ID was blank
+     */
+    fun setUserId(userId: String): Boolean {
         if (userId.isBlank()) {
             Logger.warn("Cannot set empty user ID")
             return false
         }
-        return storage.set(KEY_USER_ID, userId)
+        storage.set(KEY_USER_ID, userId)
+        return true
     }
 
-    suspend fun getGroupId(): String? = storage.get(KEY_GROUP_ID)
+    fun getGroupId(): String? = storage.get(KEY_GROUP_ID)
 
-    suspend fun setGroupId(groupId: String): Boolean {
+    /**
+     * Set the group ID.
+     * @return true if the ID was set, false if the ID was blank
+     */
+    fun setGroupId(groupId: String): Boolean {
         if (groupId.isBlank()) {
             Logger.warn("Cannot set empty group ID")
             return false
         }
-        return storage.set(KEY_GROUP_ID, groupId)
+        storage.set(KEY_GROUP_ID, groupId)
+        return true
     }
 
     suspend fun getAdvertisingId(): String? = storage.get(KEY_ADVERTISING_ID)
@@ -54,7 +70,8 @@ class IdentityManager(
             Logger.warn("Cannot set empty advertising ID")
             return false
         }
-        return storage.set(KEY_ADVERTISING_ID, advertisingId)
+        storage.set(KEY_ADVERTISING_ID, advertisingId)
+        return true
     }
 
     suspend fun clearAdvertisingId() {
