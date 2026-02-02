@@ -10,8 +10,7 @@ import com.metarouter.analytics.utils.Logger
  * @property flushIntervalSeconds Interval in seconds between automatic flushes (default: 10)
  * @property debug Enable debug logging (default: false)
  * @property maxQueueEvents Maximum enriched events held in queue (default: 2000).
- *   This value also determines the incoming event channel capacity (maxQueueEvents / 2).
- *   Total system capacity = channelCapacity + queueCapacity.
+ *   This value also determines the incoming event channel capacity (minimum 100).
  *   When limits are exceeded, oldest events are dropped.
  *
  * @throws IllegalArgumentException if validation fails
