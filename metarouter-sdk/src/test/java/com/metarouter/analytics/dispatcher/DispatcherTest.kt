@@ -606,7 +606,7 @@ class DispatcherTest {
             context = EventContext(
                 app = null,
                 device = null,
-                library = LibraryContext(name = "test-sdk", version = "1.0.0"),
+                library = LibraryContext(name = "test-sdk", version = "1.0.1"),
                 locale = null,
                 network = null,
                 os = null,

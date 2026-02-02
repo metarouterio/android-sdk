@@ -123,7 +123,7 @@ The AAR is significantly smaller than iOS frameworks (~200-500KB) due to bytecod
 ### Maven Central
 ```gradle
 dependencies {
-    implementation("com.metarouter:android-sdk:1.0.0")
+    implementation("com.metarouter:android-sdk:1.0.1")
 }
 ```
 
