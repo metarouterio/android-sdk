@@ -212,6 +212,70 @@ class DispatcherTest {
     }
 
     @Test
+    fun `batch size recovers after 413 followed by successful flushes`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // 413 halves batch size: 10 -> 5
+        networkClient.nextResponse = NetworkResponse(413, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        dispatcher.stop()
+        assertEquals(5, dispatcher.getDebugInfo().maxBatchSize)
+
+        // Successful flush doubles it: 5 -> 10 (capped at initial)
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-2"))
+        dispatcher.flush()
+        assertEquals(10, dispatcher.getDebugInfo().maxBatchSize)
+    }
+
+    @Test
+    fun `batch size recovers gradually over multiple successes`() = runTest {
+        val largeConfig = DispatcherConfig(
+            autoFlushThreshold = 100,
+            initialMaxBatchSize = 40,
+            timeoutMs = 5000,
+            endpointPath = "/v1/batch"
+        )
+        val dispatcher = Dispatcher(
+            options = options,
+            queue = queue,
+            networkClient = networkClient,
+            circuitBreaker = circuitBreaker,
+            scope = this,
+            config = largeConfig
+        )
+
+        // Two 413s: 40 -> 20 -> 10
+        networkClient.nextResponse = NetworkResponse(413, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        dispatcher.stop()
+        assertEquals(20, dispatcher.getDebugInfo().maxBatchSize)
+
+        networkClient.nextResponse = NetworkResponse(413, emptyMap(), null)
+        queue.enqueue(createEvent("msg-2"))
+        dispatcher.flush()
+        dispatcher.stop()
+        assertEquals(10, dispatcher.getDebugInfo().maxBatchSize)
+
+        // Recover: 10 -> 20 -> 40
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-3"))
+        dispatcher.flush()
+        assertEquals(20, dispatcher.getDebugInfo().maxBatchSize)
+
+        queue.enqueue(createEvent("msg-4"))
+        dispatcher.flush()
+        assertEquals(40, dispatcher.getDebugInfo().maxBatchSize)
+
+        // Should not exceed initial
+        queue.enqueue(createEvent("msg-5"))
+        dispatcher.flush()
+        assertEquals(40, dispatcher.getDebugInfo().maxBatchSize)
+    }
+
+    @Test
     fun `413 at batchSize 1 drops event`() = runTest {
         val smallConfig = DispatcherConfig(
             autoFlushThreshold = 5,
