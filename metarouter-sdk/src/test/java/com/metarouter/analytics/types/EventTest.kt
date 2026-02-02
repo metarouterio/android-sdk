@@ -67,7 +67,7 @@ class EventTest {
             context = EventContext(
                 app = AppContext(
                     name = "Test App",
-                    version = "1.0.0",
+                    version = "1.0.1",
                     build = "100",
                     namespace = "com.test.app"
                 ),
@@ -79,7 +79,7 @@ class EventTest {
                 ),
                 library = LibraryContext(
                     name = "MetaRouter Android SDK",
-                    version = "1.0.0"
+                    version = "1.0.1"
                 ),
                 os = OSContext(
                     name = "Android",
@@ -123,7 +123,7 @@ class EventTest {
             context = EventContext(
                 app = AppContext(
                     name = "Test App",
-                    version = "1.0.0",
+                    version = "1.0.1",
                     build = "100",
                     namespace = "com.test.app"
                 ),
@@ -135,7 +135,7 @@ class EventTest {
                 ),
                 library = LibraryContext(
                     name = "MetaRouter Android SDK",
-                    version = "1.0.0"
+                    version = "1.0.1"
                 ),
                 os = OSContext(
                     name = "Android",
