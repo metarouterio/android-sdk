@@ -112,7 +112,7 @@ interface AnalyticsInterface {
      */
     suspend fun reset()
 
-    /**
+    /** 
      * Enable debug logging for troubleshooting.
      *
      * When enabled, the SDK will log detailed information about initialization, event

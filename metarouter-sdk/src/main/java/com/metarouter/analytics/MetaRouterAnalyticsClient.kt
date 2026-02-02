@@ -114,7 +114,7 @@ class MetaRouterAnalyticsClient private constructor(
                 Logger.debugEnabled = true
             }
 
-            val channelCapacity = (options.maxQueueEvents / 2).coerceAtLeast(100)
+            val channelCapacity = options.maxQueueEvents
             eventChannel = Channel(capacity = channelCapacity)
             Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
 
@@ -300,7 +300,6 @@ class MetaRouterAnalyticsClient private constructor(
                 try {
                     val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
                     eventQueue.enqueue(enrichedEvent)
-                    Logger.log("Enqueued ${baseEvent.type} event (messageId: ${enrichedEvent.messageId})")
                 } catch (e: Exception) {
                     Logger.error("Failed to enqueue event: ${e.message}")
                 }

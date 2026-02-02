@@ -266,6 +266,13 @@ class Dispatcher(
         return when (response.statusCode) {
             in 200..299 -> {
                 circuitBreaker.onSuccess()
+                // Gradually recover batch size after 413-induced reduction
+                val current = maxBatchSize.get()
+                if (current < config.initialMaxBatchSize) {
+                    val restored = minOf(current * 2, config.initialMaxBatchSize)
+                    maxBatchSize.set(restored)
+                    Logger.log("Batch size recovered to $restored")
+                }
                 Logger.log("Batch sent successfully (${batch.size} events)")
                 true // continue processing
             }
