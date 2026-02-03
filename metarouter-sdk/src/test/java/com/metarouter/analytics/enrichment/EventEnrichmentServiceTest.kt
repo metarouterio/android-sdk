@@ -336,7 +336,7 @@ class EventEnrichmentServiceTest {
         )
         val eventContext = EventContext(
             device = deviceContext,
-            library = LibraryContext(name = "metarouter-android", version = "1.0.1")
+            library = LibraryContext(name = "metarouter-android", version = "1.0.2")
         )
         every { contextProvider.getContext() } returns eventContext
 
@@ -360,7 +360,7 @@ class EventEnrichmentServiceTest {
         )
         val eventContext = EventContext(
             device = deviceContext,
-            library = LibraryContext(name = "metarouter-android", version = "1.0.1")
+            library = LibraryContext(name = "metarouter-android", version = "1.0.2")
         )
         every { contextProvider.getContext() } returns eventContext
 
@@ -378,7 +378,7 @@ class EventEnrichmentServiceTest {
 
         val eventContext = EventContext(
             device = null,
-            library = LibraryContext(name = "metarouter-android", version = "1.0.1")
+            library = LibraryContext(name = "metarouter-android", version = "1.0.2")
         )
         every { contextProvider.getContext() } returns eventContext
 

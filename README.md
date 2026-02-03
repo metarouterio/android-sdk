@@ -39,7 +39,7 @@ Then add the dependency in your module-level `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.metarouterio:android-sdk:1.0.1")
+    implementation("com.github.metarouterio:android-sdk:1.0.2")
 }
 ```
 
@@ -472,7 +472,7 @@ analytics.track("Button Clicked", "buttonName" to "Submit")
     "app": { "name": "MyApp", "version": "1.0.0", "build": "42" },
     "screen": { "width": 411, "height": 891, "density": 2.63 },
     "network": { "wifi": true },
-    "library": { "name": "metarouter-android-sdk", "version": "1.0.1" },
+    "library": { "name": "metarouter-android-sdk", "version": "1.0.2" },
     "locale": "en-US",
     "timezone": "America/New_York"
   }

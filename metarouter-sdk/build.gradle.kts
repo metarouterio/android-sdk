@@ -19,7 +19,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
 
-        buildConfigField("String", "SDK_VERSION", "\"${project.findProperty("SDK_VERSION") ?: "1.0.1"}\"")
+        buildConfigField("String", "SDK_VERSION", "\"${project.findProperty("SDK_VERSION") ?: "1.0.2"}\"")
     }
 
     buildTypes {
