@@ -6,15 +6,15 @@ import com.metarouter.analytics.utils.Logger
 /**
  * Thread-safe FIFO queue for enriched events with overflow handling.
  */
-class EventQueue(private val maxCapacity: Int = 2000) {
+open class EventQueue(private val maxCapacity: Int = 2000) {
 
-    private val queue = ArrayDeque<EnrichedEventPayload>()
-
-    @Synchronized
-    fun size(): Int = queue.size
+    protected val queue = ArrayDeque<EnrichedEventPayload>()
 
     @Synchronized
-    fun enqueue(event: EnrichedEventPayload) {
+    open fun size(): Int = queue.size
+
+    @Synchronized
+    open fun enqueue(event: EnrichedEventPayload) {
         if (queue.size >= maxCapacity) {
             queue.removeFirstOrNull()?.let {
                 Logger.warn("Queue capacity $maxCapacity reached - dropped oldest event (messageId: ${it.messageId})")
@@ -24,7 +24,7 @@ class EventQueue(private val maxCapacity: Int = 2000) {
     }
 
     @Synchronized
-    fun clear() {
+    open fun clear() {
         val count = queue.size
         queue.clear()
         if (count > 0) {
@@ -40,7 +40,7 @@ class EventQueue(private val maxCapacity: Int = 2000) {
      * @return List of events removed from the front
      */
     @Synchronized
-    fun drain(max: Int): List<EnrichedEventPayload> {
+    open fun drain(max: Int): List<EnrichedEventPayload> {
         val n = minOf(max, queue.size)
         return (0 until n).map { queue.removeFirst() }
     }
@@ -53,7 +53,7 @@ class EventQueue(private val maxCapacity: Int = 2000) {
      * @param events Events to add to front (order preserved)
      */
     @Synchronized
-    fun requeueToFront(events: List<EnrichedEventPayload>) {
+    open fun requeueToFront(events: List<EnrichedEventPayload>) {
         events.asReversed().forEach { event ->
             if (queue.size >= maxCapacity) {
                 queue.removeLastOrNull()?.let {
