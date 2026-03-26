@@ -34,8 +34,24 @@ class EventDiskStore(private val baseDir: File) {
 
         /**
          * Production factory: uses Context.noBackupFilesDir as base directory.
+         * Falls back to Context.filesDir, then system temp directory.
          */
-        fun create(context: Context): EventDiskStore = EventDiskStore(context.noBackupFilesDir)
+        fun create(context: Context): EventDiskStore {
+            val baseDir = listOf(
+                { context.noBackupFilesDir },
+                { context.filesDir }
+            ).firstNotNullOfOrNull { provider ->
+                try {
+                    val dir = provider() ?: return@firstNotNullOfOrNull null
+                    // Validate that the File object has a usable path by constructing a child
+                    File(dir, "test-path-validation")
+                    dir
+                } catch (_: Exception) {
+                    null
+                }
+            } ?: File(System.getProperty("java.io.tmpdir", "/tmp"), "metarouter-fallback")
+            return EventDiskStore(baseDir)
+        }
     }
 
     private val json = Json {
