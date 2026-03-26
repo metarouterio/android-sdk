@@ -340,6 +340,132 @@ class PersistableEventQueueTest {
         assertTrue(queue.estimatedSizeBytes() > sizeAfterDrain)
     }
 
+    // ===== End-to-end Scenarios =====
+
+    @Test
+    fun `full lifecycle - enqueue, background flush, process restart, rehydrate`() {
+        // Simulate first session
+        repeat(10) { i ->
+            queue.enqueue(createTestEvent("session1-msg-$i"))
+        }
+        assertEquals(10, queue.size())
+
+        // App backgrounds -> flush to disk
+        queue.flushToDisk()
+
+        // Simulate process restart: create new queue with same disk store
+        PersistableEventQueue.resetRehydrationFlag()
+        val queue2 = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024
+        )
+
+        queue2.rehydrate()
+
+        assertEquals(10, queue2.size())
+        val drained = queue2.drain(10)
+        assertEquals("session1-msg-0", drained[0].messageId)
+        assertEquals("session1-msg-9", drained[9].messageId)
+    }
+
+    @Test
+    fun `events drained before background are not in snapshot`() {
+        repeat(5) { i ->
+            queue.enqueue(createTestEvent("msg-$i"))
+        }
+
+        // Dispatcher drains some events
+        queue.drain(3)
+
+        // Background flush
+        queue.flushToDisk()
+
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(2, snapshot!!.events.size)
+        assertEquals("msg-3", snapshot.events[0].messageId)
+        assertEquals("msg-4", snapshot.events[1].messageId)
+    }
+
+    @Test
+    fun `normal session with no backgrounding never touches disk`() {
+        repeat(10) { i ->
+            queue.enqueue(createTestEvent("msg-$i"))
+        }
+        queue.drain(10)
+
+        assertNull(diskStore.read())
+        assertFalse(queue.shouldFlushToDisk())
+    }
+
+    @Test
+    fun `multiple flush-rehydrate cycles preserve data correctly`() {
+        // Cycle 1: enqueue and flush
+        queue.enqueue(createTestEvent("cycle1-a"))
+        queue.enqueue(createTestEvent("cycle1-b"))
+        queue.flushToDisk()
+
+        // Cycle 2: restart, rehydrate, add more, flush again
+        PersistableEventQueue.resetRehydrationFlag()
+        val queue2 = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024
+        )
+        queue2.rehydrate()
+        queue2.enqueue(createTestEvent("cycle2-c"))
+        queue2.flushToDisk()
+
+        // Cycle 3: restart, rehydrate
+        PersistableEventQueue.resetRehydrationFlag()
+        val queue3 = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024
+        )
+        queue3.rehydrate()
+
+        assertEquals(3, queue3.size())
+        val drained = queue3.drain(10)
+        assertEquals("cycle1-a", drained[0].messageId)
+        assertEquals("cycle1-b", drained[1].messageId)
+        assertEquals("cycle2-c", drained[2].messageId)
+    }
+
+    @Test
+    fun `flush overwrites previous state - no duplicates`() {
+        queue.enqueue(createTestEvent("batch1-a"))
+        queue.enqueue(createTestEvent("batch1-b"))
+        queue.flushToDisk()
+
+        // Drain all, add new events
+        queue.drain(10)
+        queue.enqueue(createTestEvent("batch2-a"))
+        queue.flushToDisk()
+
+        PersistableEventQueue.resetRehydrationFlag()
+        val queue2 = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024
+        )
+        queue2.rehydrate()
+
+        // Should only have batch2 events — full overwrite, no duplicates
+        assertEquals(1, queue2.size())
+        val drained = queue2.drain(10)
+        assertEquals("batch2-a", drained[0].messageId)
+    }
+
     private fun createTestEvent(messageId: String): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,
