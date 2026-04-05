@@ -151,12 +151,25 @@ class PersistableEventQueueTest {
     }
 
     @Test
-    fun `flushToDisk with empty queue writes empty snapshot`() {
+    fun `flushToDisk with empty queue skips write and deletes existing snapshot`() {
+        // Write a snapshot with events first
+        queue.enqueue(createTestEvent("msg-1"))
+        queue.flushToDisk()
+        assertNotNull(diskStore.read()) // snapshot exists
+
+        // Drain all events, then flush empty queue
+        queue.drain(1)
         queue.flushToDisk()
 
-        val snapshot = diskStore.read()
-        assertNotNull(snapshot)
-        assertEquals(0, snapshot!!.events.size)
+        // Existing snapshot should be deleted, not overwritten with empty
+        assertNull(diskStore.read())
+    }
+
+    @Test
+    fun `flushToDisk with empty queue and no existing snapshot is a no-op`() {
+        // No events, no prior snapshot
+        queue.flushToDisk()
+        assertNull(diskStore.read())
     }
 
     // ===== Flush Threshold =====

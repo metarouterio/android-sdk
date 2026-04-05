@@ -122,9 +122,14 @@ class PersistableEventQueue(
 
     /**
      * Flush current memory state to disk as a full overwrite snapshot.
+     * Skips the write and deletes any existing snapshot if the queue is empty.
      */
     @Synchronized
     fun flushToDisk() {
+        if (queue.isEmpty()) {
+            diskStore.delete()
+            return
+        }
         val events = queue.toList()
         val snapshot = QueueSnapshot(version = 1, events = events)
         diskStore.write(snapshot)
