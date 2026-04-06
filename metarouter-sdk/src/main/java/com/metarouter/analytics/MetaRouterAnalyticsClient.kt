@@ -331,15 +331,16 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     /**
-     * Start the event processor coroutine
+     * Start the event processor coroutine.
      * This single consumer processes events sequentially, preventing unbounded concurrency.
+     * Routes through dispatcher.offer() to enable auto-flush threshold checks.
      */
     private fun startEventProcessor() {
         scope.launch {
             for (baseEvent in eventChannel) {
                 try {
                     val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
-                    eventQueue.enqueue(enrichedEvent)
+                    dispatcher.offer(enrichedEvent)
 
                     // Check if disk flush threshold is reached
                     persistableEventQueue?.let { pQueue ->
