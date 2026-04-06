@@ -28,7 +28,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0 // Disabled for general tests; TTL-specific tests create their own queue
         )
     }
 
@@ -260,7 +261,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0
         )
 
         val events = (1..5).map { createTestEvent("msg-$it") }
@@ -283,6 +285,97 @@ class PersistableEventQueueTest {
         queue.rehydrate()
 
         assertNull(diskStore.read())
+    }
+
+    // ===== Event TTL =====
+
+    @Test
+    fun `rehydrate drops events older than TTL`() {
+        val ttlQueue = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 7L * 24 * 60 * 60 * 1000 // 7 days
+        )
+
+        val now = System.currentTimeMillis()
+        val eightDaysAgo = formatTimestamp(now - 8L * 24 * 60 * 60 * 1000)
+        val twoDaysAgo = formatTimestamp(now - 2L * 24 * 60 * 60 * 1000)
+        val recent = formatTimestamp(now - 60_000) // 1 minute ago
+
+        val events = listOf(
+            createTestEvent("old-1", timestamp = eightDaysAgo),
+            createTestEvent("mid-1", timestamp = twoDaysAgo),
+            createTestEvent("new-1", timestamp = recent)
+        )
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        ttlQueue.rehydrate()
+
+        assertEquals(2, ttlQueue.size())
+        val drained = ttlQueue.drain(10)
+        assertEquals("mid-1", drained[0].messageId)
+        assertEquals("new-1", drained[1].messageId)
+    }
+
+    @Test
+    fun `rehydrate TTL filter runs before capacity trim`() {
+        val ttlQueue = PersistableEventQueue(
+            maxCapacity = 2,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 7L * 24 * 60 * 60 * 1000
+        )
+
+        val now = System.currentTimeMillis()
+        val eightDaysAgo = formatTimestamp(now - 8L * 24 * 60 * 60 * 1000)
+        val twoDaysAgo = formatTimestamp(now - 2L * 24 * 60 * 60 * 1000)
+        val oneDayAgo = formatTimestamp(now - 1L * 24 * 60 * 60 * 1000)
+        val recent = formatTimestamp(now - 60_000)
+
+        // 4 events: 2 expired, 2 valid. maxCapacity = 2.
+        // TTL filter removes the 2 expired. 2 valid remain. Capacity is satisfied.
+        val events = listOf(
+            createTestEvent("expired-1", timestamp = eightDaysAgo),
+            createTestEvent("expired-2", timestamp = eightDaysAgo),
+            createTestEvent("valid-1", timestamp = twoDaysAgo),
+            createTestEvent("valid-2", timestamp = oneDayAgo)
+        )
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        ttlQueue.rehydrate()
+
+        assertEquals(2, ttlQueue.size())
+        val drained = ttlQueue.drain(10)
+        assertEquals("valid-1", drained[0].messageId)
+        assertEquals("valid-2", drained[1].messageId)
+    }
+
+    @Test
+    fun `rehydrate with unparseable timestamp keeps event`() {
+        val ttlQueue = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            flushThresholdEvents = 500,
+            flushThresholdBytes = 2 * 1024 * 1024,
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 7L * 24 * 60 * 60 * 1000
+        )
+
+        val events = listOf(
+            createTestEvent("bad-ts", timestamp = "not-a-timestamp"),
+            createTestEvent("good-ts", timestamp = formatTimestamp(System.currentTimeMillis() - 60_000))
+        )
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        ttlQueue.rehydrate()
+
+        // Unparseable timestamp should be kept (fail-open), not dropped
+        assertEquals(2, ttlQueue.size())
     }
 
     // ===== Clear =====
@@ -373,7 +466,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0
         )
 
         queue2.rehydrate()
@@ -428,7 +522,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0
         )
         queue2.rehydrate()
         queue2.enqueue(createTestEvent("cycle2-c"))
@@ -441,7 +536,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0
         )
         queue3.rehydrate()
 
@@ -469,7 +565,8 @@ class PersistableEventQueueTest {
             diskStore = diskStore,
             flushThresholdEvents = 500,
             flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
+            maxCapacityBytes = 5 * 1024 * 1024,
+            eventTTLMs = 0
         )
         queue2.rehydrate()
 
@@ -479,7 +576,7 @@ class PersistableEventQueueTest {
         assertEquals("batch2-a", drained[0].messageId)
     }
 
-    private fun createTestEvent(messageId: String): EnrichedEventPayload {
+    private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,
             event = "Test Event",
@@ -488,7 +585,7 @@ class PersistableEventQueueTest {
             groupId = null,
             traits = null,
             properties = null,
-            timestamp = "2026-01-01T00:00:00.000Z",
+            timestamp = timestamp,
             context = EventContext(
                 library = LibraryContext(name = "metarouter-android", version = "1.0.0")
             ),
@@ -496,5 +593,12 @@ class PersistableEventQueueTest {
             writeKey = "test-key",
             sentAt = null
         )
+    }
+
+    private fun formatTimestamp(epochMs: Long): String {
+        val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }
+        return format.format(java.util.Date(epochMs))
     }
 }

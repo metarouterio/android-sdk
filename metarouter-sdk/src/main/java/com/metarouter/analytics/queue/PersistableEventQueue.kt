@@ -6,6 +6,9 @@ import com.metarouter.analytics.types.EnrichedEventPayload
 import com.metarouter.analytics.utils.Logger
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -25,12 +28,18 @@ class PersistableEventQueue(
     private val diskStore: EventDiskStore,
     private val flushThresholdEvents: Int = 500,
     private val flushThresholdBytes: Long = 2L * 1024 * 1024,
-    private val maxCapacityBytes: Long = 5L * 1024 * 1024
+    private val maxCapacityBytes: Long = 5L * 1024 * 1024,
+    private val eventTTLMs: Long = 7L * 24 * 60 * 60 * 1000
 ) : EventQueue(maxCapacity) {
 
     companion object {
         private val hasRehydrated = AtomicBoolean(false)
         private val json = Json { encodeDefaults = true }
+        private val timestampFormat: ThreadLocal<SimpleDateFormat> = ThreadLocal.withInitial {
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+        }
 
         /**
          * Reset the rehydration flag. For testing only.
@@ -155,6 +164,17 @@ class PersistableEventQueue(
             return
         }
 
+        // Drop events older than TTL (keep newest)
+        if (eventTTLMs > 0) {
+            val now = System.currentTimeMillis()
+            val beforeTTL = events.size
+            events = events.filter { !isExpired(it, now) }
+            val dropped = beforeTTL - events.size
+            if (dropped > 0) {
+                Logger.warn("Rehydration: dropped $dropped event(s) older than ${eventTTLMs / (24 * 60 * 60 * 1000)}d TTL")
+            }
+        }
+
         // Trim to event count capacity (keep newest)
         if (events.size > maxCapacity) {
             Logger.warn("Disk snapshot has ${events.size} events, trimming to $maxCapacity (keeping newest)")
@@ -215,6 +235,16 @@ class PersistableEventQueue(
             json.encodeToString(event).length.toLong()
         } catch (e: Exception) {
             512L
+        }
+    }
+
+    private fun isExpired(event: EnrichedEventPayload, now: Long): Boolean {
+        return try {
+            val eventTime = timestampFormat.get()!!.parse(event.timestamp)?.time ?: return false
+            (now - eventTime) > eventTTLMs
+        } catch (e: Exception) {
+            // Fail-open: keep events with unparseable timestamps
+            false
         }
     }
 }
