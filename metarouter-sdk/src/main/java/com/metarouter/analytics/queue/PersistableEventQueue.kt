@@ -42,7 +42,8 @@ class PersistableEventQueue(
         }
 
         /**
-         * Reset the rehydration flag. For testing only.
+         * Reset the rehydration flag so a subsequent initialize() will rehydrate from disk.
+         * Called during SDK reset and in tests.
          */
         internal fun resetRehydrationFlag() {
             hasRehydrated.set(false)
@@ -234,6 +235,7 @@ class PersistableEventQueue(
         return try {
             json.encodeToString(event).length.toLong()
         } catch (e: Exception) {
+            Logger.warn("Failed to estimate event size, using 512B fallback: ${e.message}")
             512L
         }
     }

@@ -436,6 +436,9 @@ class MetaRouterAnalyticsClient private constructor(
             // Clear event queue (also deletes disk snapshot via PersistableEventQueue override)
             eventQueue.clear()
 
+            // Reset rehydration flag so a subsequent initialize() will reload from disk
+            PersistableEventQueue.resetRehydrationFlag()
+
             // Reset identity manager (clears all IDs)
             identityManager.reset()
 

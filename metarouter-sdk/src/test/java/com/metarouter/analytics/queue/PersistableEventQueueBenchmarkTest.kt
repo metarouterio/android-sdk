@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import kotlin.io.path.createTempDirectory
 
 @RunWith(RobolectricTestRunner::class)
 class PersistableEventQueueBenchmarkTest {
@@ -20,7 +21,7 @@ class PersistableEventQueueBenchmarkTest {
 
     @Before
     fun setup() {
-        tempDir = createTempDir("metarouter-bench")
+        tempDir = createTempDirectory("metarouter-bench").toFile()
         diskStore = EventDiskStore(tempDir)
         PersistableEventQueue.resetRehydrationFlag()
         queue = PersistableEventQueue(

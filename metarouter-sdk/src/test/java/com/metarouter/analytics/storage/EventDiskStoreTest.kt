@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import kotlin.io.path.createTempDirectory
 
 @RunWith(RobolectricTestRunner::class)
 class EventDiskStoreTest {
@@ -19,7 +20,7 @@ class EventDiskStoreTest {
 
     @Before
     fun setup() {
-        tempDir = createTempDir("metarouter-test")
+        tempDir = createTempDirectory("metarouter-test").toFile()
         store = EventDiskStore(tempDir)
     }
 

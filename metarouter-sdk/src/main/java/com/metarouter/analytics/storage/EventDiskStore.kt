@@ -43,7 +43,8 @@ class EventDiskStore(private val baseDir: File) {
             ).firstNotNullOfOrNull { provider ->
                 try {
                     val dir = provider() ?: return@firstNotNullOfOrNull null
-                    // Validate that the File object has a usable path by constructing a child
+                    // Validate the File has a usable internal path (constructing a child
+                    // will NPE if the File's internal path field is null, e.g. from mocks)
                     File(dir, "test-path-validation")
                     dir
                 } catch (_: Exception) {
