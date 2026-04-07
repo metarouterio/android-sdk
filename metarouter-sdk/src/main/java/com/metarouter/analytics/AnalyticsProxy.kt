@@ -38,7 +38,6 @@ class AnalyticsProxy(
                 calls
             }
 
-            Logger.log("Binding AnalyticsProxy to real client, replaying ${callsToReplay.size} pending calls")
 
             // Replay all pending calls (outside synchronized block to avoid blocking enqueue)
             for (call in callsToReplay) {
@@ -47,7 +46,6 @@ class AnalyticsProxy(
 
             // Set the real client atomically
             realClient.set(client)
-            Logger.log("AnalyticsProxy bound successfully")
         }
     }
 
@@ -200,7 +198,6 @@ class AnalyticsProxy(
                 Logger.warn("Pending call queue at capacity ($maxPendingCalls), dropping oldest: ${dropped::class.simpleName}")
             }
             pendingCalls.addLast(call)
-            Logger.log("Queued ${call::class.simpleName} (pending: ${pendingCalls.size})")
         }
     }
 

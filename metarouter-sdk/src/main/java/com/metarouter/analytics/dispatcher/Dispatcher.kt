@@ -2,11 +2,10 @@ package com.metarouter.analytics.dispatcher
 
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.network.CircuitBreaker
-import com.metarouter.analytics.network.CircuitState
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkResponse
 import com.metarouter.analytics.network.parseRetryAfterMs
-import com.metarouter.analytics.queue.EventQueue
+import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.types.EnrichedEventPayload
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
@@ -14,49 +13,42 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * Orchestrates batching and transmission of events from EventQueue to the ingestion endpoint.
  *
- * Responsibilities:
- * - Periodic flush loop based on configured interval
- * - Batch draining with sentAt timestamp injection
- * - HTTP response handling with appropriate retry/backoff strategies
- * - Circuit breaker integration for failure management
- * - Dynamic batch size reduction on 413 responses
- *
- * @param options SDK configuration containing ingestion host and flush interval
- * @param queue Event queue to drain batches from
- * @param networkClient HTTP client for batch transmission
- * @param circuitBreaker Circuit breaker for failure protection
- * @param scope Coroutine scope for async operations
- * @param config Dispatcher-specific configuration
+ * - Periodic flush loop (idempotent start — won't cancel in-flight flushes)
+ * - Two-layer retry backoff: dispatcher-level retry floor + circuit breaker
+ * - isFlushing guard prevents concurrent flush/retry overlap
+ * - Serialization failures drop the batch (not retried)
  */
 class Dispatcher(
     private val options: InitOptions,
-    private val queue: EventQueue,
+    private val queue: EventQueueInterface,
     private val networkClient: NetworkClient,
     private val circuitBreaker: CircuitBreaker,
     private val scope: CoroutineScope,
     private val config: DispatcherConfig = DispatcherConfig()
 ) {
     private val maxBatchSize = AtomicInteger(config.initialMaxBatchSize)
-    private var flushJob: Job? = null
-    private var retryJob: Job? = null
-    private val flushMutex = Mutex()
+    @Volatile private var flushJob: Job? = null
+    @Volatile private var retryJob: Job? = null
+    private val isFlushing = AtomicBoolean(false)
     @Volatile
     private var tracingEnabled = false
     @Volatile
     private var paused = false
+    private val consecutiveRetries = AtomicInteger(0)
 
     private val json = Json { encodeDefaults = true }
 
@@ -70,17 +62,20 @@ class Dispatcher(
 
     /**
      * Start the periodic flush loop.
-     * Flushes events at the interval specified in InitOptions.
+     * Idempotent — if already running, this is a no-op (avoids cancelling in-flight requests).
      */
     fun start() {
-        stop()
+        if (flushJob != null) return
         flushJob = scope.launch {
             while (isActive) {
                 delay(options.flushIntervalSeconds * 1000L)
-                flush()
+                try {
+                    flush()
+                } catch (e: Exception) {
+                    Logger.error("Flush loop error: ${e.message}")
+                }
             }
         }
-        Logger.log("Dispatcher started with ${options.flushIntervalSeconds}s flush interval")
     }
 
     /**
@@ -91,8 +86,9 @@ class Dispatcher(
         flushJob = null
         retryJob?.cancel()
         retryJob = null
+        isFlushing.set(false)
         paused = false
-        Logger.log("Dispatcher stopped")
+        consecutiveRetries.set(0)
     }
 
     /**
@@ -103,21 +99,18 @@ class Dispatcher(
         flushJob = null
         retryJob?.cancel()
         retryJob = null
+        isFlushing.set(false)
         paused = true
-        Logger.log("Dispatcher paused")
     }
 
     /**
      * Resume the dispatcher - restarts flush loop if paused.
      */
     fun resume() {
-        if (!paused) {
-            Logger.log("Dispatcher resume called but not paused - no-op")
-            return
-        }
+        if (!paused) return
         paused = false
+        flushJob = null // Clear so start() doesn't no-op
         start()
-        Logger.log("Dispatcher resumed")
     }
 
     /**
@@ -129,56 +122,39 @@ class Dispatcher(
 
     /**
      * Enqueue an event and trigger auto-flush if threshold is reached.
-     * This is the primary entry point for new events.
-     *
-     * @param event The enriched event to enqueue
      */
     suspend fun offer(event: EnrichedEventPayload) {
+        Logger.log("Enqueuing event {\"messageId\": \"${event.messageId}\", \"type\": \"${event.type}\"}")
         queue.enqueue(event)
-        Logger.log("Enqueued ${event.type} event (messageId: ${event.messageId})")
+        Logger.log("Event enqueued, queue length: ${queue.size()}")
 
         if (queue.size() >= config.autoFlushThreshold) {
-            Logger.log("Auto-flush threshold reached (${queue.size()} >= ${config.autoFlushThreshold})")
             flush()
         }
     }
 
     /**
      * Flush all queued events to the ingestion endpoint.
-     * Uses mutex to prevent concurrent flushes.
+     * Uses isFlushing guard to prevent concurrent/duplicate flushes.
      */
     suspend fun flush() {
-        if (queue.size() == 0) {
-            Logger.log("Flush skipped - queue is empty")
-            return
-        }
-
-        // Prevent concurrent flushes
-        if (!flushMutex.tryLock()) {
-            Logger.log("Flush skipped - already in progress")
-            return
-        }
+        if (!isFlushing.compareAndSet(false, true)) return
+        if (queue.size() == 0) { isFlushing.set(false); return }
 
         try {
             processUntilEmpty()
         } finally {
-            flushMutex.unlock()
+            isFlushing.set(false)
         }
     }
 
     // ===== Debug =====
 
-    /**
-     * Enable or disable tracing headers on requests.
-     */
     fun setTracing(enabled: Boolean) {
         tracingEnabled = enabled
         Logger.log("Dispatcher tracing ${if (enabled) "enabled" else "disabled"}")
     }
 
-    /**
-     * Get debug information about dispatcher state.
-     */
     fun getDebugInfo(): DispatcherDebugInfo {
         return DispatcherDebugInfo(
             isRunning = flushJob?.isActive == true,
@@ -190,109 +166,115 @@ class Dispatcher(
 
     // ===== Internal =====
 
+    /**
+     * Exponential backoff floor based on consecutive retries, independent of circuit breaker.
+     * Ensures retries are never instant even while circuit is closed.
+     */
+    private fun retryFloorMs(): Long {
+        val retries = consecutiveRetries.get()
+        if (retries <= 0) return 0L
+        val exponent = min(retries - 1, 10)
+        return min(
+            config.maxRetryDelayMs.toLong(),
+            config.baseRetryDelayMs.toLong() * 2.0.pow(exponent).toLong()
+        )
+    }
+
     private suspend fun processUntilEmpty() {
         while (queue.size() > 0) {
             val waitMs = circuitBreaker.beforeRequest()
             if (waitMs > 0) {
-                Logger.log("Circuit breaker requires wait: ${waitMs}ms")
+                Logger.warn("Circuit breaker ${circuitBreaker.getState()}, retrying in ${waitMs}ms (${queue.size()} event(s) pending)")
                 scheduleRetry(waitMs)
                 return
             }
 
-            val batch = drainBatch()
-            if (batch.isEmpty()) return
+            val events = queue.drain(maxBatchSize.get())
+            if (events.isEmpty()) return
 
-            val result = sendBatch(batch)
-            if (result == null) {
-                // Network error - requeue and schedule retry
-                queue.requeueToFront(batch.map { it.first })
+            // Inject sentAt timestamp
+            val sentAt = getIso8601Timestamp()
+            val batch = events.map { it.copy(sentAt = sentAt) }
+
+            // Serialize — if this fails, drop the batch
+            val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
+            val body: ByteArray
+            try {
+                val payload = BatchPayload(batch = batch)
+                body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+            } catch (e: Exception) {
+                Logger.error("Failed to encode batch of ${batch.size} events: ${e.message}")
+                continue
+            }
+
+            val headers = mutableMapOf<String, String>()
+            if (tracingEnabled) {
+                headers["Trace"] = "true"
+            }
+
+            Logger.log("Making API call to: $url")
+
+            val response: NetworkResponse
+            try {
+                response = networkClient.postJson(
+                    url = url,
+                    body = body,
+                    timeoutMs = config.timeoutMs,
+                    additionalHeaders = if (headers.isNotEmpty()) headers else null
+                )
+            } catch (e: Exception) {
+                // Network error — requeue and retry with backoff
+                consecutiveRetries.incrementAndGet()
                 circuitBreaker.onFailure()
-                scheduleRetry(1000)
+                queue.requeueToFront(events)
+                val retryDelay = maxOf(retryFloorMs(), circuitBreaker.beforeRequest())
+                Logger.warn("API call failed: ${e.message}, ${queue.size()} event(s) pending retry in ${retryDelay}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
+                scheduleRetry(retryDelay)
                 return
             }
 
-            if (!handleResponse(result, batch.map { it.first })) return
-        }
-    }
-
-    /**
-     * Drain a batch of events and inject sentAt timestamp.
-     * Returns pairs of (original event, event with sentAt).
-     */
-    private fun drainBatch(): List<Pair<EnrichedEventPayload, EnrichedEventPayload>> {
-        val events = queue.drain(maxBatchSize.get())
-        if (events.isEmpty()) return emptyList()
-
-        val sentAt = getIso8601Timestamp()
-        Logger.log("Drained ${events.size} events for batch (sentAt: $sentAt)")
-
-        return events.map { event ->
-            event to event.copy(sentAt = sentAt)
-        }
-    }
-
-    private suspend fun sendBatch(batch: List<Pair<EnrichedEventPayload, EnrichedEventPayload>>): NetworkResponse? {
-        val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
-        val eventsWithSentAt = batch.map { it.second }
-        val payload = BatchPayload(batch = eventsWithSentAt)
-        val body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
-
-        val headers = mutableMapOf<String, String>()
-        if (tracingEnabled) {
-            headers["Trace"] = "true"
-        }
-
-        Logger.log("Sending batch of ${batch.size} events to $url")
-
-        return try {
-            networkClient.postJson(
-                url = url,
-                body = body,
-                timeoutMs = config.timeoutMs,
-                additionalHeaders = if (headers.isNotEmpty()) headers else null
-            )
-        } catch (e: IOException) {
-            Logger.error("Network error sending batch: ${e.message}")
-            null
+            when (val action = handleResponse(response, events)) {
+                is FlushAction.Continue -> {} // continue loop
+                is FlushAction.RetryAfter -> { scheduleRetry(action.delayMs); return }
+                is FlushAction.Stop -> return
+            }
         }
     }
 
     private fun handleResponse(
         response: NetworkResponse,
         batch: List<EnrichedEventPayload>
-    ): Boolean {
-        Logger.log("Received response: ${response.statusCode}")
-
+    ): FlushAction {
         return when (response.statusCode) {
             in 200..299 -> {
+                consecutiveRetries.set(0)
                 circuitBreaker.onSuccess()
-                // Gradually recover batch size after 413-induced reduction
                 val current = maxBatchSize.get()
                 if (current < config.initialMaxBatchSize) {
                     val restored = minOf(current * 2, config.initialMaxBatchSize)
                     maxBatchSize.set(restored)
-                    Logger.log("Batch size recovered to $restored")
                 }
-                Logger.log("Batch sent successfully (${batch.size} events)")
-                true // continue processing
+                Logger.log("API call successful")
+                FlushAction.Continue
             }
             in 500..599, 408 -> {
+                consecutiveRetries.incrementAndGet()
                 circuitBreaker.onFailure()
                 queue.requeueToFront(batch)
-                val retryAfter = parseRetryAfterMs(response.headers) ?: 0
-                val waitMs = maxOf(circuitBreaker.beforeRequest(), retryAfter, 1000L)
-                Logger.warn("Server error ${response.statusCode} - requeued ${batch.size} events, retry in ${waitMs}ms")
-                scheduleRetry(waitMs)
-                false
+                val retryAfter = parseRetryAfterMs(response.headers) ?: circuitBreaker.beforeRequest()
+                val waitMs = maxOf(retryFloorMs(), maxOf(100L, retryAfter))
+                Logger.warn("Server error ${response.statusCode}, will retry ${batch.size} event(s) in ${waitMs}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
+                FlushAction.RetryAfter(waitMs)
             }
             429 -> {
+                consecutiveRetries.incrementAndGet()
                 circuitBreaker.onFailure()
                 queue.requeueToFront(batch)
-                val retryAfter = parseRetryAfterMs(response.headers) ?: 0
-                val waitMs = maxOf(circuitBreaker.beforeRequest(), retryAfter, 1000L)
-                Logger.warn("Rate limited (429) - requeued ${batch.size} events, retry in ${waitMs}ms")
-                scheduleRetry(waitMs)
-                false
+                val headerDelay = parseRetryAfterMs(response.headers) ?: 0L
+                val cbDelay = circuitBreaker.beforeRequest()
+                val waitMs = maxOf(retryFloorMs(), maxOf(1000L, maxOf(headerDelay, cbDelay)))
+                Logger.warn("Rate limited (429), will retry ${batch.size} event(s) in ${waitMs}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
+                FlushAction.RetryAfter(waitMs)
             }
             413 -> {
                 circuitBreaker.onNonRetryable()
@@ -302,45 +284,44 @@ class Dispatcher(
                     maxBatchSize.set(newSize)
                     queue.requeueToFront(batch)
                     Logger.warn("Payload too large (413) - reduced batch size to $newSize, retrying")
-                    scheduleRetry(500)
+                    FlushAction.RetryAfter(0)
                 } else {
                     Logger.warn("Dropping oversized event(s) at batchSize=1 - cannot reduce further")
+                    FlushAction.Stop
                 }
-                false
             }
             401, 403, 404 -> {
                 Logger.error("Fatal configuration error: ${response.statusCode} - clearing queue and stopping")
                 queue.clear()
                 stop()
                 onFatalConfigError?.invoke(response.statusCode)
-                false
+                FlushAction.Stop
             }
             in 400..499 -> {
                 circuitBreaker.onNonRetryable()
                 Logger.warn("Client error ${response.statusCode} - dropping batch of ${batch.size} events")
-                true // drop batch, continue
+                FlushAction.Continue
             }
             else -> {
                 circuitBreaker.onNonRetryable()
                 Logger.warn("Unexpected status ${response.statusCode} - continuing")
-                true
+                FlushAction.Continue
             }
         }
     }
 
+    /**
+     * Schedule a retry after the given delay.
+     * Always launches a new coroutine so the retry runs after isFlushing is released.
+     */
     private fun scheduleRetry(delayMs: Long) {
         retryJob?.cancel()
         retryJob = scope.launch {
-            delay(delayMs)
+            if (delayMs > 0) delay(delayMs)
             flush()
         }
-        Logger.log("Scheduled retry in ${delayMs}ms")
     }
 
-    /**
-     * Generate an ISO 8601 timestamp.
-     * Creates a new SimpleDateFormat instance each time for thread safety.
-     */
     private fun getIso8601Timestamp(): String {
         val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
@@ -349,17 +330,17 @@ class Dispatcher(
     }
 }
 
-/**
- * Batch payload wrapper for JSON serialization.
- */
 @kotlinx.serialization.Serializable
 private data class BatchPayload(
     val batch: List<EnrichedEventPayload>
 )
 
-/**
- * Debug information about dispatcher state.
- */
+private sealed class FlushAction {
+    data object Continue : FlushAction()
+    data class RetryAfter(val delayMs: Long) : FlushAction()
+    data object Stop : FlushAction()
+}
+
 data class DispatcherDebugInfo(
     val isRunning: Boolean,
     val maxBatchSize: Int,

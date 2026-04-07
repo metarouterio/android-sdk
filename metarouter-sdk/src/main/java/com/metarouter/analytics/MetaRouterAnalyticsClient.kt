@@ -1,6 +1,9 @@
 package com.metarouter.analytics
 
+import android.app.Application
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
@@ -9,7 +12,9 @@ import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.network.CircuitBreaker
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.OkHttpNetworkClient
-import com.metarouter.analytics.queue.EventQueue
+import com.metarouter.analytics.queue.EventQueueInterface
+import com.metarouter.analytics.queue.PersistableEventQueue
+import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.LifecycleState
@@ -30,10 +35,11 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedIdentityManager: IdentityManager? = null,
     private val injectedContextProvider: DeviceContextProvider? = null,
     private val injectedEnrichmentService: EventEnrichmentService? = null,
-    private val injectedEventQueue: EventQueue? = null,
+    private val injectedEventQueue: EventQueueInterface? = null,
     private val injectedNetworkClient: NetworkClient? = null,
     private val injectedCircuitBreaker: CircuitBreaker? = null,
-    private val injectedDispatcher: Dispatcher? = null
+    private val injectedDispatcher: Dispatcher? = null,
+    private val injectedDiskStore: EventDiskStore? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -60,10 +66,11 @@ class MetaRouterAnalyticsClient private constructor(
             identityManager: IdentityManager? = null,
             contextProvider: DeviceContextProvider? = null,
             enrichmentService: EventEnrichmentService? = null,
-            eventQueue: EventQueue? = null,
+            eventQueue: EventQueueInterface? = null,
             networkClient: NetworkClient? = null,
             circuitBreaker: CircuitBreaker? = null,
-            dispatcher: Dispatcher? = null
+            dispatcher: Dispatcher? = null,
+            diskStore: EventDiskStore? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -74,7 +81,8 @@ class MetaRouterAnalyticsClient private constructor(
                 eventQueue,
                 networkClient,
                 circuitBreaker,
-                dispatcher
+                dispatcher,
+                diskStore
             )
             client.initializeInternal()
             return client
@@ -93,10 +101,14 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
     private lateinit var enrichmentService: EventEnrichmentService
-    private lateinit var eventQueue: EventQueue
+    private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
     private lateinit var circuitBreaker: CircuitBreaker
     private lateinit var dispatcher: Dispatcher
+
+    // Persistence - null if an injected EventQueue was provided (bypasses persistence)
+    private var persistableEventQueue: PersistableEventQueue? = null
+    private var componentCallbacks: ComponentCallbacks2? = null
 
     /**
      * Internal initialization. Sets up all components.
@@ -106,7 +118,7 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.warn("Attempted to initialize client that is not in IDLE state")
             return
         }
-        Logger.log("Initializing MetaRouter Analytics SDK...")
+        // Initialization begins
 
         try {
             // Enable debug logging if requested
@@ -116,7 +128,6 @@ class MetaRouterAnalyticsClient private constructor(
 
             val channelCapacity = options.maxQueueEvents
             eventChannel = Channel(capacity = channelCapacity)
-            Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
 
             // Initialize components (use injected or create new)
             identityManager = injectedIdentityManager ?: IdentityManager(context)
@@ -126,7 +137,18 @@ class MetaRouterAnalyticsClient private constructor(
                 contextProvider = contextProvider,
                 writeKey = options.writeKey
             )
-            eventQueue = injectedEventQueue ?: EventQueue(maxCapacity = options.maxQueueEvents)
+            if (injectedEventQueue != null) {
+                eventQueue = injectedEventQueue
+            } else {
+                val diskStore = injectedDiskStore ?: EventDiskStore.create(context)
+                val pQueue = PersistableEventQueue(
+                    maxCapacity = options.maxQueueEvents,
+                    diskStore = diskStore
+                )
+                pQueue.rehydrate()
+                eventQueue = pQueue
+                persistableEventQueue = pQueue
+            }
 
             networkClient = injectedNetworkClient ?: OkHttpNetworkClient()
             circuitBreaker = injectedCircuitBreaker ?: CircuitBreaker()
@@ -141,15 +163,31 @@ class MetaRouterAnalyticsClient private constructor(
             )
 
             // Pre-load anonymous ID to ensure it's generated during init
-            val anonymousId = identityManager.getAnonymousId()
-            Logger.log("SDK initialized with anonymous ID: ${maskId(anonymousId)}")
+            identityManager.getAnonymousId()
 
             startEventProcessor()
 
             dispatcher.start()
 
+            // Register best-effort terminate flush via ComponentCallbacks2
+            persistableEventQueue?.let { pQueue ->
+                val callbacks = object : ComponentCallbacks2 {
+                    override fun onTrimMemory(level: Int) {
+                        if (level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+                            Logger.log("onTrimMemory(TRIM_MEMORY_COMPLETE) - best-effort disk flush")
+                            pQueue.flushToDisk()
+                        }
+                    }
+                    override fun onConfigurationChanged(newConfig: Configuration) {}
+                    @Suppress("DEPRECATION")
+                    override fun onLowMemory() {}
+                }
+                (context.applicationContext as? Application)?.registerComponentCallbacks(callbacks)
+                componentCallbacks = callbacks
+            }
+
             lifecycleState.set(LifecycleState.READY)
-            Logger.log("MetaRouter Analytics SDK ready")
+            Logger.log("MetaRouter SDK initialized")
 
         } catch (e: Exception) {
             Logger.error("Failed to initialize SDK: ${e.message}")
@@ -291,15 +329,23 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     /**
-     * Start the event processor coroutine
+     * Start the event processor coroutine.
      * This single consumer processes events sequentially, preventing unbounded concurrency.
+     * Routes through dispatcher.offer() to enable auto-flush threshold checks.
      */
     private fun startEventProcessor() {
         scope.launch {
             for (baseEvent in eventChannel) {
                 try {
                     val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
-                    eventQueue.enqueue(enrichedEvent)
+                    dispatcher.offer(enrichedEvent)
+
+                    // Check if disk flush threshold is reached
+                    persistableEventQueue?.let { pQueue ->
+                        if (pQueue.shouldFlushToDisk()) {
+                            pQueue.flushToDisk()
+                        }
+                    }
                 } catch (e: Exception) {
                     Logger.error("Failed to enqueue event: ${e.message}")
                 }
@@ -343,8 +389,8 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.log("onBackground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
-        Logger.log("App backgrounded - flushing and pausing dispatcher")
         flush()
+        persistableEventQueue?.flushToDisk()
         dispatcher.pause()
     }
 
@@ -357,7 +403,6 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.log("onForeground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
-        Logger.log("App foregrounded - flushing and resuming dispatcher")
         scope.launch {
             flush()
         }
@@ -379,11 +424,20 @@ class MetaRouterAnalyticsClient private constructor(
             // Close event channel to stop processor coroutine
             eventChannel.close()
 
+            // Unregister ComponentCallbacks2
+            componentCallbacks?.let {
+                (context.applicationContext as? Application)?.unregisterComponentCallbacks(it)
+                componentCallbacks = null
+            }
+
             // Cancel all coroutines in scope
             scope.cancel()
 
-            // Clear event queue
+            // Clear event queue (also deletes disk snapshot via PersistableEventQueue override)
             eventQueue.clear()
+
+            // Reset rehydration flag so a subsequent initialize() will reload from disk
+            PersistableEventQueue.resetRehydrationFlag()
 
             // Reset identity manager (clears all IDs)
             identityManager.reset()

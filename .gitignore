@@ -44,5 +44,8 @@ captures/
 .DS_Store
 Thumbs.db
 
+# Internal docs/plans
+docs/
+
 # Claude
 .claude

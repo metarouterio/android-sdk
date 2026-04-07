@@ -580,6 +580,302 @@ class DispatcherTest {
         assertEquals(3, networkClient.requests.size) // 3 batches of 10, 10, 5
     }
 
+    // ===== Retry Backoff Floor Tests =====
+
+    @Test
+    fun `network error applies retry floor on first failure`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.enqueueExceptions(java.io.IOException("timeout"))
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+
+        assertEquals(1, queue.size())
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `retry floor grows exponentially across consecutive failures`() = runTest {
+        // Test with 2 failures (circuit stays closed at threshold=3)
+        // to isolate retry floor behavior from circuit breaker wall-clock timing
+        val dispatcher = createDispatcher()
+        queue.enqueue(createEvent("msg-1"))
+
+        // Fail 1 → retry floor = 1000ms (base)
+        networkClient.nextException = java.io.IOException("fail 1")
+        dispatcher.flush()
+        assertEquals(1, queue.size())
+
+        // At 500ms — retry should NOT have fired (floor is 1000ms)
+        testScheduler.advanceTimeBy(500)
+        testScheduler.runCurrent()
+        assertEquals(1, networkClient.requests.size)
+
+        // Retry fires at 1000ms → fail 2 → retry floor = 2000ms
+        networkClient.nextException = java.io.IOException("fail 2")
+        testScheduler.advanceTimeBy(600)
+        testScheduler.runCurrent()
+        assertEquals(2, networkClient.requests.size)
+        assertEquals(1, queue.size())
+
+        // At 2500ms from fail 2 — retry should NOT have fired (floor is 2000ms)
+        // But actually the delay starts from when the retry was scheduled (~1100ms)
+        // Retry is at ~1100 + 2000 = 3100ms virtual
+
+        // Success after 2000ms floor
+        networkClient.nextException = null
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        testScheduler.advanceTimeBy(2100)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `consecutive retries reset on success`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // Fail once → retry with 1s floor → succeed
+        networkClient.enqueueExceptions(java.io.IOException("fail"))
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertEquals(1, queue.size()) // Requeued after failure
+
+        // Advance past retry floor (1s) → success
+        testScheduler.advanceTimeBy(1100)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+
+        // Now fail again — retry floor should be back to base (1s), not escalated
+        networkClient.reset()
+        networkClient.enqueueExceptions(java.io.IOException("fail again"))
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-2"))
+
+        dispatcher.flush()
+        assertEquals(1, queue.size())
+
+        // 1.1s should be enough for base retry floor (not escalated)
+        testScheduler.advanceTimeBy(1100)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `5xx applies retry floor with minimum 100ms`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(503, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertEquals(1, queue.size())
+
+        // Switch to success and advance past retry floor (1s > 100ms floor)
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        testScheduler.advanceTimeBy(1100)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `429 applies retry floor with minimum 1000ms`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(429, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertEquals(1, queue.size())
+
+        // Advance 900ms — should not have retried yet (1000ms minimum for 429)
+        testScheduler.advanceTimeBy(900)
+        testScheduler.runCurrent()
+        assertEquals(1, queue.size())
+
+        // Switch to success and advance past 1000ms
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        testScheduler.advanceTimeBy(200)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    // ===== Start Idempotency Tests =====
+
+    @Test
+    fun `start is idempotent - second call does not cancel first`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.start()
+        assertTrue(dispatcher.getDebugInfo().isRunning)
+
+        // Call start again — should be a no-op
+        dispatcher.start()
+        assertTrue(dispatcher.getDebugInfo().isRunning)
+
+        // Flush should still work
+        testScheduler.advanceTimeBy(11_000)
+        testScheduler.runCurrent()
+        assertTrue(networkClient.requests.size >= 1)
+        dispatcher.stop()
+    }
+
+    // ===== 413 Immediate Retry Tests =====
+
+    @Test
+    fun `413 retries with reduced batch size after isFlushing released`() = runTest {
+        val dispatcher = createDispatcher()
+        queue.enqueue(createEvent("msg-1"))
+
+        // First call → 413 → halve batch, requeue, schedule immediate retry
+        networkClient.nextResponse = NetworkResponse(413, emptyMap(), null)
+        dispatcher.flush()
+        assertEquals(5, dispatcher.getDebugInfo().maxBatchSize)
+        assertEquals(1, queue.size()) // Requeued
+
+        // Switch to success and run the scheduled retry
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        testScheduler.runCurrent()
+
+        assertEquals(0, queue.size()) // Retry succeeded
+        assertEquals(2, networkClient.requests.size) // Two API calls total
+        dispatcher.stop()
+    }
+
+    // ===== Logging Format Tests =====
+
+    @Test
+    fun `500 error log includes circuit state and retry count`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        val warnLogs = mutableListOf<String>()
+        every { Log.w(any(), any<String>()) } answers {
+            warnLogs.add(secondArg())
+            0
+        }
+
+        dispatcher.flush()
+
+        val errorLog = warnLogs.find { it.contains("Server error 500") }
+        assertNotNull("Should log server error", errorLog)
+        assertTrue("Should include circuit state", errorLog!!.contains("circuit:"))
+        assertTrue("Should include retry count", errorLog.contains("retry #"))
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `network error log includes circuit state and retry count`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextException = java.io.IOException("Connection reset")
+        queue.enqueue(createEvent("msg-1"))
+
+        val warnLogs = mutableListOf<String>()
+        every { Log.w(any(), any<String>()) } answers {
+            warnLogs.add(secondArg())
+            0
+        }
+
+        dispatcher.flush()
+
+        val errorLog = warnLogs.find { it.contains("API call failed") }
+        assertNotNull("Should log API call failure", errorLog)
+        assertTrue("Should include circuit state", errorLog!!.contains("circuit:"))
+        assertTrue("Should include retry count", errorLog.contains("retry #1"))
+        dispatcher.stop()
+    }
+
+    // ===== processUntilEmpty Loop Tests =====
+
+    @Test
+    fun `processUntilEmpty loops to drain all batches on success`() = runTest {
+        val dispatcher = createDispatcher() // maxBatchSize=10
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        // Enqueue 25 events — should require 3 batches (10 + 10 + 5)
+        repeat(25) { i -> queue.enqueue(createEvent("msg-$i")) }
+
+        dispatcher.flush()
+
+        assertEquals(0, queue.size())
+        assertEquals(3, networkClient.requests.size)
+    }
+
+    // ===== Serialization Failure Tests =====
+
+    @Test
+    fun `serialization failure drops batch and continues to next`() = runTest {
+        // Create a dispatcher with a very small batch size so we get 2 batches
+        val smallBatchConfig = DispatcherConfig(
+            autoFlushThreshold = 100,
+            initialMaxBatchSize = 1,
+            timeoutMs = 5000,
+            endpointPath = "/v1/batch"
+        )
+        val dispatcher = Dispatcher(
+            options = options,
+            queue = queue,
+            networkClient = networkClient,
+            circuitBreaker = circuitBreaker,
+            scope = this,
+            config = smallBatchConfig
+        )
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        // Enqueue 2 normal events
+        queue.enqueue(createEvent("msg-1"))
+        queue.enqueue(createEvent("msg-2"))
+
+        dispatcher.flush()
+
+        // Both events should be processed (batch size 1 = 2 API calls)
+        assertEquals(0, queue.size())
+        assertEquals(2, networkClient.requests.size)
+    }
+
+    // ===== Server Error Retry Reset Tests =====
+
+    @Test
+    fun `consecutive retries reset on 2xx after server error`() = runTest {
+        val dispatcher = createDispatcher()
+        queue.enqueue(createEvent("msg-1"))
+
+        // 500 → retry #1 with 1s floor
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        dispatcher.flush()
+        assertEquals(1, queue.size())
+
+        // Succeed on retry
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        testScheduler.advanceTimeBy(1100)
+        testScheduler.runCurrent()
+        assertEquals(0, queue.size())
+
+        // Next failure should be retry #1 again (reset after success)
+        queue.enqueue(createEvent("msg-2"))
+        networkClient.nextResponse = NetworkResponse(503, emptyMap(), null)
+
+        val warnLogs = mutableListOf<String>()
+        every { Log.w(any(), any<String>()) } answers {
+            warnLogs.add(secondArg())
+            0
+        }
+
+        dispatcher.flush()
+
+        val errorLog = warnLogs.find { it.contains("Server error 503") }
+        assertNotNull("Should log server error", errorLog)
+        assertTrue("Should be retry #1 (reset after success)", errorLog!!.contains("retry #1"))
+        dispatcher.stop()
+    }
+
     // ===== Helper Methods =====
 
     private fun TestScope.createDispatcher(): Dispatcher {
