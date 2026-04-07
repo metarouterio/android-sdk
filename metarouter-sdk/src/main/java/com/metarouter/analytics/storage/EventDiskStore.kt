@@ -141,7 +141,6 @@ class EventDiskStore(private val baseDir: File) {
                 Logger.warn("Skipped $skipped unreadable event(s) during queue snapshot decode")
             }
 
-            Logger.log("Queue snapshot loaded from disk (${events.size} events)")
             QueueSnapshot(version = version, events = events)
         } catch (e: Exception) {
             Logger.warn("Failed to read queue snapshot from disk (corrupted?): ${e.message}")

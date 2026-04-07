@@ -96,7 +96,6 @@ object MetaRouter {
                 return
             }
 
-            Logger.log("Initializing MetaRouterAnalyticsClient...")
             val client = MetaRouterAnalyticsClient.initialize(context, options)
 
             val stored = store.set(client)
@@ -113,7 +112,6 @@ object MetaRouter {
             lifecycleObserver?.register()
 
             proxy.bind(client)
-            Logger.log("MetaRouter initialization complete")
         }
     }
 

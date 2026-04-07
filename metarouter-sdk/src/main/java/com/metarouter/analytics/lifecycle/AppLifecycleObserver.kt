@@ -32,7 +32,6 @@ class AppLifecycleObserver(
     fun register() {
         mainHandler.post {
             ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-            Logger.log("AppLifecycleObserver registered")
         }
     }
 

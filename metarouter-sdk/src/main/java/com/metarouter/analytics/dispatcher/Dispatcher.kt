@@ -80,7 +80,6 @@ class Dispatcher(
                 flush()
             }
         }
-        Logger.log("Dispatcher started with ${options.flushIntervalSeconds}s flush interval")
     }
 
     /**
@@ -92,7 +91,6 @@ class Dispatcher(
         retryJob?.cancel()
         retryJob = null
         paused = false
-        Logger.log("Dispatcher stopped")
     }
 
     /**
@@ -104,20 +102,15 @@ class Dispatcher(
         retryJob?.cancel()
         retryJob = null
         paused = true
-        Logger.log("Dispatcher paused")
     }
 
     /**
      * Resume the dispatcher - restarts flush loop if paused.
      */
     fun resume() {
-        if (!paused) {
-            Logger.log("Dispatcher resume called but not paused - no-op")
-            return
-        }
+        if (!paused) return
         paused = false
         start()
-        Logger.log("Dispatcher resumed")
     }
 
     /**
@@ -134,8 +127,9 @@ class Dispatcher(
      * @param event The enriched event to enqueue
      */
     suspend fun offer(event: EnrichedEventPayload) {
+        Logger.log("Enqueuing event {\"messageId\": \"${event.messageId}\", \"type\": \"${event.type}\"}")
         queue.enqueue(event)
-        Logger.log("Enqueued ${event.type} event (messageId: ${event.messageId})")
+        Logger.log("Event enqueued, queue length: ${queue.size()}")
 
         if (queue.size() >= config.autoFlushThreshold) {
             Logger.log("Auto-flush threshold reached (${queue.size()} >= ${config.autoFlushThreshold})")
@@ -148,10 +142,7 @@ class Dispatcher(
      * Uses mutex to prevent concurrent flushes.
      */
     suspend fun flush() {
-        if (queue.size() == 0) {
-            Logger.log("Flush skipped - queue is empty")
-            return
-        }
+        if (queue.size() == 0) return
 
         // Prevent concurrent flushes
         if (!flushMutex.tryLock()) {
@@ -224,7 +215,6 @@ class Dispatcher(
         if (events.isEmpty()) return emptyList()
 
         val sentAt = getIso8601Timestamp()
-        Logger.log("Drained ${events.size} events for batch (sentAt: $sentAt)")
 
         return events.map { event ->
             event to event.copy(sentAt = sentAt)
@@ -242,7 +232,7 @@ class Dispatcher(
             headers["Trace"] = "true"
         }
 
-        Logger.log("Sending batch of ${batch.size} events to $url")
+        Logger.log("Making API call to: $url")
 
         return try {
             networkClient.postJson(
@@ -252,7 +242,7 @@ class Dispatcher(
                 additionalHeaders = if (headers.isNotEmpty()) headers else null
             )
         } catch (e: IOException) {
-            Logger.error("Network error sending batch: ${e.message}")
+            Logger.error("API call failed: ${e.message}, ${batch.size} event(s) pending retry")
             null
         }
     }
@@ -261,7 +251,6 @@ class Dispatcher(
         response: NetworkResponse,
         batch: List<EnrichedEventPayload>
     ): Boolean {
-        Logger.log("Received response: ${response.statusCode}")
 
         return when (response.statusCode) {
             in 200..299 -> {
@@ -273,7 +262,7 @@ class Dispatcher(
                     maxBatchSize.set(restored)
                     Logger.log("Batch size recovered to $restored")
                 }
-                Logger.log("Batch sent successfully (${batch.size} events)")
+                Logger.log("API call successful")
                 true // continue processing
             }
             in 500..599, 408 -> {

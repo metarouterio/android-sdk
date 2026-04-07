@@ -204,7 +204,7 @@ class PersistableEventQueue(
             estimatedBytes += size
         }
 
-        Logger.log("Rehydrated ${fittingEvents.size} events from disk ($estimatedBytes bytes estimated)")
+        Logger.log("Rehydrated ${fittingEvents.size} events from disk")
         diskStore.delete()
     }
 

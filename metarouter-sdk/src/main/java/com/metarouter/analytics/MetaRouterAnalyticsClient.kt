@@ -118,7 +118,7 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.warn("Attempted to initialize client that is not in IDLE state")
             return
         }
-        Logger.log("Initializing MetaRouter Analytics SDK...")
+        // Initialization begins
 
         try {
             // Enable debug logging if requested
@@ -128,7 +128,6 @@ class MetaRouterAnalyticsClient private constructor(
 
             val channelCapacity = options.maxQueueEvents
             eventChannel = Channel(capacity = channelCapacity)
-            Logger.log("Event channel capacity: $channelCapacity, queue capacity: ${options.maxQueueEvents}")
 
             // Initialize components (use injected or create new)
             identityManager = injectedIdentityManager ?: IdentityManager(context)
@@ -164,8 +163,7 @@ class MetaRouterAnalyticsClient private constructor(
             )
 
             // Pre-load anonymous ID to ensure it's generated during init
-            val anonymousId = identityManager.getAnonymousId()
-            Logger.log("SDK initialized with anonymous ID: ${maskId(anonymousId)}")
+            identityManager.getAnonymousId()
 
             startEventProcessor()
 
@@ -189,7 +187,7 @@ class MetaRouterAnalyticsClient private constructor(
             }
 
             lifecycleState.set(LifecycleState.READY)
-            Logger.log("MetaRouter Analytics SDK ready")
+            Logger.log("MetaRouter SDK initialized")
 
         } catch (e: Exception) {
             Logger.error("Failed to initialize SDK: ${e.message}")
@@ -391,7 +389,6 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.log("onBackground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
-        Logger.log("App backgrounded - flushing and pausing dispatcher")
         flush()
         persistableEventQueue?.flushToDisk()
         dispatcher.pause()
@@ -406,7 +403,6 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.log("onForeground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
-        Logger.log("App foregrounded - flushing and resuming dispatcher")
         scope.launch {
             flush()
         }
