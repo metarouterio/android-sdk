@@ -15,7 +15,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,7 +75,11 @@ class Dispatcher(
         flushJob = scope.launch {
             while (isActive) {
                 delay(options.flushIntervalSeconds * 1000L)
-                flush()
+                try {
+                    flush()
+                } catch (e: Exception) {
+                    Logger.error("Flush loop error: ${e.message}")
+                }
             }
         }
     }
@@ -221,26 +224,26 @@ class Dispatcher(
     }
 
     private suspend fun sendBatch(batch: List<Pair<EnrichedEventPayload, EnrichedEventPayload>>): NetworkResponse? {
-        val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
-        val eventsWithSentAt = batch.map { it.second }
-        val payload = BatchPayload(batch = eventsWithSentAt)
-        val body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
-
-        val headers = mutableMapOf<String, String>()
-        if (tracingEnabled) {
-            headers["Trace"] = "true"
-        }
-
-        Logger.log("Making API call to: $url")
-
         return try {
+            val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
+            val eventsWithSentAt = batch.map { it.second }
+            val payload = BatchPayload(batch = eventsWithSentAt)
+            val body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+
+            val headers = mutableMapOf<String, String>()
+            if (tracingEnabled) {
+                headers["Trace"] = "true"
+            }
+
+            Logger.log("Making API call to: $url")
+
             networkClient.postJson(
                 url = url,
                 body = body,
                 timeoutMs = config.timeoutMs,
                 additionalHeaders = if (headers.isNotEmpty()) headers else null
             )
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             Logger.error("API call failed: ${e.message}, ${batch.size} event(s) pending retry")
             null
         }
