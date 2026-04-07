@@ -8,7 +8,7 @@ package com.metarouter.analytics.network
  * - [HalfOpen]: Testing recovery, limited requests allowed
  */
 sealed class CircuitState {
-    object Closed : CircuitState()
-    object Open : CircuitState()
-    object HalfOpen : CircuitState()
+    object Closed : CircuitState() { override fun toString() = "closed" }
+    object Open : CircuitState() { override fun toString() = "open" }
+    object HalfOpen : CircuitState() { override fun toString() = "halfOpen" }
 }
