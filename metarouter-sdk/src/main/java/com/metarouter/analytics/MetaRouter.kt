@@ -5,7 +5,9 @@ import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -77,6 +79,7 @@ object MetaRouter {
     suspend fun initializeAndWait(context: Context, options: InitOptions): AnalyticsInterface {
         if (proxy.isBound()) {
             Logger.warn("MetaRouter already initialized - returning existing proxy")
+            initializationStarted.set(true)
             return proxy
         }
 
@@ -225,6 +228,9 @@ object MetaRouter {
      * This should only be used in tests.
      */
     internal suspend fun resetForTesting() {
+        // Cancel any pending async initializations (e.g., lingering createAnalyticsClient launches)
+        scope.coroutineContext[Job]?.cancelChildren()
+
         initMutex.withLock {
             lifecycleObserver?.unregister()
             lifecycleObserver = null
