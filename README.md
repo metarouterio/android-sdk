@@ -198,7 +198,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 
 **Proxy behavior (quick notes):**
 
-- Buffer is **in-memory only** (not persisted). Calls made before ready are lost if the process exits.
+- The proxy buffer is **in-memory only** — calls made before the client is ready are lost if the process exits before initialization completes. Once the client is ready, events are persisted to disk and survive process kills (see [Delivery & Backoff](#delivery--backoff-how-events-flow-under-failures)).
 - Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
 - On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
 - `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
@@ -303,7 +303,9 @@ Or in Android Studio: Filter by "MetaRouter"
 
 ### Delivery & Backoff (How events flow under failures)
 
-Queue capacity: The SDK keeps up to 2,000 events in memory. When the cap is reached, the oldest events are dropped first (drop-oldest). You can change this via `maxQueueEvents` in `InitOptions`.
+Queue capacity: The SDK keeps up to 2,000 events in memory (configurable via `maxQueueEvents` in `InitOptions`) with an additional 5 MB byte cap. When either limit is reached, the oldest events are dropped first (drop-oldest).
+
+Disk persistence: The SDK writes a snapshot of the in-memory queue to disk when the app goes to background, when a flush threshold is reached (500 events or 2 MB), and on low-memory callbacks. On next launch, events are rehydrated from disk — events older than 7 days are dropped during rehydration. The snapshot is stored in `noBackupFilesDir` and is deleted after successful rehydration or on `reset()`.
 
 This SDK uses a circuit breaker around network I/O. It keeps ordering stable, avoids tight retry loops, and backs off cleanly when your cluster is unhealthy or throttling.
 
@@ -497,7 +499,7 @@ MetaRouter.Analytics.reset()
 - Clears `userId`, `anonymousId`, `groupId`, and `advertisingId` from memory
 - Removes all identity fields from SharedPreferences
 - Stops background flush loops
-- Clears event queue
+- Clears event queue and deletes the disk snapshot
 - Next `initialize()` will generate a **new** `anonymousId`
 
 **Common logout flow:**
