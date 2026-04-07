@@ -108,11 +108,21 @@ class PersistableEventQueue(
         events.asReversed().forEach { event ->
             val eventSize = estimateEventSize(event)
 
+            // Drop newest while over byte capacity
+            while (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
+                val removedSize = eventSizes.removeLastOrNull() ?: 0L
+                memoryQueue.removeLastOrNull()?.let {
+                    estimatedBytes -= removedSize
+                    Logger.warn("Queue byte capacity reached during requeue - dropped newest event (messageId: ${it.messageId})")
+                }
+            }
+
+            // Drop newest if at event count capacity
             if (memoryQueue.size >= maxCapacity) {
                 val removedSize = eventSizes.removeLastOrNull() ?: 0L
                 memoryQueue.removeLastOrNull()?.let {
                     estimatedBytes -= removedSize
-                    Logger.warn("Queue at capacity during requeue - dropped newest event (messageId: ${it.messageId})")
+                    Logger.warn("Queue event capacity reached during requeue - dropped newest event (messageId: ${it.messageId})")
                 }
             }
 
