@@ -12,7 +12,7 @@ import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.network.CircuitBreaker
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.OkHttpNetworkClient
-import com.metarouter.analytics.queue.EventQueue
+import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.queue.PersistableEventQueue
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.types.BaseEvent
@@ -35,7 +35,7 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedIdentityManager: IdentityManager? = null,
     private val injectedContextProvider: DeviceContextProvider? = null,
     private val injectedEnrichmentService: EventEnrichmentService? = null,
-    private val injectedEventQueue: EventQueue? = null,
+    private val injectedEventQueue: EventQueueInterface? = null,
     private val injectedNetworkClient: NetworkClient? = null,
     private val injectedCircuitBreaker: CircuitBreaker? = null,
     private val injectedDispatcher: Dispatcher? = null,
@@ -66,7 +66,7 @@ class MetaRouterAnalyticsClient private constructor(
             identityManager: IdentityManager? = null,
             contextProvider: DeviceContextProvider? = null,
             enrichmentService: EventEnrichmentService? = null,
-            eventQueue: EventQueue? = null,
+            eventQueue: EventQueueInterface? = null,
             networkClient: NetworkClient? = null,
             circuitBreaker: CircuitBreaker? = null,
             dispatcher: Dispatcher? = null,
@@ -101,7 +101,7 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
     private lateinit var enrichmentService: EventEnrichmentService
-    private lateinit var eventQueue: EventQueue
+    private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
     private lateinit var circuitBreaker: CircuitBreaker
     private lateinit var dispatcher: Dispatcher

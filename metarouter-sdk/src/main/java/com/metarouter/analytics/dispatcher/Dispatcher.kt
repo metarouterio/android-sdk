@@ -5,7 +5,7 @@ import com.metarouter.analytics.network.CircuitBreaker
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkResponse
 import com.metarouter.analytics.network.parseRetryAfterMs
-import com.metarouter.analytics.queue.EventQueue
+import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.types.EnrichedEventPayload
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +34,7 @@ import kotlin.math.pow
  */
 class Dispatcher(
     private val options: InitOptions,
-    private val queue: EventQueue,
+    private val queue: EventQueueInterface,
     private val networkClient: NetworkClient,
     private val circuitBreaker: CircuitBreaker,
     private val scope: CoroutineScope,
@@ -196,7 +196,7 @@ class Dispatcher(
             val sentAt = getIso8601Timestamp()
             val batch = events.map { it.copy(sentAt = sentAt) }
 
-            // Serialize — if this fails, drop the batch (matches iOS: events already drained)
+            // Serialize — if this fails, drop the batch
             val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
             val body: ByteArray
             try {

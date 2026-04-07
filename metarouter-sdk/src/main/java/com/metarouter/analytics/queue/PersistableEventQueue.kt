@@ -12,7 +12,8 @@ import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Extension of EventQueue that adds disk persistence as a safety net.
+ * Event queue with disk persistence as a safety net.
+ * Uses composition: wraps an internal memory queue and adds byte tracking + disk I/O.
  *
  * Write-behind model:
  * - enqueue() and drain() are memory-only (no disk I/O)
@@ -30,7 +31,7 @@ class PersistableEventQueue(
     private val flushThresholdBytes: Long = 2L * 1024 * 1024,
     private val maxCapacityBytes: Long = 5L * 1024 * 1024,
     private val eventTTLMs: Long = 7L * 24 * 60 * 60 * 1000
-) : EventQueue(maxCapacity) {
+) : EventQueueInterface {
 
     companion object {
         private val hasRehydrated = AtomicBoolean(false)
@@ -50,11 +51,17 @@ class PersistableEventQueue(
         }
     }
 
+    // Internal memory storage
+    private val memoryQueue = ArrayDeque<EnrichedEventPayload>()
+
     // Tracks estimated serialized size of all events in memory
     private var estimatedBytes: Long = 0L
 
-    // Cache of per-event byte sizes (parallel to queue order)
+    // Cache of per-event byte sizes (parallel to memoryQueue order)
     private val eventSizes = ArrayDeque<Long>()
+
+    @Synchronized
+    override fun size(): Int = memoryQueue.size
 
     /**
      * Enqueue an event to memory. No disk I/O.
@@ -65,16 +72,16 @@ class PersistableEventQueue(
         val eventSize = estimateEventSize(event)
 
         // Drop oldest while over byte capacity (before adding)
-        while (estimatedBytes + eventSize > maxCapacityBytes && queue.isNotEmpty()) {
+        while (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
             dropOldest("byte capacity")
         }
 
         // Drop oldest if at event count capacity
-        if (queue.size >= maxCapacity) {
+        if (memoryQueue.size >= maxCapacity) {
             dropOldest("event count capacity")
         }
 
-        queue.addLast(event)
+        memoryQueue.addLast(event)
         eventSizes.addLast(eventSize)
         estimatedBytes += eventSize
     }
@@ -84,9 +91,9 @@ class PersistableEventQueue(
      */
     @Synchronized
     override fun drain(max: Int): List<EnrichedEventPayload> {
-        val n = minOf(max, queue.size)
+        val n = minOf(max, memoryQueue.size)
         return (0 until n).map {
-            val event = queue.removeFirst()
+            val event = memoryQueue.removeFirst()
             val size = eventSizes.removeFirst()
             estimatedBytes -= size
             event
@@ -101,15 +108,15 @@ class PersistableEventQueue(
         events.asReversed().forEach { event ->
             val eventSize = estimateEventSize(event)
 
-            if (queue.size >= maxCapacity) {
+            if (memoryQueue.size >= maxCapacity) {
                 val removedSize = eventSizes.removeLastOrNull() ?: 0L
-                queue.removeLastOrNull()?.let {
+                memoryQueue.removeLastOrNull()?.let {
                     estimatedBytes -= removedSize
                     Logger.warn("Queue at capacity during requeue - dropped newest event (messageId: ${it.messageId})")
                 }
             }
 
-            queue.addFirst(event)
+            memoryQueue.addFirst(event)
             eventSizes.addFirst(eventSize)
             estimatedBytes += eventSize
         }
@@ -120,8 +127,8 @@ class PersistableEventQueue(
      */
     @Synchronized
     override fun clear() {
-        val count = queue.size
-        queue.clear()
+        val count = memoryQueue.size
+        memoryQueue.clear()
         eventSizes.clear()
         estimatedBytes = 0L
         diskStore.delete()
@@ -136,11 +143,11 @@ class PersistableEventQueue(
      */
     @Synchronized
     fun flushToDisk() {
-        if (queue.isEmpty()) {
+        if (memoryQueue.isEmpty()) {
             diskStore.delete()
             return
         }
-        val events = queue.toList()
+        val events = memoryQueue.toList()
         val snapshot = QueueSnapshot(version = 1, events = events)
         diskStore.write(snapshot)
     }
@@ -198,9 +205,9 @@ class PersistableEventQueue(
             Logger.warn("Disk snapshot exceeds byte capacity, trimmed from ${events.size} to ${fittingEvents.size} events")
         }
 
-        // Load into queue
+        // Load into memory
         for ((event, size) in fittingEvents) {
-            queue.addLast(event)
+            memoryQueue.addLast(event)
             eventSizes.addLast(size)
             estimatedBytes += size
         }
@@ -214,7 +221,7 @@ class PersistableEventQueue(
      */
     @Synchronized
     fun shouldFlushToDisk(): Boolean {
-        return queue.size >= flushThresholdEvents || estimatedBytes >= flushThresholdBytes
+        return memoryQueue.size >= flushThresholdEvents || estimatedBytes >= flushThresholdBytes
     }
 
     /**
@@ -224,7 +231,7 @@ class PersistableEventQueue(
     fun estimatedSizeBytes(): Long = estimatedBytes
 
     private fun dropOldest(reason: String) {
-        queue.removeFirstOrNull()?.let { dropped ->
+        memoryQueue.removeFirstOrNull()?.let { dropped ->
             val size = eventSizes.removeFirstOrNull() ?: 0L
             estimatedBytes -= size
             Logger.warn("Queue $reason reached - dropped oldest event (messageId: ${dropped.messageId})")
@@ -245,7 +252,6 @@ class PersistableEventQueue(
             val eventTime = timestampFormat.get()!!.parse(event.timestamp)?.time ?: return false
             (now - eventTime) > eventTTLMs
         } catch (e: Exception) {
-            // Fail-open: keep events with unparseable timestamps
             false
         }
     }
