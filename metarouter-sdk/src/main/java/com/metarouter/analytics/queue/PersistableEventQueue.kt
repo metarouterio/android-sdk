@@ -35,8 +35,8 @@ class PersistableEventQueue(
     companion object {
         private val hasRehydrated = AtomicBoolean(false)
         private val json = Json { encodeDefaults = true }
-        private val timestampFormat: ThreadLocal<SimpleDateFormat> = ThreadLocal.withInitial {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+        private val timestampFormat = object : ThreadLocal<SimpleDateFormat>() {
+            override fun initialValue() = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
             }
         }

@@ -41,8 +41,8 @@ class Dispatcher(
     private val config: DispatcherConfig = DispatcherConfig()
 ) {
     private val maxBatchSize = AtomicInteger(config.initialMaxBatchSize)
-    private var flushJob: Job? = null
-    private var retryJob: Job? = null
+    @Volatile private var flushJob: Job? = null
+    @Volatile private var retryJob: Job? = null
     private val isFlushing = AtomicBoolean(false)
     @Volatile
     private var tracingEnabled = false
