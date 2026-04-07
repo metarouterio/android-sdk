@@ -269,7 +269,7 @@ class Dispatcher(
                 queue.requeueToFront(batch)
                 val retryAfter = parseRetryAfterMs(response.headers) ?: 0
                 val cbDelay = circuitBreaker.beforeRequest()
-                val waitMs = maxOf(cbDelay, retryAfter)
+                val waitMs = maxOf(100L, cbDelay, retryAfter)
                 Logger.warn("Server error ${response.statusCode}, will retry ${batch.size} event(s) in ${waitMs}ms")
                 FlushAction.RetryAfter(waitMs)
             }
