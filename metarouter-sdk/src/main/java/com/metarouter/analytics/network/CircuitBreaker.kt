@@ -112,6 +112,21 @@ class CircuitBreaker(
     }
 
     /**
+     * Force-reset the circuit breaker to Closed state.
+     * Used when network connectivity transitions from offline -> online,
+     * since stale backoff from the offline period is irrelevant.
+     */
+    fun reset() {
+        synchronized(lock) {
+            state = CircuitState.Closed
+            consecutiveFailures = 0
+            openCount = 0
+            openUntil = 0L
+            halfOpenInFlight = 0
+        }
+    }
+
+    /**
      * Get remaining cooldown time in milliseconds (0 if not in open state).
      */
     fun getRemainingCooldownMs(): Long {

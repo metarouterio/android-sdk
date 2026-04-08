@@ -876,6 +876,136 @@ class DispatcherTest {
         dispatcher.stop()
     }
 
+    // ===== Network Pause Tests =====
+
+    @Test
+    fun `events enqueue while network paused with no HTTP attempts`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.pauseForOffline()
+
+        repeat(5) { i ->
+            dispatcher.offer(createEvent("msg-$i"))
+        }
+
+        // Trigger flush — should be skipped due to networkPaused
+        dispatcher.flush()
+
+        assertEquals(0, networkClient.requests.size)
+        assertEquals(5, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `offline to online transition triggers flush`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.pauseForOffline()
+
+        repeat(3) { i ->
+            dispatcher.offer(createEvent("msg-$i"))
+        }
+
+        // No HTTP while offline
+        dispatcher.flush()
+        assertEquals(0, networkClient.requests.size)
+
+        // Come online
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.resumeFromOffline()
+        dispatcher.flush()
+
+        assertEquals(1, networkClient.requests.size)
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `networkPaused reflected in getDebugInfo`() = runTest {
+        val dispatcher = createDispatcher()
+
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+
+        dispatcher.pauseForOffline()
+        assertTrue(dispatcher.getDebugInfo().networkPaused)
+
+        dispatcher.resumeFromOffline()
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+    }
+
+    @Test
+    fun `pauseForOffline cancels pending retry job`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+
+        dispatcher.pauseForOffline()
+
+        assertFalse(dispatcher.getDebugInfo().pendingRetry)
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `resumeFromOffline resets consecutiveRetries`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // Fail 3 times to build up consecutiveRetries
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        dispatcher.stop() // Cancel pending retry
+
+        // Go offline then online — resets retries
+        dispatcher.pauseForOffline()
+        dispatcher.resumeFromOffline()
+
+        // Next failure should be retry #1 (not #4)
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        val warnLogs = mutableListOf<String>()
+        every { Log.w(any(), any<String>()) } answers {
+            warnLogs.add(secondArg())
+            0
+        }
+
+        dispatcher.flush()
+
+        val errorLog = warnLogs.find { it.contains("Server error 500") }
+        assertNotNull("Should log server error", errorLog)
+        assertTrue("Should be retry #1 after offline reset", errorLog!!.contains("retry #1"))
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `resumeFromOffline is idempotent when not paused`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // Should not throw or change state
+        dispatcher.resumeFromOffline()
+
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+    }
+
+    @Test
+    fun `flush skips processing entirely when networkPaused`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        repeat(10) { i ->
+            queue.enqueue(createEvent("msg-$i"))
+        }
+
+        dispatcher.pauseForOffline()
+        dispatcher.flush()
+
+        // No HTTP requests should have been made
+        assertEquals(0, networkClient.requests.size)
+        // All events remain in queue
+        assertEquals(10, queue.size())
+        dispatcher.stop()
+    }
+
     // ===== Helper Methods =====
 
     private fun TestScope.createDispatcher(): Dispatcher {
