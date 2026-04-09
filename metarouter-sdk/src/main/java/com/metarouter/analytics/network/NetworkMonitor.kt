@@ -31,9 +31,9 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
     override var isConnected: Boolean = true
         private set
 
-    private var callback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var callback: ConnectivityManager.NetworkCallback? = null
     private var connectivityManager: ConnectivityManager? = null
-    private var listener: ((Boolean) -> Unit)? = null
+    @Volatile private var listener: ((Boolean) -> Unit)? = null
 
     init {
         connectivityManager = try {

@@ -3,6 +3,7 @@ package com.metarouter.analytics.dispatcher
 import android.util.Log
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.CircuitState
 import com.metarouter.analytics.network.FakeNetworkClient
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkResponse
@@ -1003,6 +1004,49 @@ class DispatcherTest {
         assertEquals(0, networkClient.requests.size)
         // All events remain in queue
         assertEquals(10, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `circuit breaker does not reset while connected but failing`() = runTest {
+        val breaker = CircuitBreaker(
+            failureThreshold = 2,
+            baseCooldownMs = 1000,
+            maxCooldownMs = 120_000,
+            jitterRatio = 0.0
+        )
+        val dispatcher = Dispatcher(
+            options = options,
+            queue = queue,
+            networkClient = networkClient,
+            circuitBreaker = breaker,
+            scope = this,
+            config = config
+        )
+
+        // Device is connected (not network-paused) but server returns 500s
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        queue.enqueue(createEvent("msg-2"))
+        dispatcher.flush()
+
+        // CB should be open after hitting failure threshold
+        assertEquals(CircuitState.Open, breaker.getState())
+        val firstCooldown = breaker.getRemainingCooldownMs()
+        assertTrue("CB should have active cooldown", firstCooldown > 0)
+
+        // Still connected, still failing — CB must NOT reset
+        assertFalse(
+            "Dispatcher should not be network-paused (device is connected)",
+            dispatcher.getDebugInfo().networkPaused
+        )
+        assertEquals(
+            "CB should remain open while connected but failing",
+            CircuitState.Open, breaker.getState()
+        )
+
         dispatcher.stop()
     }
 
