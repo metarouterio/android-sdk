@@ -11,6 +11,7 @@ import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.network.AndroidNetworkMonitor
 import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.DebouncedNetworkHandler
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.network.OkHttpNetworkClient
@@ -113,6 +114,7 @@ class MetaRouterAnalyticsClient private constructor(
 
     // Network monitoring
     private lateinit var networkMonitor: NetworkMonitor
+    private var networkHandler: DebouncedNetworkHandler? = null
 
     // Persistence - null if an injected EventQueue was provided (bypasses persistence)
     private var persistableEventQueue: PersistableEventQueue? = null
@@ -173,19 +175,21 @@ class MetaRouterAnalyticsClient private constructor(
             // Pre-load anonymous ID to ensure it's generated during init
             identityManager.getAnonymousId()
 
-            // Initialize network monitor
+            // Initialize network monitor with debounced handler
             networkMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
-            networkMonitor.start { connected ->
-                if (connected) {
-                    Logger.log("Network connectivity restored — resuming dispatcher")
+            val handler = DebouncedNetworkHandler(
+                scope = scope,
+                onOnline = {
                     circuitBreaker.reset()
                     dispatcher.resumeFromOffline()
-                    scope.launch { dispatcher.flush() }
-                } else {
-                    Logger.log("Network connectivity lost — pausing HTTP delivery")
+                    dispatcher.flush()
+                },
+                onOffline = {
                     dispatcher.pauseForOffline()
                 }
-            }
+            )
+            networkHandler = handler
+            networkMonitor.start { connected -> handler.onConnectivityChanged(connected) }
 
             // If starting offline, pause dispatcher immediately
             if (!networkMonitor.isConnected) {
@@ -445,7 +449,9 @@ class MetaRouterAnalyticsClient private constructor(
         Logger.log("Resetting SDK...")
 
         try {
-            // Stop network monitor
+            // Stop network monitor and cancel pending debounce
+            networkHandler?.cancel()
+            networkHandler = null
             networkMonitor.stop()
 
             // Stop dispatcher first
