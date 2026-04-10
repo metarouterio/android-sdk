@@ -191,6 +191,50 @@ class Dispatcher(
         )
     }
 
+    // ===== Direct Send (for disk overflow drain) =====
+
+    /**
+     * Send a batch of events directly to the network, bypassing the memory queue.
+     * Used by PersistableEventQueue.drainDiskOverflowToNetwork() to flush overflow
+     * events from disk without loading them into the memory queue.
+     *
+     * @return true if the batch was sent successfully, false on any failure
+     */
+    suspend fun sendBatchDirect(events: List<EnrichedEventPayload>): Boolean {
+        if (events.isEmpty()) return true
+
+        val sentAt = getIso8601Timestamp()
+        val batch = events.map { it.copy(sentAt = sentAt) }
+
+        val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
+        val body: ByteArray
+        try {
+            val payload = BatchPayload(batch = batch)
+            body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+        } catch (e: Exception) {
+            Logger.error("Failed to encode direct batch of ${batch.size} events: ${e.message}")
+            return false
+        }
+
+        val headers = mutableMapOf<String, String>()
+        if (tracingEnabled) {
+            headers["Trace"] = "true"
+        }
+
+        return try {
+            val response = networkClient.postJson(
+                url = url,
+                body = body,
+                timeoutMs = config.timeoutMs,
+                additionalHeaders = if (headers.isNotEmpty()) headers else null
+            )
+            response.statusCode in 200..299
+        } catch (e: Exception) {
+            Logger.warn("Direct batch send failed: ${e.message}")
+            false
+        }
+    }
+
     // ===== Internal =====
 
     /**
@@ -368,7 +412,7 @@ class Dispatcher(
 }
 
 @kotlinx.serialization.Serializable
-private data class BatchPayload(
+internal data class BatchPayload(
     val batch: List<EnrichedEventPayload>
 )
 

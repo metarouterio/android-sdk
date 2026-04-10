@@ -150,9 +150,12 @@ class MetaRouterAnalyticsClient private constructor(
                 eventQueue = injectedEventQueue
             } else {
                 val diskStore = injectedDiskStore ?: EventDiskStore.create(context)
+                val overflowDiskStore = EventDiskStore.create(context, filename = "offline-overflow.v1.json")
                 val pQueue = PersistableEventQueue(
                     maxCapacity = options.maxQueueEvents,
-                    diskStore = diskStore
+                    diskStore = diskStore,
+                    maxOfflineDiskEvents = options.maxOfflineDiskEvents,
+                    overflowDiskStore = overflowDiskStore
                 )
                 pQueue.rehydrate()
                 eventQueue = pQueue
@@ -179,17 +182,27 @@ class MetaRouterAnalyticsClient private constructor(
             networkMonitor = DebouncedNetworkMonitor(rawMonitor, scope)
             networkMonitor.start { connected ->
                 if (connected) {
+                    persistableEventQueue?.setOfflineOverflowEnabled(false)
                     circuitBreaker.reset()
                     dispatcher.resumeFromOffline()
-                    scope.launch { dispatcher.flush() }
+                    // Two independent flush paths:
+                    scope.launch { dispatcher.flush() }  // (1) memory queue -> network
+                    scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }  // (2) disk -> network directly
                 } else {
                     dispatcher.pauseForOffline()
+                    persistableEventQueue?.setOfflineOverflowEnabled(true)
                 }
             }
 
-            // If starting offline, pause dispatcher immediately
+            // If starting offline, pause dispatcher and enable overflow immediately
             if (!networkMonitor.isConnected) {
                 dispatcher.pauseForOffline()
+                persistableEventQueue?.setOfflineOverflowEnabled(true)
+            }
+
+            // If online at launch and overflow exists from previous session, drain directly to network
+            if (networkMonitor.isConnected) {
+                scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
             }
 
             startEventProcessor()
@@ -418,6 +431,7 @@ class MetaRouterAnalyticsClient private constructor(
         }
         flush()
         persistableEventQueue?.flushToDisk()
+        persistableEventQueue?.flushOverflowBufferToDisk()
         dispatcher.pause()
     }
 
