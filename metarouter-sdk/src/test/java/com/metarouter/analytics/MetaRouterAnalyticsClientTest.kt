@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import android.content.Context
+import com.metarouter.analytics.network.FakeNetworkMonitor
 import com.metarouter.analytics.types.EventType
 import io.mockk.*
 import kotlinx.coroutines.delay
@@ -524,5 +525,59 @@ class MetaRouterAnalyticsClientTest {
 
         // Should not throw when called in non-ready state
         client.onForeground()
+    }
+
+    // ===== Network Status =====
+
+    @Test
+    fun `network status connected in getDebugInfo`() = runBlocking {
+        val fakeMonitor = FakeNetworkMonitor(initialConnected = true)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, networkMonitor = fakeMonitor
+        )
+
+        val debugInfo = client.getDebugInfo()
+        assertEquals("connected", debugInfo["networkStatus"])
+    }
+
+    @Test
+    fun `network status disconnected in getDebugInfo`() = runBlocking {
+        val fakeMonitor = FakeNetworkMonitor(initialConnected = false)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, networkMonitor = fakeMonitor
+        )
+
+        val debugInfo = client.getDebugInfo()
+        assertEquals("disconnected", debugInfo["networkStatus"])
+    }
+
+    @Test
+    fun `events enqueue while offline without errors`() = runBlocking {
+        val fakeMonitor = FakeNetworkMonitor(initialConnected = false)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, networkMonitor = fakeMonitor
+        )
+
+        client.track("Offline Event 1")
+        client.track("Offline Event 2")
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) >= 2 }
+
+        val debugInfo = client.getDebugInfo()
+        assertTrue((debugInfo["queueLength"] as Int) >= 2)
+        assertEquals("disconnected", debugInfo["networkStatus"])
+    }
+
+    @Test
+    fun `SDK functions normally when network monitor defaults to connected`() = runBlocking {
+        // Default initialization — no injected monitor, uses AndroidNetworkMonitor
+        // which defaults to connected in test environment (no real ConnectivityManager)
+        val client = MetaRouterAnalyticsClient.initialize(context, options)
+
+        client.track("Test Event")
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
+
+        val debugInfo = client.getDebugInfo()
+        assertNotNull(debugInfo["networkStatus"])
+        assertTrue((debugInfo["queueLength"] as Int) > 0)
     }
 }

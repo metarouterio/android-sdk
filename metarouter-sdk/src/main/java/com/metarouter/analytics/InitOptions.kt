@@ -12,6 +12,7 @@ import com.metarouter.analytics.utils.Logger
  * @property maxQueueEvents Maximum enriched events held in queue (default: 2000).
  *   This value also determines the incoming event channel capacity (minimum 100).
  *   When limits are exceeded, oldest events are dropped.
+ * @property maxOfflineDiskEvents Maximum events stored on disk during extended offline periods (default: 10000).
  *
  * @throws IllegalArgumentException if validation fails
  */
@@ -20,7 +21,8 @@ data class InitOptions(
     val ingestionHost: String,
     val flushIntervalSeconds: Int = 10,
     val debug: Boolean = false,
-    val maxQueueEvents: Int = 2000
+    val maxQueueEvents: Int = 2000,
+    val maxOfflineDiskEvents: Int = 10000
 ) {
     init {
         validateWriteKey()
