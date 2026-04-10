@@ -177,6 +177,35 @@ class EventDiskStoreTest {
         assertFalse(snapshotFile.exists())
     }
 
+    @Test
+    fun `custom filename creates separate store`() {
+        val customStore = EventDiskStore(tempDir, filename = "custom-overflow.v1.json")
+        val defaultStore = EventDiskStore(tempDir) // Uses default "queue.v1.json"
+
+        val snapshot1 = QueueSnapshot(version = 1, events = listOf(createTestEvent("default-1")))
+        val snapshot2 = QueueSnapshot(version = 1, events = listOf(createTestEvent("custom-1"), createTestEvent("custom-2")))
+
+        defaultStore.write(snapshot1)
+        customStore.write(snapshot2)
+
+        // Each store reads its own file independently
+        val defaultLoaded = defaultStore.read()
+        val customLoaded = customStore.read()
+
+        assertNotNull(defaultLoaded)
+        assertEquals(1, defaultLoaded!!.events.size)
+        assertEquals("default-1", defaultLoaded.events[0].messageId)
+
+        assertNotNull(customLoaded)
+        assertEquals(2, customLoaded!!.events.size)
+        assertEquals("custom-1", customLoaded.events[0].messageId)
+
+        // Delete one doesn't affect the other
+        customStore.delete()
+        assertNull(customStore.read())
+        assertNotNull(defaultStore.read())
+    }
+
     private fun createTestEvent(messageId: String): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,

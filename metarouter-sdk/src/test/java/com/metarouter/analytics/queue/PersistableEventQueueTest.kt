@@ -1,8 +1,19 @@
 package com.metarouter.analytics.queue
 
+import android.util.Log
+import com.metarouter.analytics.InitOptions
+import com.metarouter.analytics.dispatcher.Dispatcher
+import com.metarouter.analytics.dispatcher.DispatcherConfig
+import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.FakeNetworkClient
+import com.metarouter.analytics.network.NetworkResponse
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.storage.QueueSnapshot
 import com.metarouter.analytics.types.*
+import io.mockk.every
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -575,6 +586,366 @@ class PersistableEventQueueTest {
         assertEquals(1, queue2.size())
         val drained = queue2.drain(10)
         assertEquals("batch2-a", drained[0].messageId)
+    }
+
+    // ===== Offline Overflow =====
+
+    @Test
+    fun `memory queue overflow while offline buffers then flushes to disk`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-test").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 3, // Low threshold for testing
+            eventTTLMs = 0
+        )
+
+        smallQueue.setOfflineOverflowEnabled(true)
+
+        // Fill queue to capacity
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        assertEquals(5, smallQueue.size())
+
+        // Enqueue more — should overflow to buffer, then to disk at threshold=3
+        repeat(4) { i -> smallQueue.enqueue(createTestEvent("overflow-$i")) }
+
+        // Memory queue should still be at max capacity
+        assertEquals(5, smallQueue.size())
+
+        // Flush remaining buffer to disk
+        smallQueue.flushOverflowBufferToDisk()
+
+        // Verify overflow events are on disk
+        // Queue was: fill-0..fill-4. When overflow-0 comes in, fill-0 is evicted to buffer.
+        // overflow-1 → fill-1 evicted. overflow-2 → fill-2 evicted (buffer hits threshold=3, auto-flush).
+        // overflow-3 → fill-3 evicted. Explicit flush writes remaining buffer.
+        val snapshot = overflowDiskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(4, snapshot!!.events.size)
+        assertEquals("fill-0", snapshot.events[0].messageId)
+        assertEquals("fill-1", snapshot.events[1].messageId)
+        assertEquals("fill-2", snapshot.events[2].messageId)
+        assertEquals("fill-3", snapshot.events[3].messageId)
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `overflow writes are batched not per-event`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-batch").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 10, // Won't trigger during this test
+            eventTTLMs = 0
+        )
+
+        smallQueue.setOfflineOverflowEnabled(true)
+
+        // Fill queue
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+
+        // Overflow 8 events — batch threshold is 10, so no auto-flush to disk
+        repeat(8) { i -> smallQueue.enqueue(createTestEvent("overflow-$i")) }
+
+        // No disk write should have happened yet (buffer < threshold)
+        assertNull(overflowDiskStore.read())
+
+        // Explicit flush writes all at once
+        smallQueue.flushOverflowBufferToDisk()
+        val snapshot = overflowDiskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(8, snapshot!!.events.size)
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `offline disk overflow respects maxOfflineDiskEvents cap`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-cap").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 10, // Cap at 10
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 5,
+            eventTTLMs = 0
+        )
+
+        smallQueue.setOfflineOverflowEnabled(true)
+
+        // Fill queue
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+
+        // Overflow 15 events (exceeds maxOfflineDiskEvents=10)
+        repeat(15) { i -> smallQueue.enqueue(createTestEvent("overflow-$i")) }
+        smallQueue.flushOverflowBufferToDisk()
+
+        val snapshot = overflowDiskStore.read()
+        assertNotNull(snapshot)
+        assertTrue("Should cap at maxOfflineDiskEvents", snapshot!!.events.size <= 10)
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `drainDiskOverflowToNetwork sends directly to network`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val overflowDir = createTempDirectory("metarouter-overflow-drain").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        overflowDiskStore.write(QueueSnapshot(version = 1, events = events))
+
+        // Set up dispatcher with fake network
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(5, drained)
+        assertEquals(1, fakeClient.requests.size) // Batch of 5 events
+        assertNull(overflowDiskStore.read()) // Disk file deleted
+
+        // Memory queue should be untouched (0 events — drain goes directly to network)
+        assertEquals(0, overflowQueue.size())
+
+        overflowDir.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drainDiskOverflowToNetwork stops on network failure`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val overflowDir = createTempDirectory("metarouter-overflow-fail").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        overflowDiskStore.write(QueueSnapshot(version = 1, events = events))
+
+        // Set up dispatcher that fails
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(0, drained)
+        // Events should still be on disk
+        val remaining = overflowDiskStore.read()
+        assertNotNull(remaining)
+        assertEquals(5, remaining!!.events.size)
+
+        overflowDir.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `clear deletes overflow disk file`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-clear").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            eventTTLMs = 0
+        )
+
+        // Write overflow data
+        overflowDiskStore.write(QueueSnapshot(version = 1, events = listOf(createTestEvent("overflow-1"))))
+        overflowQueue.enqueue(createTestEvent("memory-1"))
+
+        overflowQueue.clear()
+
+        assertEquals(0, overflowQueue.size())
+        assertNull(diskStore.read())
+        assertNull(overflowDiskStore.read())
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `app killed while offline, relaunch online, disk overflow drains to network`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val overflowDir = createTempDirectory("metarouter-overflow-relaunch").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        // Simulate previous session: overflow events were written to disk
+        val previousEvents = (1..3).map { createTestEvent("prev-session-$it") }
+        overflowDiskStore.write(QueueSnapshot(version = 1, events = previousEvents))
+
+        // New session — create fresh queue (simulating app relaunch)
+        PersistableEventQueue.resetRehydrationFlag()
+        val freshQueue = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            eventTTLMs = 0
+        )
+        freshQueue.rehydrate()
+
+        // Set up dispatcher with working network (online at launch)
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = freshQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        // Drain overflow from previous session
+        val drained = freshQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(3, drained)
+        assertEquals(1, fakeClient.requests.size) // Direct to network
+        assertNull(overflowDiskStore.read()) // Cleaned up
+
+        overflowDir.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `offline overflow disabled does not write to disk on overflow`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-disabled").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 3,
+            eventTTLMs = 0
+        )
+
+        // Overflow NOT enabled (default)
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        repeat(3) { i -> smallQueue.enqueue(createTestEvent("overflow-$i")) }
+
+        smallQueue.flushOverflowBufferToDisk()
+
+        // No overflow disk data — events were dropped normally
+        assertNull(overflowDiskStore.read())
+        assertEquals(5, smallQueue.size())
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `setOfflineOverflowEnabled toggles overflow behavior`() {
+        val overflowDir = createTempDirectory("metarouter-overflow-toggle").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            overflowBufferBatchThreshold = 100,
+            eventTTLMs = 0
+        )
+
+        // Fill queue
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+
+        // Overflow disabled — events dropped
+        smallQueue.enqueue(createTestEvent("dropped-1"))
+        assertEquals(5, smallQueue.size())
+        assertEquals(0, smallQueue.offlineOverflowCount())
+
+        // Enable overflow
+        smallQueue.setOfflineOverflowEnabled(true)
+        smallQueue.enqueue(createTestEvent("buffered-1"))
+        assertEquals(5, smallQueue.size())
+        assertTrue(smallQueue.offlineOverflowCount() > 0)
+
+        // Disable overflow again
+        smallQueue.setOfflineOverflowEnabled(false)
+        smallQueue.enqueue(createTestEvent("dropped-2"))
+        assertEquals(5, smallQueue.size())
+
+        overflowDir.deleteRecursively()
     }
 
     private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {

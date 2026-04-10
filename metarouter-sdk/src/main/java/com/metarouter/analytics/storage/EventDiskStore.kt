@@ -24,7 +24,7 @@ import java.io.File
  *
  * Thread safety: callers must synchronize externally (PersistableEventQueue does this).
  */
-class EventDiskStore(private val baseDir: File) {
+class EventDiskStore(private val baseDir: File, private val filename: String = SNAPSHOT_FILENAME) {
 
     companion object {
         private const val DIRECTORY_NAME = "metarouter"
@@ -35,8 +35,11 @@ class EventDiskStore(private val baseDir: File) {
         /**
          * Production factory: uses Context.noBackupFilesDir as base directory.
          * Falls back to Context.filesDir, then system temp directory.
+         *
+         * @param filename Override the default snapshot filename. Used for separate
+         *   overflow storage (e.g., "offline-overflow.v1.json").
          */
-        fun create(context: Context): EventDiskStore {
+        fun create(context: Context, filename: String = SNAPSHOT_FILENAME): EventDiskStore {
             val baseDir = listOf(
                 { context.noBackupFilesDir },
                 { context.filesDir }
@@ -51,7 +54,7 @@ class EventDiskStore(private val baseDir: File) {
                     null
                 }
             } ?: File(System.getProperty("java.io.tmpdir", "/tmp"), "metarouter-fallback")
-            return EventDiskStore(baseDir)
+            return EventDiskStore(baseDir, filename)
         }
     }
 
@@ -64,10 +67,10 @@ class EventDiskStore(private val baseDir: File) {
         get() = File(baseDir, "$DIRECTORY_NAME/$SUBDIRECTORY_NAME")
 
     private val snapshotFile: File
-        get() = File(snapshotDir, SNAPSHOT_FILENAME)
+        get() = File(snapshotDir, filename)
 
     private val tmpFile: File
-        get() = File(snapshotDir, "$SNAPSHOT_FILENAME.tmp")
+        get() = File(snapshotDir, "$filename.tmp")
 
     /**
      * Write a snapshot to disk. Uses atomic write-to-tmp-then-rename.
