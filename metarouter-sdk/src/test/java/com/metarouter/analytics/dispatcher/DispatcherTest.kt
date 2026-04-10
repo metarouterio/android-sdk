@@ -3,6 +3,7 @@ package com.metarouter.analytics.dispatcher
 import android.util.Log
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.CircuitState
 import com.metarouter.analytics.network.FakeNetworkClient
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkResponse
@@ -873,6 +874,179 @@ class DispatcherTest {
         val errorLog = warnLogs.find { it.contains("Server error 503") }
         assertNotNull("Should log server error", errorLog)
         assertTrue("Should be retry #1 (reset after success)", errorLog!!.contains("retry #1"))
+        dispatcher.stop()
+    }
+
+    // ===== Network Pause Tests =====
+
+    @Test
+    fun `events enqueue while network paused with no HTTP attempts`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.pauseForOffline()
+
+        repeat(5) { i ->
+            dispatcher.offer(createEvent("msg-$i"))
+        }
+
+        // Trigger flush — should be skipped due to networkPaused
+        dispatcher.flush()
+
+        assertEquals(0, networkClient.requests.size)
+        assertEquals(5, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `offline to online transition triggers flush`() = runTest {
+        val dispatcher = createDispatcher()
+        dispatcher.pauseForOffline()
+
+        repeat(3) { i ->
+            dispatcher.offer(createEvent("msg-$i"))
+        }
+
+        // No HTTP while offline
+        dispatcher.flush()
+        assertEquals(0, networkClient.requests.size)
+
+        // Come online
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.resumeFromOffline()
+        dispatcher.flush()
+
+        assertEquals(1, networkClient.requests.size)
+        assertEquals(0, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `networkPaused reflected in getDebugInfo`() = runTest {
+        val dispatcher = createDispatcher()
+
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+
+        dispatcher.pauseForOffline()
+        assertTrue(dispatcher.getDebugInfo().networkPaused)
+
+        dispatcher.resumeFromOffline()
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+    }
+
+    @Test
+    fun `pauseForOffline cancels pending retry job`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        dispatcher.flush()
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+
+        dispatcher.pauseForOffline()
+
+        assertFalse(dispatcher.getDebugInfo().pendingRetry)
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `resumeFromOffline resets consecutiveRetries`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // Fail 3 times to build up consecutiveRetries
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        dispatcher.stop() // Cancel pending retry
+
+        // Go offline then online — resets retries
+        dispatcher.pauseForOffline()
+        dispatcher.resumeFromOffline()
+
+        // Next failure should be retry #1 (not #4)
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        val warnLogs = mutableListOf<String>()
+        every { Log.w(any(), any<String>()) } answers {
+            warnLogs.add(secondArg())
+            0
+        }
+
+        dispatcher.flush()
+
+        val errorLog = warnLogs.find { it.contains("Server error 500") }
+        assertNotNull("Should log server error", errorLog)
+        assertTrue("Should be retry #1 after offline reset", errorLog!!.contains("retry #1"))
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `resumeFromOffline is idempotent when not paused`() = runTest {
+        val dispatcher = createDispatcher()
+
+        // Should not throw or change state
+        dispatcher.resumeFromOffline()
+
+        assertFalse(dispatcher.getDebugInfo().networkPaused)
+    }
+
+    @Test
+    fun `flush skips processing entirely when networkPaused`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        repeat(10) { i ->
+            queue.enqueue(createEvent("msg-$i"))
+        }
+
+        dispatcher.pauseForOffline()
+        dispatcher.flush()
+
+        // No HTTP requests should have been made
+        assertEquals(0, networkClient.requests.size)
+        // All events remain in queue
+        assertEquals(10, queue.size())
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `circuit breaker does not reset while connected but failing`() = runTest {
+        val breaker = CircuitBreaker(
+            failureThreshold = 2,
+            baseCooldownMs = 1000,
+            maxCooldownMs = 120_000,
+            jitterRatio = 0.0
+        )
+        val dispatcher = Dispatcher(
+            options = options,
+            queue = queue,
+            networkClient = networkClient,
+            circuitBreaker = breaker,
+            scope = this,
+            config = config
+        )
+
+        // Device is connected (not network-paused) but server returns 500s
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        queue.enqueue(createEvent("msg-2"))
+        dispatcher.flush()
+
+        // CB should be open after hitting failure threshold
+        assertEquals(CircuitState.Open, breaker.getState())
+        val firstCooldown = breaker.getRemainingCooldownMs()
+        assertTrue("CB should have active cooldown", firstCooldown > 0)
+
+        // Still connected, still failing — CB must NOT reset
+        assertFalse(
+            "Dispatcher should not be network-paused (device is connected)",
+            dispatcher.getDebugInfo().networkPaused
+        )
+        assertEquals(
+            "CB should remain open while connected but failing",
+            CircuitState.Open, breaker.getState()
+        )
+
         dispatcher.stop()
     }
 

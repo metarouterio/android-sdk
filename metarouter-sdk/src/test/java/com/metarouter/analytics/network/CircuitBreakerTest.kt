@@ -241,4 +241,72 @@ class CircuitBreakerTest {
         val diff = kotlin.math.abs(breaker1.getRemainingCooldownMs() - breaker2.getRemainingCooldownMs())
         assertTrue("Zero jitter should produce consistent backoff, diff was $diff", diff < 100)
     }
+
+    // reset() behavior
+
+    @Test
+    fun `reset returns to closed state from open`() {
+        val breaker = CircuitBreaker(failureThreshold = 1)
+        breaker.onFailure()
+        assertEquals(CircuitState.Open, breaker.getState())
+
+        breaker.reset()
+
+        assertEquals(CircuitState.Closed, breaker.getState())
+        assertEquals(0L, breaker.beforeRequest())
+    }
+
+    @Test
+    fun `reset returns to closed state from halfOpen`() {
+        val breaker = CircuitBreaker(
+            failureThreshold = 1,
+            baseCooldownMs = 50,
+            jitterRatio = 0.0
+        )
+        breaker.onFailure()
+        Thread.sleep(60)
+        breaker.beforeRequest() // Transition to half-open
+        assertEquals(CircuitState.HalfOpen, breaker.getState())
+
+        breaker.reset()
+
+        assertEquals(CircuitState.Closed, breaker.getState())
+        assertEquals(0L, breaker.beforeRequest())
+    }
+
+    @Test
+    fun `reset clears openCount so backoff resets`() {
+        val breaker = CircuitBreaker(
+            failureThreshold = 1,
+            baseCooldownMs = 1000,
+            maxCooldownMs = 120_000,
+            jitterRatio = 0.0
+        )
+
+        // Trip multiple times to escalate backoff
+        breaker.onFailure()
+        Thread.sleep(1050)
+        breaker.beforeRequest()
+        breaker.onSuccess()
+        breaker.onFailure()
+        val escalatedCooldown = breaker.getRemainingCooldownMs()
+        assertTrue("Second trip should have escalated cooldown, got $escalatedCooldown", escalatedCooldown > 1500)
+
+        // Reset and trip again — should be back to base cooldown
+        breaker.reset()
+        breaker.onFailure()
+        val resetCooldown = breaker.getRemainingCooldownMs()
+        assertTrue("After reset, cooldown should be ~1000ms (base), got $resetCooldown", resetCooldown in 900..1100)
+    }
+
+    @Test
+    fun `reset is idempotent when already closed`() {
+        val breaker = CircuitBreaker()
+        assertEquals(CircuitState.Closed, breaker.getState())
+
+        breaker.reset()
+
+        assertEquals(CircuitState.Closed, breaker.getState())
+        assertEquals(0L, breaker.beforeRequest())
+    }
 }

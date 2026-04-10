@@ -9,8 +9,10 @@ import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.network.AndroidNetworkMonitor
 import com.metarouter.analytics.network.CircuitBreaker
 import com.metarouter.analytics.network.NetworkClient
+import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.network.OkHttpNetworkClient
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.queue.PersistableEventQueue
@@ -39,7 +41,8 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedNetworkClient: NetworkClient? = null,
     private val injectedCircuitBreaker: CircuitBreaker? = null,
     private val injectedDispatcher: Dispatcher? = null,
-    private val injectedDiskStore: EventDiskStore? = null
+    private val injectedDiskStore: EventDiskStore? = null,
+    private val injectedNetworkMonitor: NetworkMonitor? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -70,7 +73,8 @@ class MetaRouterAnalyticsClient private constructor(
             networkClient: NetworkClient? = null,
             circuitBreaker: CircuitBreaker? = null,
             dispatcher: Dispatcher? = null,
-            diskStore: EventDiskStore? = null
+            diskStore: EventDiskStore? = null,
+            networkMonitor: NetworkMonitor? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -82,7 +86,8 @@ class MetaRouterAnalyticsClient private constructor(
                 networkClient,
                 circuitBreaker,
                 dispatcher,
-                diskStore
+                diskStore,
+                networkMonitor
             )
             client.initializeInternal()
             return client
@@ -105,6 +110,9 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var networkClient: NetworkClient
     private lateinit var circuitBreaker: CircuitBreaker
     private lateinit var dispatcher: Dispatcher
+
+    // Network monitoring
+    private lateinit var networkMonitor: NetworkMonitor
 
     // Persistence - null if an injected EventQueue was provided (bypasses persistence)
     private var persistableEventQueue: PersistableEventQueue? = null
@@ -164,6 +172,25 @@ class MetaRouterAnalyticsClient private constructor(
 
             // Pre-load anonymous ID to ensure it's generated during init
             identityManager.getAnonymousId()
+
+            // Initialize network monitor
+            networkMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
+            networkMonitor.start { connected ->
+                if (connected) {
+                    Logger.log("Network connectivity restored — resuming dispatcher")
+                    circuitBreaker.reset()
+                    dispatcher.resumeFromOffline()
+                    scope.launch { dispatcher.flush() }
+                } else {
+                    Logger.log("Network connectivity lost — pausing HTTP delivery")
+                    dispatcher.pauseForOffline()
+                }
+            }
+
+            // If starting offline, pause dispatcher immediately
+            if (!networkMonitor.isConnected) {
+                dispatcher.pauseForOffline()
+            }
 
             startEventProcessor()
 
@@ -418,6 +445,9 @@ class MetaRouterAnalyticsClient private constructor(
         Logger.log("Resetting SDK...")
 
         try {
+            // Stop network monitor
+            networkMonitor.stop()
+
             // Stop dispatcher first
             dispatcher.stop()
 
@@ -472,6 +502,7 @@ class MetaRouterAnalyticsClient private constructor(
             put("maxQueueEvents", options.maxQueueEvents)
 
             if (state == LifecycleState.READY) {
+                put("networkStatus", if (networkMonitor.isConnected) "connected" else "disconnected")
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })

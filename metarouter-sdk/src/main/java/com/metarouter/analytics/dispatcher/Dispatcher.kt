@@ -48,6 +48,8 @@ class Dispatcher(
     private var tracingEnabled = false
     @Volatile
     private var paused = false
+    @Volatile
+    private var networkPaused = false
     private val consecutiveRetries = AtomicInteger(0)
 
     private val json = Json { encodeDefaults = true }
@@ -118,6 +120,30 @@ class Dispatcher(
      */
     fun isPaused(): Boolean = paused
 
+    /**
+     * Pause HTTP attempts due to offline state. Events continue to enqueue.
+     */
+    fun pauseForOffline() {
+        networkPaused = true
+        retryJob?.cancel()
+        retryJob = null
+    }
+
+    /**
+     * Resume HTTP attempts after connectivity returns.
+     * Resets consecutive retries since offline backoff is irrelevant.
+     */
+    fun resumeFromOffline() {
+        if (!networkPaused) return
+        networkPaused = false
+        consecutiveRetries.set(0)
+    }
+
+    /**
+     * Check if HTTP attempts are paused due to offline state.
+     */
+    fun isNetworkPaused(): Boolean = networkPaused
+
     // ===== Operations =====
 
     /**
@@ -160,7 +186,8 @@ class Dispatcher(
             isRunning = flushJob?.isActive == true,
             maxBatchSize = maxBatchSize.get(),
             pendingRetry = retryJob?.isActive == true,
-            tracingEnabled = tracingEnabled
+            tracingEnabled = tracingEnabled,
+            networkPaused = networkPaused
         )
     }
 
@@ -181,7 +208,17 @@ class Dispatcher(
     }
 
     private suspend fun processUntilEmpty() {
+        if (networkPaused) {
+            Logger.log("Dispatcher skipping flush — device is offline")
+            return
+        }
+
         while (queue.size() > 0) {
+            if (networkPaused) {
+                Logger.log("Dispatcher aborting flush — device went offline")
+                return
+            }
+
             val waitMs = circuitBreaker.beforeRequest()
             if (waitMs > 0) {
                 Logger.warn("Circuit breaker ${circuitBreaker.getState()}, retrying in ${waitMs}ms (${queue.size()} event(s) pending)")
@@ -345,5 +382,6 @@ data class DispatcherDebugInfo(
     val isRunning: Boolean,
     val maxBatchSize: Int,
     val pendingRetry: Boolean,
-    val tracingEnabled: Boolean
+    val tracingEnabled: Boolean,
+    val networkPaused: Boolean
 )

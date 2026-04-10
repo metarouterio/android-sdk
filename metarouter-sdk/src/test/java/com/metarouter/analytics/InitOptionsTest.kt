@@ -199,4 +199,27 @@ class InitOptionsTest {
         assertNotNull(exception)
         assertTrue(exception?.message?.contains("writeKey") == true)
     }
+
+    // ===== maxOfflineDiskEvents =====
+
+    @Test
+    fun `maxOfflineDiskEvents defaults to 10000`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com"
+        )
+
+        assertEquals(10000, options.maxOfflineDiskEvents)
+    }
+
+    @Test
+    fun `custom maxOfflineDiskEvents accepted`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            maxOfflineDiskEvents = 5000
+        )
+
+        assertEquals(5000, options.maxOfflineDiskEvents)
+    }
 }
