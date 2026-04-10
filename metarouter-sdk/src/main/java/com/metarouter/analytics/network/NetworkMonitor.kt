@@ -72,9 +72,14 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
 
             override fun onLost(network: Network) {
                 // Only mark disconnected if there's truly no active network
-                val activeNet = cm.activeNetwork
-                val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
-                val hasInternet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                val hasInternet = try {
+                    val activeNet = cm.activeNetwork
+                    val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
+                    caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                } catch (e: SecurityException) {
+                    // Permission revoked at runtime — assume offline
+                    false
+                }
                 if (!hasInternet && isConnected) {
                     isConnected = false
                     listener?.invoke(false)
