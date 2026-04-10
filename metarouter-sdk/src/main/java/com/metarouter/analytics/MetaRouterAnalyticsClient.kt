@@ -11,6 +11,7 @@ import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.network.AndroidNetworkMonitor
 import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.DebouncedNetworkMonitor
 import com.metarouter.analytics.network.NetworkClient
 import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.network.OkHttpNetworkClient
@@ -173,16 +174,15 @@ class MetaRouterAnalyticsClient private constructor(
             // Pre-load anonymous ID to ensure it's generated during init
             identityManager.getAnonymousId()
 
-            // Initialize network monitor
-            networkMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
+            // Initialize network monitor with debounced decorator
+            val rawMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
+            networkMonitor = DebouncedNetworkMonitor(rawMonitor, scope)
             networkMonitor.start { connected ->
                 if (connected) {
-                    Logger.log("Network connectivity restored — resuming dispatcher")
                     circuitBreaker.reset()
                     dispatcher.resumeFromOffline()
                     scope.launch { dispatcher.flush() }
                 } else {
-                    Logger.log("Network connectivity lost — pausing HTTP delivery")
                     dispatcher.pauseForOffline()
                 }
             }
@@ -445,7 +445,7 @@ class MetaRouterAnalyticsClient private constructor(
         Logger.log("Resetting SDK...")
 
         try {
-            // Stop network monitor
+            // Stop network monitor (decorator handles debounce cancellation)
             networkMonitor.stop()
 
             // Stop dispatcher first
