@@ -483,6 +483,15 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
+    // ===== Identity Read Methods =====
+
+    override fun getAnonymousId(): String? {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            return null
+        }
+        return identityManager.getAnonymousId()
+    }
+
     // ===== Debug Methods =====
 
     override fun enableDebugLogging() {

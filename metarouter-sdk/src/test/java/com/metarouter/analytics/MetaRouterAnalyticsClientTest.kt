@@ -1,6 +1,8 @@
 package com.metarouter.analytics
 
 import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.network.FakeNetworkMonitor
 import com.metarouter.analytics.types.EventType
 import io.mockk.*
@@ -330,6 +332,49 @@ class MetaRouterAnalyticsClientTest {
         // writeKey is masked as "***" + last 4 chars, so "test-write-key" becomes "***-key"
         assertEquals("***-key", debugInfo["writeKey"])
         assertTrue((debugInfo["queueLength"] as Int) > 0)
+    }
+
+    // ===== getAnonymousId =====
+
+    @Test
+    fun `getAnonymousId returns non-null when ready`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        val identityManager = IdentityManager(realContext)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, identityManager = identityManager
+        )
+
+        val anonymousId = client.getAnonymousId()
+        assertNotNull(anonymousId)
+        assertTrue(anonymousId!!.isNotBlank())
+    }
+
+    @Test
+    fun `getAnonymousId returns stable value across calls`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        val identityManager = IdentityManager(realContext)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, identityManager = identityManager
+        )
+
+        val id1 = client.getAnonymousId()
+        val id2 = client.getAnonymousId()
+        assertNotNull(id1)
+        assertEquals(id1, id2)
+    }
+
+    @Test
+    fun `getAnonymousId returns null after reset`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        val identityManager = IdentityManager(realContext)
+        val client = MetaRouterAnalyticsClient.initialize(
+            context, options, identityManager = identityManager
+        )
+        assertNotNull(client.getAnonymousId())
+
+        client.reset()
+
+        assertNull(client.getAnonymousId())
     }
 
     // ===== Reset =====

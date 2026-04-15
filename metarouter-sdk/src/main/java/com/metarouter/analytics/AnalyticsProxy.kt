@@ -162,6 +162,10 @@ class AnalyticsProxy(
         }
     }
 
+    override fun getAnonymousId(): String? {
+        return realClient.get()?.getAnonymousId()
+    }
+
     override suspend fun getDebugInfo(): Map<String, Any?> {
         // Use mutex to ensure consistent read with bind/unbind operations
         return mutex.withLock {

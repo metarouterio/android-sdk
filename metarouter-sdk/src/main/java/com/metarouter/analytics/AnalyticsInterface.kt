@@ -121,6 +121,17 @@ interface AnalyticsInterface {
     fun enableDebugLogging()
 
     /**
+     * Returns the current anonymous ID, or null if the SDK is not yet ready
+     * or no anonymous ID is currently available.
+     *
+     * This is a synchronous, side-effect-free read. It does not generate or
+     * persist an anonymous ID.
+     *
+     * @return The current anonymous ID, or null
+     */
+    fun getAnonymousId(): String?
+
+    /**
      * Get detailed debug information about the SDK state.
      *
      * Returns a map containing:
