@@ -124,8 +124,7 @@ interface AnalyticsInterface {
      * Returns the current anonymous ID, or null if the SDK is not yet ready
      * or no anonymous ID is currently available.
      *
-     * This is a synchronous, side-effect-free read. It does not generate or
-     * persist an anonymous ID.
+     * This is a synchronous, side-effect-free read.
      *
      * @return The current anonymous ID, or null
      */
