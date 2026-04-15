@@ -337,7 +337,7 @@ class MetaRouterAnalyticsClientTest {
     // ===== getAnonymousId =====
 
     @Test
-    fun `getAnonymousId returns non-null when ready`() = runBlocking {
+    fun `getAnonymousId returns value when ready`() = runBlocking {
         val realContext: Context = ApplicationProvider.getApplicationContext()
         val identityManager = IdentityManager(realContext)
         val client = MetaRouterAnalyticsClient.initialize(
@@ -345,8 +345,7 @@ class MetaRouterAnalyticsClientTest {
         )
 
         val anonymousId = client.getAnonymousId()
-        assertNotNull(anonymousId)
-        assertTrue(anonymousId!!.isNotBlank())
+        assertTrue(anonymousId.isNotBlank())
     }
 
     @Test
@@ -359,22 +358,24 @@ class MetaRouterAnalyticsClientTest {
 
         val id1 = client.getAnonymousId()
         val id2 = client.getAnonymousId()
-        assertNotNull(id1)
         assertEquals(id1, id2)
     }
 
     @Test
-    fun `getAnonymousId returns null after reset`() = runBlocking {
+    fun `getAnonymousId throws after reset`() = runBlocking {
         val realContext: Context = ApplicationProvider.getApplicationContext()
         val identityManager = IdentityManager(realContext)
         val client = MetaRouterAnalyticsClient.initialize(
             context, options, identityManager = identityManager
         )
-        assertNotNull(client.getAnonymousId())
+        client.getAnonymousId() // should not throw
 
         client.reset()
 
-        assertNull(client.getAnonymousId())
+        assertThrows(IllegalStateException::class.java) {
+            client.getAnonymousId()
+        }
+        Unit
     }
 
     // ===== Reset =====

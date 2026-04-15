@@ -296,8 +296,10 @@ class AnalyticsProxyTest {
     // ===== getAnonymousId =====
 
     @Test
-    fun `getAnonymousId returns null before binding`() = runTest {
-        assertNull(proxy.getAnonymousId())
+    fun `getAnonymousId throws before binding`() = runTest {
+        assertThrows(IllegalStateException::class.java) {
+            proxy.getAnonymousId()
+        }
     }
 
     @Test
@@ -312,7 +314,7 @@ class AnalyticsProxyTest {
 
     @Test
     fun `getAnonymousId does not enqueue a pending call`() = runTest {
-        proxy.getAnonymousId()
+        try { proxy.getAnonymousId() } catch (_: IllegalStateException) {}
 
         assertEquals(0, proxy.pendingCallCount())
     }
