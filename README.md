@@ -215,7 +215,7 @@ The analytics client provides the following methods:
 - `alias(newUserId: String)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: String)`: Set the Google Advertising ID (GAID) for ad tracking. See [Advertising ID](#advertising-id-gaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
-- `getAnonymousId(): String?`: Retrieve the current anonymous ID. Returns `null` if the client hasn't been initialized yet. This is a synchronous, side-effect-free read.
+- `getAnonymousId(): String`: Retrieve the current anonymous ID. This is a synchronous, side-effect-free read.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
