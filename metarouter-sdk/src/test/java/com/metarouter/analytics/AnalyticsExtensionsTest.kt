@@ -54,7 +54,6 @@ class AnalyticsExtensionsTest {
         override suspend fun flush() {}
         override suspend fun reset() {}
         override fun enableDebugLogging() {}
-        override fun getAnonymousId(): String = "test-anon-id"
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
     }

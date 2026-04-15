@@ -293,32 +293,6 @@ class AnalyticsProxyTest {
         assertEquals(clientInfo + ("bound" to true), debugInfo)
     }
 
-    // ===== getAnonymousId =====
-
-    @Test
-    fun `getAnonymousId throws before binding`() = runTest {
-        assertThrows(IllegalStateException::class.java) {
-            proxy.getAnonymousId()
-        }
-    }
-
-    @Test
-    fun `getAnonymousId forwards to real client after binding`() = runTest {
-        every { mockClient.getAnonymousId() } returns "anon-123"
-
-        proxy.bind(mockClient)
-
-        assertEquals("anon-123", proxy.getAnonymousId())
-        verify { mockClient.getAnonymousId() }
-    }
-
-    @Test
-    fun `getAnonymousId does not enqueue a pending call`() = runTest {
-        try { proxy.getAnonymousId() } catch (_: IllegalStateException) {}
-
-        assertEquals(0, proxy.pendingCallCount())
-    }
-
     // ===== Queue Overflow =====
 
     @Test

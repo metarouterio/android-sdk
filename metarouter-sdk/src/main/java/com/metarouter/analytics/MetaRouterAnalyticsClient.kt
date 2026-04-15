@@ -485,7 +485,7 @@ class MetaRouterAnalyticsClient private constructor(
 
     // ===== Identity Read Methods =====
 
-    override fun getAnonymousId(): String {
+    fun getAnonymousId(): String {
         check(lifecycleState.get() == LifecycleState.READY) {
             "Cannot get anonymousId - SDK not ready (state: ${lifecycleState.get()})"
         }

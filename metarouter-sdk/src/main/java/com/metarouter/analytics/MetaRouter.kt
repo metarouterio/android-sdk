@@ -3,6 +3,7 @@ package com.metarouter.analytics
 import android.content.Context
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,10 @@ object MetaRouter {
 
     /** Atomic flag to ensure only one initialization attempt proceeds. */
     private val initializationStarted = AtomicBoolean(false)
+
+    /** Signal that completes when the real client is bound to the proxy. */
+    @Volatile
+    private var boundSignal = CompletableDeferred<Unit>()
 
     @Volatile
     private var lifecycleObserver: AppLifecycleObserver? = null
@@ -115,6 +120,7 @@ object MetaRouter {
             lifecycleObserver?.register()
 
             proxy.bind(client)
+            boundSignal.complete(Unit)
         }
     }
 
@@ -186,6 +192,26 @@ object MetaRouter {
         }
 
         /**
+         * Get the current anonymous ID, suspending until the SDK is ready.
+         *
+         * If initialization is still in progress, this suspends until the
+         * client is bound and ready, then returns the anonymous ID.
+         * If already initialized, returns immediately.
+         *
+         * @return The current anonymous ID
+         * @throws IllegalStateException if MetaRouter has not been initialized
+         */
+        suspend fun getAnonymousId(): String {
+            if (!initializationStarted.get()) {
+                throw IllegalStateException(
+                    "MetaRouter not initialized. Call MetaRouter.Analytics.initialize() first."
+                )
+            }
+            boundSignal.await()
+            return store.get()!!.getAnonymousId()
+        }
+
+        /**
          * Enable or disable debug logging.
          *
          * @param enabled true to enable debug logging
@@ -215,6 +241,9 @@ object MetaRouter {
                 // Reset the proxy so it can be bound to a new client
                 proxy.unbind()
 
+                // Reset bound signal for next initialization
+                boundSignal = CompletableDeferred()
+
                 // Reset initialization flag
                 initializationStarted.set(false)
 
@@ -236,6 +265,7 @@ object MetaRouter {
             lifecycleObserver = null
             store.clear()
             proxy.resetForTesting()
+            boundSignal = CompletableDeferred()
             initializationStarted.set(false)
         }
     }

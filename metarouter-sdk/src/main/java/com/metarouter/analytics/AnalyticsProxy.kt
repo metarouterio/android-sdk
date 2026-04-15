@@ -162,12 +162,6 @@ class AnalyticsProxy(
         }
     }
 
-    override fun getAnonymousId(): String {
-        val client = realClient.get()
-            ?: throw IllegalStateException("Cannot get anonymousId - SDK not bound")
-        return client.getAnonymousId()
-    }
-
     override suspend fun getDebugInfo(): Map<String, Any?> {
         // Use mutex to ensure consistent read with bind/unbind operations
         return mutex.withLock {
