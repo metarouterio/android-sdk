@@ -420,7 +420,7 @@ class MetaRouterAnalyticsClientTest {
     // ===== Queue Overflow =====
 
     @Test
-    fun `queue overflow drops oldest events`() = runBlocking {
+    fun `queue overflow flushes to disk instead of dropping`() = runBlocking {
         val smallOptions = options.copy(maxQueueEvents = 5)
         val client = MetaRouterAnalyticsClient.initialize(context, smallOptions)
 
@@ -428,13 +428,13 @@ class MetaRouterAnalyticsClientTest {
         repeat(10) { i ->
             client.track("Event $i")
         }
-        // Wait until queue has processed and is at capacity (5 events)
-        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) == 5 }
+        // Wait until all events have been processed through the channel
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) > 0 }
 
         val debugInfo = client.getDebugInfo()
 
-        // Queue should have exactly 5 events (oldest dropped)
-        assertEquals(5, debugInfo["queueLength"])
+        // Queue should not exceed maxQueueEvents (overflow goes to disk)
+        assertTrue((debugInfo["queueLength"] as Int) <= 5)
     }
 
     // ===== Flush (Stub) =====

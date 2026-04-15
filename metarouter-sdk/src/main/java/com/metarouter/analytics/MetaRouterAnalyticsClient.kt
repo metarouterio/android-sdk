@@ -182,22 +182,18 @@ class MetaRouterAnalyticsClient private constructor(
             networkMonitor = DebouncedNetworkMonitor(rawMonitor, scope)
             networkMonitor.start { connected ->
                 if (connected) {
-                    persistableEventQueue?.setOfflineOverflowEnabled(false)
                     circuitBreaker.reset()
                     dispatcher.resumeFromOffline()
-                    // Two independent flush paths:
-                    scope.launch { dispatcher.flush() }  // (1) memory queue -> network
-                    scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }  // (2) disk -> network directly
+                    scope.launch { dispatcher.flush() }
+                    scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
                 } else {
                     dispatcher.pauseForOffline()
-                    persistableEventQueue?.setOfflineOverflowEnabled(true)
                 }
             }
 
-            // If starting offline, pause dispatcher and enable overflow immediately
+            // If starting offline, pause dispatcher immediately
             if (!networkMonitor.isConnected) {
                 dispatcher.pauseForOffline()
-                persistableEventQueue?.setOfflineOverflowEnabled(true)
             }
 
             // If online at launch and overflow exists from previous session, drain directly to network
@@ -206,6 +202,15 @@ class MetaRouterAnalyticsClient private constructor(
             }
 
             startEventProcessor()
+
+            // After each successful flush, drain any overflow disk events
+            persistableEventQueue?.let { pQueue ->
+                dispatcher.onFlushComplete = {
+                    if (networkMonitor.isConnected) {
+                        scope.launch { pQueue.drainDiskOverflowToNetwork(dispatcher) }
+                    }
+                }
+            }
 
             dispatcher.start()
 
@@ -431,7 +436,6 @@ class MetaRouterAnalyticsClient private constructor(
         }
         flush()
         persistableEventQueue?.flushToDisk()
-        persistableEventQueue?.flushOverflowBufferToDisk()
         dispatcher.pause()
     }
 

@@ -1053,46 +1053,49 @@ class DispatcherTest {
     // ===== sendBatchDirect Tests =====
 
     @Test
-    fun `sendBatchDirect returns true on success`() = runTest {
+    fun `sendBatchDirect returns 200 response on success`() = runTest {
         val dispatcher = createDispatcher()
         networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
 
         val events = listOf(createEvent("direct-1"), createEvent("direct-2"))
         val result = dispatcher.sendBatchDirect(events)
 
-        assertTrue(result)
+        assertNotNull(result)
+        assertEquals(200, result!!.statusCode)
         assertEquals(1, networkClient.requests.size)
     }
 
     @Test
-    fun `sendBatchDirect returns false on server error`() = runTest {
+    fun `sendBatchDirect returns 500 response on server error`() = runTest {
         val dispatcher = createDispatcher()
         networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
 
         val events = listOf(createEvent("direct-1"))
         val result = dispatcher.sendBatchDirect(events)
 
-        assertFalse(result)
+        assertNotNull(result)
+        assertEquals(500, result!!.statusCode)
     }
 
     @Test
-    fun `sendBatchDirect returns false on network error`() = runTest {
+    fun `sendBatchDirect returns null on network error`() = runTest {
         val dispatcher = createDispatcher()
         networkClient.nextException = java.io.IOException("Connection refused")
 
         val events = listOf(createEvent("direct-1"))
         val result = dispatcher.sendBatchDirect(events)
 
-        assertFalse(result)
+        assertNull(result)
     }
 
     @Test
-    fun `sendBatchDirect returns true for empty list`() = runTest {
+    fun `sendBatchDirect returns 200 for empty list`() = runTest {
         val dispatcher = createDispatcher()
 
         val result = dispatcher.sendBatchDirect(emptyList())
 
-        assertTrue(result)
+        assertNotNull(result)
+        assertEquals(200, result!!.statusCode)
         assertEquals(0, networkClient.requests.size) // No request made
     }
 

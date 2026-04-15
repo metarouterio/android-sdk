@@ -1,6 +1,7 @@
 package com.metarouter.analytics.queue
 
 import com.metarouter.analytics.dispatcher.Dispatcher
+import com.metarouter.analytics.dispatcher.ResponseCategory
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.storage.QueueSnapshot
 import com.metarouter.analytics.types.EnrichedEventPayload
@@ -24,6 +25,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Capacity model:
  * - Single shared cap: [maxCapacity] events OR [maxCapacityBytes] total, whichever is hit first
  * - Flush threshold: [flushThresholdEvents] events OR [flushThresholdBytes], whichever is hit first
+ *
+ * Offline overflow model:
+ * - When offline, flush triggers write the entire memory queue to the overflow disk store
+ *   instead of sending to the network. Same triggers, swapped destination.
+ * - When the queue hits capacity (online or offline), it flushes to overflow disk rather than dropping.
+ * - On online transition, overflow events drain from disk directly to network.
  */
 class PersistableEventQueue(
     private val maxCapacity: Int = 2000,
@@ -33,8 +40,7 @@ class PersistableEventQueue(
     private val maxCapacityBytes: Long = 5L * 1024 * 1024,
     private val eventTTLMs: Long = 7L * 24 * 60 * 60 * 1000,
     private val maxOfflineDiskEvents: Int = 10000,
-    private val overflowDiskStore: EventDiskStore? = null,
-    private val overflowBufferBatchThreshold: Int = 100
+    private val overflowDiskStore: EventDiskStore? = null
 ) : EventQueueInterface {
 
     companion object {
@@ -64,16 +70,14 @@ class PersistableEventQueue(
     // Cache of per-event byte sizes (parallel to memoryQueue order)
     private val eventSizes = ArrayDeque<Long>()
 
-    // Offline overflow state
-    @Volatile
-    private var offlineOverflowEnabled = false
-    private val overflowBuffer = ArrayDeque<EnrichedEventPayload>()
+    // Guards against concurrent drainDiskOverflowToNetwork invocations
+    private val isDraining = AtomicBoolean(false)
 
     @Synchronized
     override fun size(): Int = memoryQueue.size
 
     /**
-     * Enqueue an event to memory. No disk I/O.
+     * Enqueue an event to memory. No disk I/O unless offline and at capacity.
      * Drops oldest events if event count or byte capacity is exceeded.
      */
     @Synchronized
@@ -85,14 +89,10 @@ class PersistableEventQueue(
             dropOldest("byte capacity")
         }
 
-        // Drop oldest if at event count capacity
+        // At event count capacity: flush to overflow disk if available, otherwise drop oldest
         if (memoryQueue.size >= maxCapacity) {
-            if (offlineOverflowEnabled && overflowDiskStore != null) {
-                // Overflow to buffer instead of dropping
-                val oldest = memoryQueue.removeFirst()
-                val size = eventSizes.removeFirst()
-                estimatedBytes -= size
-                bufferOverflow(oldest)
+            if (overflowDiskStore != null) {
+                flushToOverflowDiskInternal()
             } else {
                 dropOldest("event count capacity")
             }
@@ -150,7 +150,7 @@ class PersistableEventQueue(
     }
 
     /**
-     * Clear all events from memory and delete the disk snapshot.
+     * Clear all events from memory and delete disk snapshots.
      */
     @Synchronized
     override fun clear() {
@@ -158,12 +158,23 @@ class PersistableEventQueue(
         memoryQueue.clear()
         eventSizes.clear()
         estimatedBytes = 0L
-        overflowBuffer.clear()
         diskStore.delete()
         overflowDiskStore?.delete()
         if (count > 0) {
             Logger.log("Cleared $count events from queue and deleted disk snapshots")
         }
+    }
+
+    /**
+     * Flush all events to offline overflow disk storage.
+     * Called by the dispatcher when a flush is triggered but the device is offline.
+     * Drains the entire memory queue and appends to the overflow disk store.
+     */
+    @Synchronized
+    override fun flushToOfflineStorage(): Boolean {
+        if (overflowDiskStore == null || memoryQueue.isEmpty()) return false
+        flushToOverflowDiskInternal()
+        return true
     }
 
     /**
@@ -262,45 +273,116 @@ class PersistableEventQueue(
     // ===== Offline Overflow =====
 
     /**
-     * Enable or disable offline overflow mode. When enabled and memory queue is full,
-     * oldest events overflow to buffer (then disk) instead of being dropped.
+     * Drain overflow events directly from disk to network in batches.
+     * Does NOT load events into the memory queue — sends via dispatcher's direct path.
+     * Called on offline->online transition as an independent flush pipeline.
+     *
+     * @return number of events successfully drained
      */
-    @Synchronized
-    fun setOfflineOverflowEnabled(enabled: Boolean) {
-        offlineOverflowEnabled = enabled
-    }
+    suspend fun drainDiskOverflowToNetwork(dispatcher: Dispatcher): Int {
+        val store = overflowDiskStore ?: return 0
+        if (!isDraining.compareAndSet(false, true)) return 0
 
-    /**
-     * Buffer an evicted event for batched disk write.
-     * Flushes buffer to disk when batch threshold reached.
-     * Must be called within a synchronized block.
-     */
-    private fun bufferOverflow(event: EnrichedEventPayload) {
-        overflowBuffer.addLast(event)
-        if (overflowBuffer.size >= overflowBufferBatchThreshold) {
-            flushOverflowBufferToDiskInternal()
+        var totalDrained = 0
+        var currentBatchSize = 100
+
+        try { while (true) {
+            val snapshot = store.read() ?: return totalDrained
+            val now = System.currentTimeMillis()
+            val events = if (eventTTLMs > 0) {
+                snapshot.events.filter { !isExpired(it, now) }
+            } else {
+                snapshot.events
+            }
+
+            if (events.isEmpty()) {
+                store.delete()
+                return totalDrained
+            }
+
+            // Take a batch from the front (oldest first)
+            val batch = events.take(minOf(currentBatchSize, events.size))
+            val remaining = events.drop(batch.size)
+
+            val response = dispatcher.sendBatchDirect(batch)
+
+            if (response == null) {
+                Logger.warn("Offline overflow drain paused — network error ($totalDrained drained so far)")
+                return totalDrained
+            }
+
+            when (ResponseCategory.from(response.statusCode)) {
+                ResponseCategory.SUCCESS -> {
+                    totalDrained += batch.size
+                    if (currentBatchSize < 100) {
+                        currentBatchSize = minOf(currentBatchSize * 2, 100)
+                    }
+                    if (remaining.isEmpty()) {
+                        store.delete()
+                        Logger.log("Offline overflow disk drain complete ($totalDrained events)")
+                        return totalDrained
+                    } else {
+                        store.write(QueueSnapshot(version = 1, events = remaining))
+                    }
+                }
+                ResponseCategory.PAYLOAD_TOO_LARGE -> {
+                    if (currentBatchSize > 1) {
+                        currentBatchSize = maxOf(1, currentBatchSize / 2)
+                        Logger.warn("Overflow drain: payload too large (413) — reduced batch to $currentBatchSize")
+                    } else {
+                        Logger.warn("Overflow drain: dropping oversized event at batchSize=1 (messageId: ${batch.first().messageId})")
+                        if (remaining.isEmpty()) {
+                            store.delete()
+                        } else {
+                            store.write(QueueSnapshot(version = 1, events = remaining))
+                        }
+                    }
+                }
+                ResponseCategory.FATAL_CONFIG -> {
+                    Logger.error("Overflow drain: fatal config error ${response.statusCode} — deleting overflow store")
+                    store.delete()
+                    return totalDrained
+                }
+                ResponseCategory.CLIENT_ERROR -> {
+                    Logger.warn("Overflow drain: client error ${response.statusCode} — dropping batch of ${batch.size}")
+                    if (remaining.isEmpty()) {
+                        store.delete()
+                        return totalDrained
+                    } else {
+                        store.write(QueueSnapshot(version = 1, events = remaining))
+                    }
+                }
+                ResponseCategory.SERVER_ERROR, ResponseCategory.RATE_LIMITED -> {
+                    Logger.warn("Offline overflow drain paused — ${response.statusCode} ($totalDrained drained so far)")
+                    return totalDrained
+                }
+            }
+        } } finally {
+            isDraining.set(false)
         }
     }
 
-    /**
-     * Flush the in-memory overflow buffer to the overflow disk store.
-     * Called when buffer reaches batch threshold, on app backgrounding,
-     * or on offline->online transition before draining.
-     */
-    @Synchronized
-    fun flushOverflowBufferToDisk() {
-        flushOverflowBufferToDiskInternal()
-    }
+    // ===== Internal =====
 
     /**
-     * Internal implementation — assumes lock is already held or called within synchronized block.
+     * Flush all events from memory queue to the overflow disk store.
+     * Appends to existing overflow events on disk. Enforces maxOfflineDiskEvents cap.
+     * Resets the memory queue to empty.
+     * Must be called within a synchronized block.
+     *
+     * Note: performs disk I/O (read + write) while holding the synchronized lock.
+     * This blocks enqueue/drain during the write. Acceptable because local disk I/O
+     * is fast (sub-ms for typical event sizes), but worth revisiting if profiling
+     * shows contention under extreme throughput.
      */
-    private fun flushOverflowBufferToDiskInternal() {
+    private fun flushToOverflowDiskInternal() {
         val store = overflowDiskStore ?: return
-        if (overflowBuffer.isEmpty()) return
+        if (memoryQueue.isEmpty()) return
 
-        val batch = overflowBuffer.toList()
-        overflowBuffer.clear()
+        val batch = memoryQueue.toList()
+        memoryQueue.clear()
+        eventSizes.clear()
+        estimatedBytes = 0L
 
         val existing = try {
             store.read()?.events ?: emptyList()
@@ -317,75 +399,7 @@ class PersistableEventQueue(
         }
 
         store.write(QueueSnapshot(version = 1, events = combined))
-        Logger.log("Flushed ${batch.size} overflow events to disk (total on disk: ${combined.size})")
-    }
-
-    /**
-     * Drain overflow events directly from disk to network in batches.
-     * Does NOT load events into the memory queue — sends via dispatcher's direct path.
-     * Called on offline->online transition as an independent flush pipeline.
-     *
-     * @return number of events successfully drained
-     */
-    suspend fun drainDiskOverflowToNetwork(dispatcher: Dispatcher): Int {
-        val store = overflowDiskStore ?: return 0
-
-        // First, flush any remaining buffer to disk
-        synchronized(this) {
-            flushOverflowBufferToDiskInternal()
-        }
-
-        var totalDrained = 0
-
-        while (true) {
-            val snapshot = store.read() ?: return totalDrained
-            val now = System.currentTimeMillis()
-            val events = if (eventTTLMs > 0) {
-                snapshot.events.filter { !isExpired(it, now) }
-            } else {
-                snapshot.events
-            }
-
-            if (events.isEmpty()) {
-                store.delete()
-                return totalDrained
-            }
-
-            // Take a batch from the front (oldest first)
-            val batchSize = minOf(100, events.size)
-            val batch = events.take(batchSize)
-            val remaining = events.drop(batchSize)
-
-            // Send batch directly to network via dispatcher's HTTP path
-            val success = dispatcher.sendBatchDirect(batch)
-            if (success) {
-                totalDrained += batch.size
-                if (remaining.isEmpty()) {
-                    store.delete()
-                    Logger.log("Offline overflow disk drain complete ($totalDrained events)")
-                    return totalDrained
-                } else {
-                    store.write(QueueSnapshot(version = 1, events = remaining))
-                }
-            } else {
-                // Network failed — stop draining, will retry on next online transition
-                Logger.warn("Offline overflow drain paused — network send failed ($totalDrained drained so far)")
-                return totalDrained
-            }
-        }
-    }
-
-    /**
-     * Get count of events in the offline overflow buffer + disk store.
-     */
-    @Synchronized
-    fun offlineOverflowCount(): Int {
-        val diskCount = try {
-            overflowDiskStore?.read()?.events?.size ?: 0
-        } catch (e: Exception) {
-            0
-        }
-        return overflowBuffer.size + diskCount
+        Logger.log("Flushed ${batch.size} events to offline disk (total on disk: ${combined.size})")
     }
 
     private fun dropOldest(reason: String) {
