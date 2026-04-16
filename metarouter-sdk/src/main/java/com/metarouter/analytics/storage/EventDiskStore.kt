@@ -69,6 +69,9 @@ class EventDiskStore(private val baseDir: File) {
     private val tmpFile: File
         get() = File(snapshotDir, "$SNAPSHOT_FILENAME.tmp")
 
+    /** Cheap check — does a snapshot file exist on disk? */
+    fun exists(): Boolean = snapshotFile.exists()
+
     /**
      * Write a snapshot to disk. Uses atomic write-to-tmp-then-rename.
      * Overwrites any existing snapshot completely.

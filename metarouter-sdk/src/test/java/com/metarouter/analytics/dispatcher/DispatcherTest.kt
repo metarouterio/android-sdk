@@ -1050,6 +1050,72 @@ class DispatcherTest {
         dispatcher.stop()
     }
 
+    // ===== sendBatchDirect Tests =====
+
+    @Test
+    fun `sendBatchDirect returns 200 response on success`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        val events = listOf(createEvent("direct-1"), createEvent("direct-2"))
+        val result = dispatcher.sendBatchDirect(events)
+
+        assertNotNull(result)
+        assertEquals(200, result!!.statusCode)
+        assertEquals(1, networkClient.requests.size)
+    }
+
+    @Test
+    fun `sendBatchDirect returns 500 response on server error`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+
+        val events = listOf(createEvent("direct-1"))
+        val result = dispatcher.sendBatchDirect(events)
+
+        assertNotNull(result)
+        assertEquals(500, result!!.statusCode)
+    }
+
+    @Test
+    fun `sendBatchDirect returns null on network error`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextException = java.io.IOException("Connection refused")
+
+        val events = listOf(createEvent("direct-1"))
+        val result = dispatcher.sendBatchDirect(events)
+
+        assertNull(result)
+    }
+
+    @Test
+    fun `sendBatchDirect returns 200 for empty list`() = runTest {
+        val dispatcher = createDispatcher()
+
+        val result = dispatcher.sendBatchDirect(emptyList())
+
+        assertNotNull(result)
+        assertEquals(200, result!!.statusCode)
+        assertEquals(0, networkClient.requests.size) // No request made
+    }
+
+    @Test
+    fun `sendBatchDirect does not affect memory queue`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+
+        // Add events to memory queue
+        queue.enqueue(createEvent("queue-1"))
+        assertEquals(1, queue.size())
+
+        // Send different events via direct path
+        val directEvents = listOf(createEvent("direct-1"))
+        dispatcher.sendBatchDirect(directEvents)
+
+        // Memory queue should be untouched
+        assertEquals(1, queue.size())
+    }
+
     // ===== Helper Methods =====
 
     private fun TestScope.createDispatcher(): Dispatcher {

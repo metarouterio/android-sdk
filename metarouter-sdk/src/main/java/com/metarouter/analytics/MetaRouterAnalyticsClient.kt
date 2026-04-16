@@ -152,7 +152,8 @@ class MetaRouterAnalyticsClient private constructor(
                 val diskStore = injectedDiskStore ?: EventDiskStore.create(context)
                 val pQueue = PersistableEventQueue(
                     maxCapacity = options.maxQueueEvents,
-                    diskStore = diskStore
+                    diskStore = diskStore,
+                    maxOfflineDiskEvents = options.maxOfflineDiskEvents
                 )
                 pQueue.rehydrate()
                 eventQueue = pQueue
@@ -182,6 +183,7 @@ class MetaRouterAnalyticsClient private constructor(
                     circuitBreaker.reset()
                     dispatcher.resumeFromOffline()
                     scope.launch { dispatcher.flush() }
+                    scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
                 } else {
                     dispatcher.pauseForOffline()
                 }
@@ -192,7 +194,22 @@ class MetaRouterAnalyticsClient private constructor(
                 dispatcher.pauseForOffline()
             }
 
+            // If online at launch and unsent events exist on disk from a previous session,
+            // drain them directly to the network.
+            if (networkMonitor.isConnected && persistableEventQueue?.hasOverflowData() == true) {
+                scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
+            }
+
             startEventProcessor()
+
+            // After each successful flush, drain any overflow disk events
+            persistableEventQueue?.let { pQueue ->
+                dispatcher.onFlushComplete = {
+                    if (networkMonitor.isConnected && pQueue.hasOverflowData()) {
+                        scope.launch { pQueue.drainDiskOverflowToNetwork(dispatcher) }
+                    }
+                }
+            }
 
             dispatcher.start()
 
