@@ -62,7 +62,11 @@ object MetaRouter {
                 initializeInternal(context, options)
             } catch (e: Exception) {
                 Logger.error("Background initialization failed: ${e.message}")
-                // Reset flag to allow retry
+                // Wake current awaiters with failure, then swap in a fresh
+                // signal so a retry's later boundSignal.complete(Unit) isn't
+                // swallowed by an already-completed deferred.
+                boundSignal.completeExceptionally(e)
+                boundSignal = CompletableDeferred()
                 initializationStarted.set(false)
             }
         }
@@ -202,13 +206,26 @@ object MetaRouter {
          * @throws IllegalStateException if MetaRouter has not been initialized
          */
         suspend fun getAnonymousId(): String {
-            if (!initializationStarted.get()) {
-                throw IllegalStateException(
-                    "MetaRouter not initialized. Call MetaRouter.Analytics.initialize() first."
-                )
+            // Capture the current boundSignal reference under the same lock
+            // reset uses, so we can't observe a mid-reset state where the flag
+            // is still true but boundSignal has already been swapped for a
+            // fresh (never-completing) deferred.
+            val signal: CompletableDeferred<Unit> = initMutex.withLock {
+                if (!initializationStarted.get()) {
+                    throw IllegalStateException(
+                        "MetaRouter not initialized. Call MetaRouter.Analytics.initialize() first."
+                    )
+                }
+                boundSignal
             }
-            boundSignal.await()
-            return store.get()!!.getAnonymousId()
+
+            signal.await()
+
+            val client = store.get()
+                ?: throw IllegalStateException(
+                    "MetaRouter bound signal completed but client store is empty (likely reset during getAnonymousId)"
+                )
+            return client.getAnonymousId()
         }
 
         /**
