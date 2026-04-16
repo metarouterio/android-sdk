@@ -374,7 +374,7 @@ class PersistableEventQueueTest {
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -408,7 +408,7 @@ class PersistableEventQueueTest {
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -436,7 +436,7 @@ class PersistableEventQueueTest {
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -458,12 +458,12 @@ class PersistableEventQueueTest {
     }
 
     @Test
-    fun `offline disk overflow respects maxOfflineDiskEvents cap`() {
+    fun `offline disk overflow respects maxDiskEvents cap`() {
 
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 8,
+            maxDiskEvents = 8,
             eventTTLMs = 0
         )
 
@@ -478,7 +478,7 @@ class PersistableEventQueueTest {
 
         val snapshot = diskStore.read()
         assertNotNull(snapshot)
-        assertTrue("Should cap at maxOfflineDiskEvents", snapshot!!.events.size <= 8)
+        assertTrue("Should cap at maxDiskEvents", snapshot!!.events.size <= 8)
 
     }
 
@@ -494,7 +494,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -541,7 +541,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -582,7 +582,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -615,7 +615,7 @@ class PersistableEventQueueTest {
         val freshQueue = PersistableEventQueue(
             maxCapacity = 2000,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
         freshQueue.rehydrate()
@@ -673,7 +673,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -717,7 +717,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -767,7 +767,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -805,7 +805,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -849,7 +849,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -891,7 +891,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = oneDayMs // 1 day TTL
         )
 
@@ -938,7 +938,7 @@ class PersistableEventQueueTest {
         val overflowQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -977,7 +977,7 @@ class PersistableEventQueueTest {
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 100,
+            maxDiskEvents = 100,
             eventTTLMs = 0
         )
 
@@ -1007,21 +1007,21 @@ class PersistableEventQueueTest {
     }
 
 
-    // ===== maxOfflineDiskEvents = 0 (in-memory-only ring buffer) =====
+    // ===== maxDiskEvents = 0 (in-memory-only ring buffer) =====
 
     @Test
     fun `enqueue at event cap with zero disk drops oldest and writes no disk file`() {
         val inMemQueue = PersistableEventQueue(
             maxCapacity = 3,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 0,
+            maxDiskEvents = 0,
             eventTTLMs = 0
         )
 
         repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
 
         assertEquals(3, inMemQueue.size())
-        assertNull("disk store must not be written when maxOfflineDiskEvents=0", diskStore.read())
+        assertNull("disk store must not be written when maxDiskEvents=0", diskStore.read())
         assertFalse(inMemQueue.hasOverflowData())
 
         val drained = inMemQueue.drain(3)
@@ -1034,14 +1034,14 @@ class PersistableEventQueueTest {
             maxCapacity = 2000,
             diskStore = diskStore,
             maxCapacityBytes = 500,
-            maxOfflineDiskEvents = 0,
+            maxDiskEvents = 0,
             eventTTLMs = 0
         )
 
         repeat(10) { i -> tinyQueue.enqueue(createTestEvent("msg-$i")) }
 
         assertTrue(tinyQueue.estimatedSizeBytes() <= 500)
-        assertNull("disk store must not be written when maxOfflineDiskEvents=0", diskStore.read())
+        assertNull("disk store must not be written when maxDiskEvents=0", diskStore.read())
         assertFalse(tinyQueue.hasOverflowData())
     }
 
@@ -1050,7 +1050,7 @@ class PersistableEventQueueTest {
         val inMemQueue = PersistableEventQueue(
             maxCapacity = 100,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 0,
+            maxDiskEvents = 0,
             eventTTLMs = 0
         )
         repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
@@ -1067,7 +1067,7 @@ class PersistableEventQueueTest {
         val inMemQueue = PersistableEventQueue(
             maxCapacity = 100,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 0,
+            maxDiskEvents = 0,
             eventTTLMs = 0
         )
         repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
@@ -1083,7 +1083,7 @@ class PersistableEventQueueTest {
         val inMemQueue = PersistableEventQueue(
             maxCapacity = 4,
             diskStore = diskStore,
-            maxOfflineDiskEvents = 0,
+            maxDiskEvents = 0,
             eventTTLMs = 0
         )
         // Fill memory with newer events

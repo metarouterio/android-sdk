@@ -153,7 +153,7 @@ class MetaRouterAnalyticsClient private constructor(
                 val pQueue = PersistableEventQueue(
                     maxCapacity = options.maxQueueEvents,
                     diskStore = diskStore,
-                    maxOfflineDiskEvents = options.maxOfflineDiskEvents
+                    maxDiskEvents = options.maxDiskEvents
                 )
                 pQueue.rehydrate()
                 eventQueue = pQueue

@@ -39,7 +39,7 @@ class PersistableEventQueue(
     private val flushThresholdBytes: Long = 2L * 1024 * 1024,
     private val maxCapacityBytes: Long = 5L * 1024 * 1024,
     private val eventTTLMs: Long = 7L * 24 * 60 * 60 * 1000,
-    private val maxOfflineDiskEvents: Int = 10000
+    private val maxDiskEvents: Int = 10000
 ) : EventQueueInterface {
 
     companion object {
@@ -93,14 +93,14 @@ class PersistableEventQueue(
      * When at capacity (event count or byte size), flushes the entire memory queue
      * to disk. Events are only dropped if capacity is hit and disk operations fail.
      *
-     * If [maxOfflineDiskEvents] is 0, disk persistence is disabled and the queue
+     * If [maxDiskEvents] is 0, disk persistence is disabled and the queue
      * acts as a pure in-memory ring buffer: at capacity, the oldest event is dropped.
      */
     @Synchronized
     override fun enqueue(event: EnrichedEventPayload) {
         val eventSize = estimateEventSize(event)
 
-        if (maxOfflineDiskEvents == 0) {
+        if (maxDiskEvents == 0) {
             dropOldestUntilFits(eventSize)
             memoryQueue.addLast(event)
             eventSizes.addLast(eventSize)
@@ -146,7 +146,7 @@ class PersistableEventQueue(
      */
     @Synchronized
     override fun requeueToFront(events: List<EnrichedEventPayload>) {
-        if (maxOfflineDiskEvents == 0) {
+        if (maxDiskEvents == 0) {
             // In-memory-only mode: at cap, drop newest (back of queue) so the
             // requeued retry events at the front are preserved.
             events.asReversed().forEach { event ->
@@ -204,11 +204,11 @@ class PersistableEventQueue(
     /**
      * Flush memory queue to disk when the dispatcher triggers a flush while offline.
      * Returns true if events were flushed to disk. No-op (returns false) when
-     * [maxOfflineDiskEvents] is 0.
+     * [maxDiskEvents] is 0.
      */
     @Synchronized
     override fun flushToOfflineStorage(): Boolean {
-        if (maxOfflineDiskEvents == 0) return false
+        if (maxDiskEvents == 0) return false
         if (memoryQueue.isEmpty()) return false
         flushMemoryToDiskInternal()
         return true
@@ -216,11 +216,11 @@ class PersistableEventQueue(
 
     /**
      * Best-effort crash-safety flush: appends current memory queue to disk.
-     * Called on app background / onTrimMemory. No-op when [maxOfflineDiskEvents] is 0.
+     * Called on app background / onTrimMemory. No-op when [maxDiskEvents] is 0.
      */
     @Synchronized
     fun flushToDisk() {
-        if (maxOfflineDiskEvents == 0) return
+        if (maxDiskEvents == 0) return
         if (memoryQueue.isEmpty()) return
         flushMemoryToDiskInternal()
     }
@@ -386,7 +386,7 @@ class PersistableEventQueue(
 
     /**
      * Flush all events from memory queue to disk. Appends to any existing disk data,
-     * enforces [maxOfflineDiskEvents] cap, and resets the memory queue.
+     * enforces [maxDiskEvents] cap, and resets the memory queue.
      * Must be called while holding `synchronized(this)`.
      *
      * Note: performs disk I/O (read + write) while holding both `this` and `diskLock`.
@@ -410,8 +410,8 @@ class PersistableEventQueue(
             }
 
             var combined = existing + batch
-            if (combined.size > maxOfflineDiskEvents) {
-                val dropCount = combined.size - maxOfflineDiskEvents
+            if (combined.size > maxDiskEvents) {
+                val dropCount = combined.size - maxDiskEvents
                 combined = combined.drop(dropCount)
                 Logger.warn("Offline disk cap reached — dropped $dropCount oldest events")
             }
@@ -437,7 +437,7 @@ class PersistableEventQueue(
             dropped++
         }
         if (dropped > 0) {
-            Logger.warn("In-memory queue cap reached — dropped $dropped oldest event(s) (maxOfflineDiskEvents=0)")
+            Logger.warn("In-memory queue cap reached — dropped $dropped oldest event(s) (maxDiskEvents=0)")
         }
     }
 
@@ -456,7 +456,7 @@ class PersistableEventQueue(
             dropped++
         }
         if (dropped > 0) {
-            Logger.warn("In-memory queue cap reached during requeue — dropped $dropped newest event(s) (maxOfflineDiskEvents=0)")
+            Logger.warn("In-memory queue cap reached during requeue — dropped $dropped newest event(s) (maxDiskEvents=0)")
         }
     }
 

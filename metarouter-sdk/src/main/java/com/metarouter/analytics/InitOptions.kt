@@ -12,7 +12,7 @@ import com.metarouter.analytics.utils.Logger
  * @property maxQueueEvents Maximum enriched events held in queue (default: 2000).
  *   This value also determines the incoming event channel capacity (minimum 100).
  *   When limits are exceeded, oldest events are dropped.
- * @property maxOfflineDiskEvents Maximum events stored on disk during extended offline periods
+ * @property maxDiskEvents Maximum events stored on disk during extended offline periods
  *   (default: 10000). Set to `0` to opt out of disk persistence entirely — the queue then
  *   operates as a purely in-memory ring buffer, dropping the oldest event when full.
  *   Negative values are rejected.
@@ -25,7 +25,7 @@ data class InitOptions(
     val flushIntervalSeconds: Int = 10,
     val debug: Boolean = false,
     val maxQueueEvents: Int = 2000,
-    val maxOfflineDiskEvents: Int = 10000
+    val maxDiskEvents: Int = 10000
 ) {
     init {
         validateWriteKey()
@@ -33,6 +33,7 @@ data class InitOptions(
         validateFlushInterval()
         validateMaxQueueEvents()
         validateMaxOfflineDiskEvents()
+        warnIfDiskCapBelowMemoryCap()
     }
 
     private fun validateWriteKey() {
@@ -70,8 +71,17 @@ data class InitOptions(
     }
 
     private fun validateMaxOfflineDiskEvents() {
-        require(maxOfflineDiskEvents >= 0) {
-            "MetaRouterAnalyticsClient initialization failed: `maxOfflineDiskEvents` must be >= 0 (use 0 to disable disk persistence)."
+        require(maxDiskEvents >= 0) {
+            "MetaRouterAnalyticsClient initialization failed: `maxDiskEvents` must be >= 0 (use 0 to disable disk persistence)."
+        }
+    }
+
+    private fun warnIfDiskCapBelowMemoryCap() {
+        if (maxDiskEvents in 1 until maxQueueEvents) {
+            Logger.warn(
+                "maxDiskEvents ($maxDiskEvents) is less than maxQueueEvents ($maxQueueEvents) — " +
+                    "memory can hold more events than disk can preserve; events may be dropped during background flush."
+            )
         }
     }
 
