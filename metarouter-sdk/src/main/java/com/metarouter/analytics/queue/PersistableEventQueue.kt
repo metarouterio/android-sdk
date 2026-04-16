@@ -14,23 +14,23 @@ import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Event queue with disk persistence as a safety net.
- * Uses composition: wraps an internal memory queue and adds byte tracking + disk I/O.
+ * Event queue with a single disk store for persistence and offline overflow.
+ * Memory queue is the hot buffer; disk is the overflow/crash-safety backing.
  *
- * Write-behind model:
- * - enqueue() and drain() are memory-only (no disk I/O)
- * - flushToDisk() writes a full snapshot of current memory state
- * - rehydrate() loads events from disk once per process lifetime
+ * Model:
+ * - enqueue() and drain() are memory-only (no disk I/O) in the common case.
+ * - When memory queue hits capacity (event count OR byte size), the entire queue
+ *   flushes to disk and memory resets to empty. Same triggers swap destination
+ *   when the device is offline (see [flushToOfflineStorage]).
+ * - flushToDisk() appends current memory queue to disk (crash-safety snapshot).
+ * - drainDiskOverflowToNetwork() sends disk events directly to the network via
+ *   Dispatcher.sendBatchDirect, bypassing the memory queue.
  *
- * Capacity model:
- * - Single shared cap: [maxCapacity] events OR [maxCapacityBytes] total, whichever is hit first
- * - Flush threshold: [flushThresholdEvents] events OR [flushThresholdBytes], whichever is hit first
- *
- * Offline overflow model:
- * - When offline, flush triggers write the entire memory queue to the overflow disk store
- *   instead of sending to the network. Same triggers, swapped destination.
- * - When the queue hits capacity (online or offline), it flushes to overflow disk rather than dropping.
- * - On online transition, overflow events drain from disk directly to network.
+ * Concurrency:
+ * - All memory-queue operations are guarded by `synchronized(this)` via @Synchronized.
+ * - Disk operations happen under a separate [diskLock] so the suspend drain can
+ *   release it during network calls without blocking enqueue/drain of the memory queue.
+ * - Lock order is always `this` -> `diskLock` (never the reverse).
  */
 class PersistableEventQueue(
     private val maxCapacity: Int = 2000,
@@ -39,8 +39,7 @@ class PersistableEventQueue(
     private val flushThresholdBytes: Long = 2L * 1024 * 1024,
     private val maxCapacityBytes: Long = 5L * 1024 * 1024,
     private val eventTTLMs: Long = 7L * 24 * 60 * 60 * 1000,
-    private val maxOfflineDiskEvents: Int = 10000,
-    private val overflowDiskStore: EventDiskStore? = null
+    private val maxOfflineDiskEvents: Int = 10000
 ) : EventQueueInterface {
 
     companion object {
@@ -76,50 +75,36 @@ class PersistableEventQueue(
     // Guards against concurrent drainDiskOverflowToNetwork invocations
     private val isDraining = AtomicBoolean(false)
 
-    // Lightweight flag: true when overflow data exists on disk.
-    // Set when events are flushed to overflow disk, cleared when drain empties the store.
-    // Avoids unnecessary disk reads in onFlushComplete when no overflow exists.
-    // Initialized by checking if overflow file exists from a previous session.
+    // True when unsent events exist on disk. Cheap volatile flag used to gate drain attempts.
+    // Initialized from file existence (not a full file parse).
     @Volatile
-    private var hasOverflowData = try { overflowDiskStore?.read() != null } catch (_: Exception) { false }
+    private var hasOverflowData = try { diskStore.exists() } catch (_: Exception) { false }
 
-    // Lock for overflow disk store access — shared between synchronized queue methods
-    // (which hold `this` monitor) and the unsynchronized drain coroutine.
-    // Queue methods call flushToOverflowDiskInternal under `synchronized(this)` which
-    // also acquires overflowLock. Drain acquires only overflowLock (not `this`), so
-    // there is no deadlock risk — the lock order is always: this -> overflowLock.
-    private val overflowLock = Any()
+    // Lock for disk store access. The suspend drain releases this lock during network calls,
+    // so it can't hold the class monitor. Memory queue methods acquire `this` first and
+    // `diskLock` second (when they touch disk). Drain acquires only `diskLock`. No deadlock.
+    private val diskLock = Any()
 
     @Synchronized
     override fun size(): Int = memoryQueue.size
 
     /**
      * Enqueue an event to memory.
-     * When at capacity (event count or byte size), flushes to overflow disk if available,
-     * otherwise drops oldest events.
+     * When at capacity (event count or byte size), flushes the entire memory queue
+     * to disk. Events are only dropped if capacity is hit and disk operations fail.
      */
     @Synchronized
     override fun enqueue(event: EnrichedEventPayload) {
         val eventSize = estimateEventSize(event)
 
-        // Over byte capacity: flush to overflow disk if available, otherwise drop oldest
+        // Over byte capacity: flush memory queue to disk
         if (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
-            if (overflowDiskStore != null) {
-                flushToOverflowDiskInternal()
-            } else {
-                while (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
-                    dropOldest("byte capacity")
-                }
-            }
+            flushMemoryToDiskInternal()
         }
 
-        // At event count capacity: flush to overflow disk if available, otherwise drop oldest
+        // At event count capacity: flush memory queue to disk
         if (memoryQueue.size >= maxCapacity) {
-            if (overflowDiskStore != null) {
-                flushToOverflowDiskInternal()
-            } else {
-                dropOldest("event count capacity")
-            }
+            flushMemoryToDiskInternal()
         }
 
         memoryQueue.addLast(event)
@@ -143,43 +128,30 @@ class PersistableEventQueue(
 
     /**
      * Requeue events to front (for retry after a failed send).
-     * When at capacity, flushes existing memory queue to overflow disk if available,
-     * otherwise drops newest events to make room. The requeued events always take
-     * priority at the front since they were drained first (older) and a send
-     * already started for them.
+     * When at capacity, flushes existing memory queue to disk to make room. The requeued
+     * (older) events take priority at the front since they were drained first and a send
+     * already started for them. If the requeue batch itself exceeds capacity mid-loop,
+     * we flush again so no requeued events get dropped.
      */
     @Synchronized
     override fun requeueToFront(events: List<EnrichedEventPayload>) {
-        // If adding these events would overflow capacity and we have an overflow store,
-        // flush the current memory queue to disk first. The newer events go to disk;
-        // the requeued (older) events take their place at the front.
-        if (overflowDiskStore != null &&
-            (memoryQueue.size + events.size > maxCapacity ||
+        // Initial flush: if adding these events would exceed capacity, flush current memory first.
+        if ((memoryQueue.size + events.size > maxCapacity ||
              estimatedBytes + events.sumOf { estimateEventSize(it) } > maxCapacityBytes) &&
             memoryQueue.isNotEmpty()) {
-            flushToOverflowDiskInternal()
+            flushMemoryToDiskInternal()
         }
 
         events.asReversed().forEach { event ->
             val eventSize = estimateEventSize(event)
 
-            // Edge case: requeue batch alone exceeds byte capacity.
-            // Drop newest to make room (no overflow store available, or batch too big).
-            while (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
-                val removedSize = eventSizes.removeLastOrNull() ?: 0L
-                memoryQueue.removeLastOrNull()?.let {
-                    estimatedBytes -= removedSize
-                    Logger.warn("Queue byte capacity reached during requeue - dropped newest event (messageId: ${it.messageId})")
-                }
+            // Mid-loop capacity: the requeue batch itself exceeds capacity after earlier iterations
+            // filled the queue. Flush to disk instead of dropping requeued events.
+            if (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
+                flushMemoryToDiskInternal()
             }
-
-            // Edge case: requeue batch alone exceeds event count capacity.
             if (memoryQueue.size >= maxCapacity) {
-                val removedSize = eventSizes.removeLastOrNull() ?: 0L
-                memoryQueue.removeLastOrNull()?.let {
-                    estimatedBytes -= removedSize
-                    Logger.warn("Queue event capacity reached during requeue - dropped newest event (messageId: ${it.messageId})")
-                }
+                flushMemoryToDiskInternal()
             }
 
             memoryQueue.addFirst(event)
@@ -189,7 +161,7 @@ class PersistableEventQueue(
     }
 
     /**
-     * Clear all events from memory and delete disk snapshots.
+     * Clear all events from memory and delete the disk file.
      */
     @Synchronized
     override fun clear() {
@@ -197,46 +169,40 @@ class PersistableEventQueue(
         memoryQueue.clear()
         eventSizes.clear()
         estimatedBytes = 0L
-        diskStore.delete()
-        synchronized(overflowLock) {
-            deleteOverflowStore()
+        synchronized(diskLock) {
+            deleteDiskStore()
         }
         if (count > 0) {
-            Logger.log("Cleared $count events from queue and deleted disk snapshots")
+            Logger.log("Cleared $count events from queue and deleted disk snapshot")
         }
     }
 
     /**
-     * Flush all events to offline overflow disk storage.
-     * Called by the dispatcher when a flush is triggered but the device is offline.
-     * Drains the entire memory queue and appends to the overflow disk store.
+     * Flush memory queue to disk when the dispatcher triggers a flush while offline.
+     * Returns true if events were flushed to disk.
      */
     @Synchronized
     override fun flushToOfflineStorage(): Boolean {
-        if (overflowDiskStore == null || memoryQueue.isEmpty()) return false
-        flushToOverflowDiskInternal()
+        if (memoryQueue.isEmpty()) return false
+        flushMemoryToDiskInternal()
         return true
     }
 
     /**
-     * Flush current memory state to disk as a full overwrite snapshot.
-     * Skips the write and deletes any existing snapshot if the queue is empty.
+     * Best-effort crash-safety flush: appends current memory queue to disk.
+     * Called on app background / onTrimMemory.
      */
     @Synchronized
     fun flushToDisk() {
-        if (memoryQueue.isEmpty()) {
-            diskStore.delete()
-            return
-        }
-        val events = memoryQueue.toList()
-        val snapshot = QueueSnapshot(version = 1, events = events)
-        diskStore.write(snapshot)
+        if (memoryQueue.isEmpty()) return
+        flushMemoryToDiskInternal()
     }
 
     /**
-     * Rehydrate events from disk into memory. Only executes once per process.
-     * Loaded events count toward capacity. Excess events are trimmed (keep newest).
-     * Deletes the disk file after successful load.
+     * Called once per process on startup. With the consolidated disk store, events
+     * persisted across sessions stay on disk and drain to the network via
+     * [drainDiskOverflowToNetwork]. Memory queue starts empty — no loading needed.
+     * [hasOverflowData] reflects whether disk has unsent events (set in constructor).
      */
     @Synchronized
     fun rehydrate() {
@@ -244,57 +210,9 @@ class PersistableEventQueue(
             Logger.log("Rehydration already completed this process - skipping")
             return
         }
-
-        val snapshot = diskStore.read() ?: return
-
-        var events = snapshot.events
-        if (events.isEmpty()) {
-            diskStore.delete()
-            return
+        if (hasOverflowData) {
+            Logger.log("Unsent events present on disk — will drain on next online transition")
         }
-
-        // Drop events older than TTL (keep newest)
-        if (eventTTLMs > 0) {
-            val now = System.currentTimeMillis()
-            val beforeTTL = events.size
-            events = events.filter { !isExpired(it, now) }
-            val dropped = beforeTTL - events.size
-            if (dropped > 0) {
-                Logger.warn("Rehydration: dropped $dropped event(s) older than ${eventTTLMs / (24 * 60 * 60 * 1000)}d TTL")
-            }
-        }
-
-        // Trim to event count capacity (keep newest)
-        if (events.size > maxCapacity) {
-            Logger.warn("Disk snapshot has ${events.size} events, trimming to $maxCapacity (keeping newest)")
-            events = events.drop(events.size - maxCapacity)
-        }
-
-        // Trim by byte capacity (keep newest)
-        var totalBytes = 0L
-        val sizedEvents = events.map { it to estimateEventSize(it) }
-        val fittingEvents = mutableListOf<Pair<EnrichedEventPayload, Long>>()
-
-        for ((event, size) in sizedEvents.asReversed()) {
-            if (totalBytes + size > maxCapacityBytes) break
-            totalBytes += size
-            fittingEvents.add(event to size)
-        }
-        fittingEvents.reverse()
-
-        if (fittingEvents.size < events.size) {
-            Logger.warn("Disk snapshot exceeds byte capacity, trimmed from ${events.size} to ${fittingEvents.size} events")
-        }
-
-        // Load into memory
-        for ((event, size) in fittingEvents) {
-            memoryQueue.addLast(event)
-            eventSizes.addLast(size)
-            estimatedBytes += size
-        }
-
-        Logger.log("Rehydrated ${fittingEvents.size} events from disk")
-        diskStore.delete()
     }
 
     /**
@@ -312,27 +230,27 @@ class PersistableEventQueue(
     fun estimatedSizeBytes(): Long = estimatedBytes
 
     /**
-     * Check if there is overflow data on disk worth draining.
-     * Cheap check — no disk I/O, just reads a volatile flag.
+     * Check if there is unsent data on disk worth draining.
+     * Cheap check — reads a volatile flag, no disk I/O.
      */
     fun hasOverflowData(): Boolean = hasOverflowData
 
     // ===== Offline Overflow =====
 
     /**
-     * Drain overflow events directly from disk to network in batches.
-     * Does NOT load events into the memory queue — sends via dispatcher's direct path.
-     * Called on offline->online transition as an independent flush pipeline.
+     * Drain disk events directly to the network in batches via [Dispatcher.sendBatchDirect].
+     * Does NOT load events into the memory queue. Called on offline->online transitions
+     * and after successful online flushes via onFlushComplete.
      *
-     * Reads the entire overflow file once into memory, then drains batches from the
-     * in-memory list. Writes a checkpoint to disk every [DRAIN_CHECKPOINT_BATCHES]
-     * successful batches for crash safety. On failure, writes remaining events back
-     * to disk and returns.
+     * Reads the entire disk file once, deletes it, then iterates batches in-memory.
+     * Writes a checkpoint every [DRAIN_CHECKPOINT_BATCHES] successful batches for crash safety.
+     * On failure, writes remaining events back to disk.
      *
      * @return number of events successfully drained
      */
     suspend fun drainDiskOverflowToNetwork(dispatcher: Dispatcher): Int {
-        val store = overflowDiskStore ?: return 0
+        // Bail early if offline — no point burning network call timeouts.
+        if (dispatcher.isNetworkPaused()) return 0
         if (!isDraining.compareAndSet(false, true)) return 0
 
         var totalDrained = 0
@@ -340,9 +258,9 @@ class PersistableEventQueue(
 
         try {
             // Read entire file once and delete — O(n) instead of O(n²)
-            val allEvents = synchronized(overflowLock) {
-                val snapshot = store.read() ?: return 0
-                deleteOverflowStore()
+            val allEvents = synchronized(diskLock) {
+                val snapshot = diskStore.read() ?: return 0
+                deleteDiskStore()
                 snapshot.events
             }
 
@@ -368,7 +286,7 @@ class PersistableEventQueue(
                 val response = dispatcher.sendBatchDirect(batch)
 
                 if (response == null) {
-                    writeOverflowCheckpoint(store, remaining())
+                    writeCheckpoint(remaining())
                     Logger.warn("Offline overflow drain paused — network error ($totalDrained drained so far)")
                     return totalDrained
                 }
@@ -383,7 +301,7 @@ class PersistableEventQueue(
                         }
                         // Periodic checkpoint for crash safety
                         if (batchesSinceCheckpoint >= DRAIN_CHECKPOINT_BATCHES && offset < events.size) {
-                            writeOverflowCheckpoint(store, remaining())
+                            writeCheckpoint(remaining())
                             batchesSinceCheckpoint = 0
                         }
                     }
@@ -398,6 +316,9 @@ class PersistableEventQueue(
                     }
                     ResponseCategory.FATAL_CONFIG -> {
                         Logger.error("Overflow drain: fatal config error ${response.statusCode} — discarding ${events.size - offset} overflow events")
+                        // Notify the dispatcher so the main pipeline also shuts down. Matches
+                        // the main flush path's handling of auth/config failures.
+                        dispatcher.onFatalConfigError?.invoke(response.statusCode)
                         return totalDrained
                     }
                     ResponseCategory.CLIENT_ERROR -> {
@@ -405,7 +326,7 @@ class PersistableEventQueue(
                         offset += batch.size
                     }
                     ResponseCategory.SERVER_ERROR, ResponseCategory.RATE_LIMITED -> {
-                        writeOverflowCheckpoint(store, remaining())
+                        writeCheckpoint(remaining())
                         Logger.warn("Offline overflow drain paused — ${response.statusCode} ($totalDrained drained so far)")
                         return totalDrained
                     }
@@ -413,7 +334,7 @@ class PersistableEventQueue(
             }
 
             // All events drained successfully
-            synchronized(overflowLock) { deleteOverflowStore() }
+            synchronized(diskLock) { deleteDiskStore() }
             Logger.log("Offline overflow disk drain complete ($totalDrained events)")
             return totalDrained
         } finally {
@@ -422,13 +343,13 @@ class PersistableEventQueue(
     }
 
     /**
-     * Write remaining events back to the overflow disk store as a checkpoint.
+     * Write remaining events back to the disk store as a checkpoint.
      * Used during drain for crash safety and on failure to preserve unsent events.
      */
-    private fun writeOverflowCheckpoint(store: EventDiskStore, events: List<EnrichedEventPayload>) {
+    private fun writeCheckpoint(events: List<EnrichedEventPayload>) {
         if (events.isEmpty()) return
-        synchronized(overflowLock) {
-            store.write(QueueSnapshot(version = 1, events = events))
+        synchronized(diskLock) {
+            diskStore.write(QueueSnapshot(version = 1, events = events))
             hasOverflowData = true
         }
     }
@@ -437,18 +358,15 @@ class PersistableEventQueue(
     // ===== Internal =====
 
     /**
-     * Flush all events from memory queue to the overflow disk store.
-     * Appends to existing overflow events on disk. Enforces maxOfflineDiskEvents cap.
-     * Resets the memory queue to empty.
-     * Must be called within a synchronized block.
+     * Flush all events from memory queue to disk. Appends to any existing disk data,
+     * enforces [maxOfflineDiskEvents] cap, and resets the memory queue.
+     * Must be called while holding `synchronized(this)`.
      *
-     * Note: performs disk I/O (read + write) while holding the synchronized lock.
-     * This blocks enqueue/drain during the write. Acceptable because local disk I/O
-     * is fast (sub-ms for typical event sizes), but worth revisiting if profiling
-     * shows contention under extreme throughput.
+     * Note: performs disk I/O (read + write) while holding both `this` and `diskLock`.
+     * Local disk I/O is sub-millisecond for typical event sizes, so this is acceptable
+     * even on the enqueue hot path. Revisit if profiling shows contention.
      */
-    private fun flushToOverflowDiskInternal() {
-        val store = overflowDiskStore ?: return
+    private fun flushMemoryToDiskInternal() {
         if (memoryQueue.isEmpty()) return
 
         val batch = memoryQueue.toList()
@@ -456,11 +374,11 @@ class PersistableEventQueue(
         eventSizes.clear()
         estimatedBytes = 0L
 
-        synchronized(overflowLock) {
+        synchronized(diskLock) {
             val existing = try {
-                store.read()?.events ?: emptyList()
+                diskStore.read()?.events ?: emptyList()
             } catch (e: Exception) {
-                Logger.warn("Failed to read overflow disk store: ${e.message}")
+                Logger.warn("Failed to read disk store during flush: ${e.message}")
                 emptyList()
             }
 
@@ -468,27 +386,19 @@ class PersistableEventQueue(
             if (combined.size > maxOfflineDiskEvents) {
                 val dropCount = combined.size - maxOfflineDiskEvents
                 combined = combined.drop(dropCount)
-                Logger.warn("Offline overflow disk cap reached — dropped $dropCount oldest events")
+                Logger.warn("Offline disk cap reached — dropped $dropCount oldest events")
             }
 
-            store.write(QueueSnapshot(version = 1, events = combined))
+            diskStore.write(QueueSnapshot(version = 1, events = combined))
             hasOverflowData = true
-            Logger.log("Flushed ${batch.size} events to offline disk (total on disk: ${combined.size})")
+            Logger.log("Flushed ${batch.size} events to disk (total on disk: ${combined.size})")
         }
     }
 
-    /** Delete the overflow disk file and clear the hasOverflowData flag. */
-    private fun deleteOverflowStore() {
-        overflowDiskStore?.delete()
+    /** Delete the disk file and clear the hasOverflowData flag. */
+    private fun deleteDiskStore() {
+        diskStore.delete()
         hasOverflowData = false
-    }
-
-    private fun dropOldest(reason: String) {
-        memoryQueue.removeFirstOrNull()?.let { dropped ->
-            val size = eventSizes.removeFirstOrNull() ?: 0L
-            estimatedBytes -= size
-            Logger.warn("Queue $reason reached - dropped oldest event (messageId: ${dropped.messageId})")
-        }
     }
 
     private fun estimateEventSize(event: EnrichedEventPayload): Long {

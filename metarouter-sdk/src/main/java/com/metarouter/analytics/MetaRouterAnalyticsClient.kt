@@ -150,12 +150,10 @@ class MetaRouterAnalyticsClient private constructor(
                 eventQueue = injectedEventQueue
             } else {
                 val diskStore = injectedDiskStore ?: EventDiskStore.create(context)
-                val overflowDiskStore = EventDiskStore.create(context, filename = "offline-overflow.v1.json")
                 val pQueue = PersistableEventQueue(
                     maxCapacity = options.maxQueueEvents,
                     diskStore = diskStore,
-                    maxOfflineDiskEvents = options.maxOfflineDiskEvents,
-                    overflowDiskStore = overflowDiskStore
+                    maxOfflineDiskEvents = options.maxOfflineDiskEvents
                 )
                 pQueue.rehydrate()
                 eventQueue = pQueue
@@ -196,19 +194,8 @@ class MetaRouterAnalyticsClient private constructor(
                 dispatcher.pauseForOffline()
             }
 
-            // If online at launch, drain rehydrated memory queue events to network BEFORE
-            // the proxy replays any buffered user calls. Awaited synchronously (not launched)
-            // so that events queued in AnalyticsProxy.pendingCalls don't race with the flush
-            // and push rehydrated events into overflow disk at capacity.
-            if (networkMonitor.isConnected && eventQueue.size() > 0) {
-                try {
-                    dispatcher.flush()
-                } catch (e: Exception) {
-                    Logger.warn("Initial rehydrate flush failed: ${e.message}")
-                }
-            }
-
-            // If online at launch and overflow exists from previous session, drain directly to network
+            // If online at launch and unsent events exist on disk from a previous session,
+            // drain them directly to the network.
             if (networkMonitor.isConnected && persistableEventQueue?.hasOverflowData() == true) {
                 scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
             }
