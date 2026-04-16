@@ -1323,6 +1323,68 @@ class PersistableEventQueueTest {
         unmockkStatic(Log::class)
     }
 
+    @Test
+    fun `requeueToFront flushes memory queue to overflow disk when at capacity`() {
+        val overflowDir = createTempDirectory("metarouter-requeue-overflow").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            eventTTLMs = 0
+        )
+
+        // Simulate: memory queue has 3 new events (enqueued after a drain)
+        val newEvents = (1..3).map { createTestEvent("new-$it") }
+        newEvents.forEach { smallQueue.enqueue(it) }
+        assertEquals(3, smallQueue.size())
+
+        // Now requeue 5 older events (e.g., a failed send retry).
+        // Total would be 8, exceeding capacity of 5.
+        val requeued = (1..5).map { createTestEvent("older-$it") }
+        smallQueue.requeueToFront(requeued)
+
+        // Memory queue should have the 5 requeued events at the front (no drops)
+        assertEquals(5, smallQueue.size())
+        val drained = smallQueue.drain(10)
+        assertEquals(5, drained.size)
+        assertEquals("older-1", drained[0].messageId)
+        assertEquals("older-5", drained[4].messageId)
+
+        // The 3 new events should be on overflow disk
+        val snapshot = overflowDiskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(3, snapshot!!.events.size)
+        assertEquals("new-1", snapshot.events[0].messageId)
+        assertEquals("new-3", snapshot.events[2].messageId)
+
+        overflowDir.deleteRecursively()
+    }
+
+    @Test
+    fun `requeueToFront drops newest when no overflow store at capacity`() {
+        // No overflow store — should still drop (backward compat)
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            overflowDiskStore = null,
+            eventTTLMs = 0
+        )
+
+        val newEvents = (1..3).map { createTestEvent("new-$it") }
+        newEvents.forEach { smallQueue.enqueue(it) }
+
+        val requeued = (1..5).map { createTestEvent("older-$it") }
+        smallQueue.requeueToFront(requeued)
+
+        // Memory queue should have the 5 requeued events — new ones were dropped
+        assertEquals(5, smallQueue.size())
+        val drained = smallQueue.drain(10)
+        assertEquals("older-1", drained[0].messageId)
+    }
+
     private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,

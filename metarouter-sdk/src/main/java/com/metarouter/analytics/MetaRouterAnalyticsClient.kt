@@ -196,6 +196,18 @@ class MetaRouterAnalyticsClient private constructor(
                 dispatcher.pauseForOffline()
             }
 
+            // If online at launch, drain rehydrated memory queue events to network BEFORE
+            // the proxy replays any buffered user calls. Awaited synchronously (not launched)
+            // so that events queued in AnalyticsProxy.pendingCalls don't race with the flush
+            // and push rehydrated events into overflow disk at capacity.
+            if (networkMonitor.isConnected && eventQueue.size() > 0) {
+                try {
+                    dispatcher.flush()
+                } catch (e: Exception) {
+                    Logger.warn("Initial rehydrate flush failed: ${e.message}")
+                }
+            }
+
             // If online at launch and overflow exists from previous session, drain directly to network
             if (networkMonitor.isConnected && persistableEventQueue?.hasOverflowData() == true) {
                 scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }

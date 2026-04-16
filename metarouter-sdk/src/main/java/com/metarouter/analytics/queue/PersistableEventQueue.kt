@@ -142,14 +142,29 @@ class PersistableEventQueue(
     }
 
     /**
-     * Requeue events to front. Updates byte size tracking.
+     * Requeue events to front (for retry after a failed send).
+     * When at capacity, flushes existing memory queue to overflow disk if available,
+     * otherwise drops newest events to make room. The requeued events always take
+     * priority at the front since they were drained first (older) and a send
+     * already started for them.
      */
     @Synchronized
     override fun requeueToFront(events: List<EnrichedEventPayload>) {
+        // If adding these events would overflow capacity and we have an overflow store,
+        // flush the current memory queue to disk first. The newer events go to disk;
+        // the requeued (older) events take their place at the front.
+        if (overflowDiskStore != null &&
+            (memoryQueue.size + events.size > maxCapacity ||
+             estimatedBytes + events.sumOf { estimateEventSize(it) } > maxCapacityBytes) &&
+            memoryQueue.isNotEmpty()) {
+            flushToOverflowDiskInternal()
+        }
+
         events.asReversed().forEach { event ->
             val eventSize = estimateEventSize(event)
 
-            // Drop newest while over byte capacity
+            // Edge case: requeue batch alone exceeds byte capacity.
+            // Drop newest to make room (no overflow store available, or batch too big).
             while (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
                 val removedSize = eventSizes.removeLastOrNull() ?: 0L
                 memoryQueue.removeLastOrNull()?.let {
@@ -158,7 +173,7 @@ class PersistableEventQueue(
                 }
             }
 
-            // Drop newest if at event count capacity
+            // Edge case: requeue batch alone exceeds event count capacity.
             if (memoryQueue.size >= maxCapacity) {
                 val removedSize = eventSizes.removeLastOrNull() ?: 0L
                 memoryQueue.removeLastOrNull()?.let {
