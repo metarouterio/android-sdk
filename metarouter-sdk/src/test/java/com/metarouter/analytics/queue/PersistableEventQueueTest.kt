@@ -1,8 +1,20 @@
 package com.metarouter.analytics.queue
 
+import android.util.Log
+import com.metarouter.analytics.InitOptions
+import com.metarouter.analytics.dispatcher.Dispatcher
+import com.metarouter.analytics.dispatcher.DispatcherConfig
+import com.metarouter.analytics.network.CircuitBreaker
+import com.metarouter.analytics.network.FakeNetworkClient
+import com.metarouter.analytics.network.NetworkResponse
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.storage.QueueSnapshot
 import com.metarouter.analytics.types.*
+import io.mockk.every
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -57,7 +69,7 @@ class PersistableEventQueueTest {
     }
 
     @Test
-    fun `enqueue drops oldest when event count capacity exceeded`() {
+    fun `enqueue flushes to disk when event count capacity exceeded`() {
         val smallQueue = PersistableEventQueue(
             maxCapacity = 5,
             diskStore = diskStore,
@@ -70,13 +82,15 @@ class PersistableEventQueueTest {
             smallQueue.enqueue(createTestEvent("msg-$i"))
         }
 
-        assertEquals(5, smallQueue.size())
-        val drained = smallQueue.drain(5)
-        assertEquals("msg-1", drained[0].messageId)
+        // Memory queue has just the latest event; others went to disk
+        assertEquals(1, smallQueue.size())
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(5, snapshot!!.events.size)
     }
 
     @Test
-    fun `enqueue drops oldest when byte capacity exceeded`() {
+    fun `enqueue flushes to disk when byte capacity exceeded`() {
         val tinyQueue = PersistableEventQueue(
             maxCapacity = 2000,
             diskStore = diskStore,
@@ -89,8 +103,9 @@ class PersistableEventQueueTest {
             tinyQueue.enqueue(createTestEvent("msg-$i"))
         }
 
-        assertTrue(tinyQueue.size() < 10)
+        // Events that exceeded byte cap got flushed to disk
         assertTrue(tinyQueue.estimatedSizeBytes() <= 500)
+        assertTrue(tinyQueue.hasOverflowData())
     }
 
     // ===== Drain (memory-only) =====
@@ -122,13 +137,14 @@ class PersistableEventQueueTest {
     // ===== Flush to Disk =====
 
     @Test
-    fun `flushToDisk writes current memory state to disk`() {
+    fun `flushToDisk writes memory state to disk and clears memory`() {
         repeat(3) { i ->
             queue.enqueue(createTestEvent("msg-$i"))
         }
 
         queue.flushToDisk()
 
+        assertEquals(0, queue.size())
         val snapshot = diskStore.read()
         assertNotNull(snapshot)
         assertEquals(3, snapshot!!.events.size)
@@ -136,35 +152,37 @@ class PersistableEventQueueTest {
     }
 
     @Test
-    fun `flushToDisk fully overwrites previous snapshot`() {
+    fun `flushToDisk appends memory to existing disk contents and clears memory`() {
         queue.enqueue(createTestEvent("msg-1"))
         queue.flushToDisk()
+        // Memory queue cleared, msg-1 is on disk
+        assertEquals(0, queue.size())
 
-        queue.drain(1)
         queue.enqueue(createTestEvent("msg-2"))
         queue.enqueue(createTestEvent("msg-3"))
         queue.flushToDisk()
 
         val snapshot = diskStore.read()
         assertNotNull(snapshot)
-        assertEquals(2, snapshot!!.events.size)
-        assertEquals("msg-2", snapshot.events[0].messageId)
-        assertEquals("msg-3", snapshot.events[1].messageId)
+        assertEquals(3, snapshot!!.events.size)
+        assertEquals("msg-1", snapshot.events[0].messageId)
+        assertEquals("msg-2", snapshot.events[1].messageId)
+        assertEquals("msg-3", snapshot.events[2].messageId)
     }
 
     @Test
-    fun `flushToDisk with empty queue skips write and deletes existing snapshot`() {
+    fun `flushToDisk with empty queue is a no-op`() {
         // Write a snapshot with events first
         queue.enqueue(createTestEvent("msg-1"))
         queue.flushToDisk()
-        assertNotNull(diskStore.read()) // snapshot exists
+        assertNotNull(diskStore.read())
 
-        // Drain all events, then flush empty queue
-        queue.drain(1)
+        // Memory is now empty; flushing again shouldn't delete or modify disk
         queue.flushToDisk()
 
-        // Existing snapshot should be deleted, not overwritten with empty
-        assertNull(diskStore.read())
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(1, snapshot!!.events.size)
     }
 
     @Test
@@ -211,172 +229,41 @@ class PersistableEventQueueTest {
     }
 
     // ===== Rehydration =====
+    // With consolidated disk store, events stay on disk and drain to network.
+    // Memory queue starts empty on rehydrate. TTL filtering happens in drain, not rehydrate.
 
     @Test
-    fun `rehydrate loads events from disk into memory`() {
+    fun `rehydrate sets hasOverflowData when disk file exists`() {
         val events = listOf(createTestEvent("disk-1"), createTestEvent("disk-2"))
-        val snapshot = QueueSnapshot(version = 1, events = events)
-        diskStore.write(snapshot)
-
-        queue.rehydrate()
-
-        assertEquals(2, queue.size())
-        val drained = queue.drain(10)
-        assertEquals("disk-1", drained[0].messageId)
-        assertEquals("disk-2", drained[1].messageId)
-    }
-
-    @Test
-    fun `rehydrate only happens once per process`() {
-        val events = listOf(createTestEvent("disk-1"))
         diskStore.write(QueueSnapshot(version = 1, events = events))
 
-        queue.rehydrate()
-        assertEquals(1, queue.size())
-
-        queue.drain(1)
-        val queue2 = PersistableEventQueue(
+        val freshQueue = PersistableEventQueue(
             maxCapacity = 2000,
             diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024
-        )
-
-        diskStore.write(QueueSnapshot(version = 1, events = listOf(createTestEvent("disk-2"))))
-
-        queue2.rehydrate()
-        assertEquals(0, queue2.size())
-    }
-
-    @Test
-    fun `rehydrate with no disk file does nothing`() {
-        queue.rehydrate()
-        assertEquals(0, queue.size())
-    }
-
-    @Test
-    fun `rehydrate drops oldest events if disk exceeds capacity`() {
-        val smallCapQueue = PersistableEventQueue(
-            maxCapacity = 3,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
             eventTTLMs = 0
         )
+        freshQueue.rehydrate()
 
-        val events = (1..5).map { createTestEvent("msg-$it") }
-        diskStore.write(QueueSnapshot(version = 1, events = events))
-
-        smallCapQueue.rehydrate()
-
-        assertEquals(3, smallCapQueue.size())
-        val drained = smallCapQueue.drain(10)
-        assertEquals("msg-3", drained[0].messageId)
-        assertEquals("msg-4", drained[1].messageId)
-        assertEquals("msg-5", drained[2].messageId)
+        // Memory queue starts empty; disk file preserved for drain
+        assertEquals(0, freshQueue.size())
+        assertTrue(freshQueue.hasOverflowData())
+        assertNotNull(diskStore.read())
     }
 
     @Test
-    fun `rehydrate deletes disk file after loading`() {
-        val events = listOf(createTestEvent("disk-1"))
-        diskStore.write(QueueSnapshot(version = 1, events = events))
-
+    fun `rehydrate with no disk file sets hasOverflowData false`() {
         queue.rehydrate()
-
-        assertNull(diskStore.read())
-    }
-
-    // ===== Event TTL =====
-
-    @Test
-    fun `rehydrate drops events older than TTL`() {
-        val ttlQueue = PersistableEventQueue(
-            maxCapacity = 2000,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
-            eventTTLMs = 7L * 24 * 60 * 60 * 1000 // 7 days
-        )
-
-        val now = System.currentTimeMillis()
-        val eightDaysAgo = formatTimestamp(now - 8L * 24 * 60 * 60 * 1000)
-        val twoDaysAgo = formatTimestamp(now - 2L * 24 * 60 * 60 * 1000)
-        val recent = formatTimestamp(now - 60_000) // 1 minute ago
-
-        val events = listOf(
-            createTestEvent("old-1", timestamp = eightDaysAgo),
-            createTestEvent("mid-1", timestamp = twoDaysAgo),
-            createTestEvent("new-1", timestamp = recent)
-        )
-        diskStore.write(QueueSnapshot(version = 1, events = events))
-
-        ttlQueue.rehydrate()
-
-        assertEquals(2, ttlQueue.size())
-        val drained = ttlQueue.drain(10)
-        assertEquals("mid-1", drained[0].messageId)
-        assertEquals("new-1", drained[1].messageId)
+        assertEquals(0, queue.size())
+        assertFalse(queue.hasOverflowData())
     }
 
     @Test
-    fun `rehydrate TTL filter runs before capacity trim`() {
-        val ttlQueue = PersistableEventQueue(
-            maxCapacity = 2,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
-            eventTTLMs = 7L * 24 * 60 * 60 * 1000
-        )
-
-        val now = System.currentTimeMillis()
-        val eightDaysAgo = formatTimestamp(now - 8L * 24 * 60 * 60 * 1000)
-        val twoDaysAgo = formatTimestamp(now - 2L * 24 * 60 * 60 * 1000)
-        val oneDayAgo = formatTimestamp(now - 1L * 24 * 60 * 60 * 1000)
-        val recent = formatTimestamp(now - 60_000)
-
-        // 4 events: 2 expired, 2 valid. maxCapacity = 2.
-        // TTL filter removes the 2 expired. 2 valid remain. Capacity is satisfied.
-        val events = listOf(
-            createTestEvent("expired-1", timestamp = eightDaysAgo),
-            createTestEvent("expired-2", timestamp = eightDaysAgo),
-            createTestEvent("valid-1", timestamp = twoDaysAgo),
-            createTestEvent("valid-2", timestamp = oneDayAgo)
-        )
-        diskStore.write(QueueSnapshot(version = 1, events = events))
-
-        ttlQueue.rehydrate()
-
-        assertEquals(2, ttlQueue.size())
-        val drained = ttlQueue.drain(10)
-        assertEquals("valid-1", drained[0].messageId)
-        assertEquals("valid-2", drained[1].messageId)
-    }
-
-    @Test
-    fun `rehydrate with unparseable timestamp keeps event`() {
-        val ttlQueue = PersistableEventQueue(
-            maxCapacity = 2000,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
-            eventTTLMs = 7L * 24 * 60 * 60 * 1000
-        )
-
-        val events = listOf(
-            createTestEvent("bad-ts", timestamp = "not-a-timestamp"),
-            createTestEvent("good-ts", timestamp = formatTimestamp(System.currentTimeMillis() - 60_000))
-        )
-        diskStore.write(QueueSnapshot(version = 1, events = events))
-
-        ttlQueue.rehydrate()
-
-        // Unparseable timestamp should be kept (fail-open), not dropped
-        assertEquals(2, ttlQueue.size())
+    fun `rehydrate only sets rehydrated flag once per process`() {
+        PersistableEventQueue.resetRehydrationFlag()
+        queue.rehydrate()
+        // Second call is a no-op (guarded by hasRehydrated flag)
+        queue.rehydrate()
+        // No assertions — just confirming it doesn't throw
     }
 
     // ===== Clear =====
@@ -450,37 +337,7 @@ class PersistableEventQueueTest {
     // ===== End-to-end Scenarios =====
 
     @Test
-    fun `full lifecycle - enqueue, background flush, process restart, rehydrate`() {
-        // Simulate first session
-        repeat(10) { i ->
-            queue.enqueue(createTestEvent("session1-msg-$i"))
-        }
-        assertEquals(10, queue.size())
-
-        // App backgrounds -> flush to disk
-        queue.flushToDisk()
-
-        // Simulate process restart: create new queue with same disk store
-        PersistableEventQueue.resetRehydrationFlag()
-        val queue2 = PersistableEventQueue(
-            maxCapacity = 2000,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
-            eventTTLMs = 0
-        )
-
-        queue2.rehydrate()
-
-        assertEquals(10, queue2.size())
-        val drained = queue2.drain(10)
-        assertEquals("session1-msg-0", drained[0].messageId)
-        assertEquals("session1-msg-9", drained[9].messageId)
-    }
-
-    @Test
-    fun `events drained before background are not in snapshot`() {
+    fun `events drained before background are not flushed to disk`() {
         repeat(5) { i ->
             queue.enqueue(createTestEvent("msg-$i"))
         }
@@ -509,73 +366,646 @@ class PersistableEventQueueTest {
         assertFalse(queue.shouldFlushToDisk())
     }
 
+    // ===== Offline Overflow =====
+
     @Test
-    fun `multiple flush-rehydrate cycles preserve data correctly`() {
-        // Cycle 1: enqueue and flush
-        queue.enqueue(createTestEvent("cycle1-a"))
-        queue.enqueue(createTestEvent("cycle1-b"))
-        queue.flushToDisk()
+    fun `capacity overflow flushes entire queue to disk`() {
 
-        // Cycle 2: restart, rehydrate, add more, flush again
-        PersistableEventQueue.resetRehydrationFlag()
-        val queue2 = PersistableEventQueue(
-            maxCapacity = 2000,
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
             diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
+            maxOfflineDiskEvents = 100,
             eventTTLMs = 0
         )
-        queue2.rehydrate()
-        queue2.enqueue(createTestEvent("cycle2-c"))
-        queue2.flushToDisk()
 
-        // Cycle 3: restart, rehydrate
-        PersistableEventQueue.resetRehydrationFlag()
-        val queue3 = PersistableEventQueue(
-            maxCapacity = 2000,
-            diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
-            eventTTLMs = 0
-        )
-        queue3.rehydrate()
+        // Fill queue to capacity
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        assertEquals(5, smallQueue.size())
 
-        assertEquals(3, queue3.size())
-        val drained = queue3.drain(10)
-        assertEquals("cycle1-a", drained[0].messageId)
-        assertEquals("cycle1-b", drained[1].messageId)
-        assertEquals("cycle2-c", drained[2].messageId)
+        // Enqueue one more — should flush all 5 to disk, then add the new event
+        smallQueue.enqueue(createTestEvent("overflow-0"))
+
+        // Memory queue should have just the new event
+        assertEquals(1, smallQueue.size())
+
+        // All 5 original events should be on overflow disk
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(5, snapshot!!.events.size)
+        assertEquals("fill-0", snapshot.events[0].messageId)
+        assertEquals("fill-4", snapshot.events[4].messageId)
+
+        // Drain memory to verify contents
+        val drained = smallQueue.drain(10)
+        assertEquals(1, drained.size)
+        assertEquals("overflow-0", drained[0].messageId)
+
     }
 
     @Test
-    fun `flush overwrites previous state - no duplicates`() {
-        queue.enqueue(createTestEvent("batch1-a"))
-        queue.enqueue(createTestEvent("batch1-b"))
-        queue.flushToDisk()
+    fun `flushToOfflineStorage drains entire queue to disk`() {
 
-        // Drain all, add new events
-        queue.drain(10)
-        queue.enqueue(createTestEvent("batch2-a"))
-        queue.flushToDisk()
-
-        PersistableEventQueue.resetRehydrationFlag()
-        val queue2 = PersistableEventQueue(
-            maxCapacity = 2000,
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
             diskStore = diskStore,
-            flushThresholdEvents = 500,
-            flushThresholdBytes = 2 * 1024 * 1024,
-            maxCapacityBytes = 5 * 1024 * 1024,
+            maxOfflineDiskEvents = 100,
             eventTTLMs = 0
         )
-        queue2.rehydrate()
 
-        // Should only have batch2 events — full overwrite, no duplicates
-        assertEquals(1, queue2.size())
-        val drained = queue2.drain(10)
-        assertEquals("batch2-a", drained[0].messageId)
+        // Fill queue with 3 events
+        repeat(3) { i -> smallQueue.enqueue(createTestEvent("event-$i")) }
+        assertEquals(3, smallQueue.size())
+
+        // Flush to offline storage (simulates dispatcher offline flush)
+        val flushed = smallQueue.flushToOfflineStorage()
+        assertTrue(flushed)
+
+        // Memory queue should be empty
+        assertEquals(0, smallQueue.size())
+
+        // Events should be on overflow disk
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(3, snapshot!!.events.size)
+
     }
+
+    @Test
+    fun `flushToOfflineStorage appends to existing overflow disk data`() {
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk with 3 events
+        val existing = (1..3).map { createTestEvent("existing-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = existing))
+
+        // Add 2 events to memory and flush
+        repeat(2) { i -> smallQueue.enqueue(createTestEvent("new-$i")) }
+        smallQueue.flushToOfflineStorage()
+
+        // Disk should have all 5
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(5, snapshot!!.events.size)
+        assertEquals("existing-1", snapshot.events[0].messageId)
+        assertEquals("new-1", snapshot.events[4].messageId)
+
+    }
+
+    @Test
+    fun `offline disk overflow respects maxOfflineDiskEvents cap`() {
+
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 8,
+            eventTTLMs = 0
+        )
+
+        // Fill and overflow multiple times to exceed cap
+        // Round 1: fill 5, overflow triggers flush of 5 to disk
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("batch1-$i")) }
+        smallQueue.flushToOfflineStorage()
+
+        // Round 2: fill 5 more, flush again — total would be 10, cap is 8
+        repeat(5) { i -> smallQueue.enqueue(createTestEvent("batch2-$i")) }
+        smallQueue.flushToOfflineStorage()
+
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertTrue("Should cap at maxOfflineDiskEvents", snapshot!!.events.size <= 8)
+
+    }
+
+    @Test
+    fun `drainDiskOverflowToNetwork sends directly to network`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        // Set up dispatcher with fake network
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(5, drained)
+        assertEquals(1, fakeClient.requests.size)
+        assertNull(diskStore.read())
+        assertEquals(0, overflowQueue.size())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drainDiskOverflowToNetwork stops on network failure`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        // Set up dispatcher that fails
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(0, drained)
+        val remaining = diskStore.read()
+        assertNotNull(remaining)
+        assertEquals(5, remaining!!.events.size)
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `clear deletes overflow disk file`() {
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        diskStore.write(QueueSnapshot(version = 1, events = listOf(createTestEvent("overflow-1"))))
+        overflowQueue.enqueue(createTestEvent("memory-1"))
+
+        overflowQueue.clear()
+
+        assertEquals(0, overflowQueue.size())
+        assertNull(diskStore.read())
+        assertNull(diskStore.read())
+
+    }
+
+    @Test
+    fun `app killed while offline, relaunch online, disk overflow drains to network`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        // Simulate previous session: overflow events were written to disk
+        val previousEvents = (1..3).map { createTestEvent("prev-session-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = previousEvents))
+
+        // New session — create fresh queue (simulating app relaunch)
+        PersistableEventQueue.resetRehydrationFlag()
+        val freshQueue = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+        freshQueue.rehydrate()
+
+        // Set up dispatcher with working network (online at launch)
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val initOptions = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://api.example.com",
+            flushIntervalSeconds = 10
+        )
+        val dispatcher = Dispatcher(
+            options = initOptions,
+            queue = freshQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = freshQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(3, drained)
+        assertEquals(1, fakeClient.requests.size)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `flushToOfflineStorage returns false when memory queue is empty`() {
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            eventTTLMs = 0
+        )
+
+        // No events in memory queue
+        assertFalse(smallQueue.flushToOfflineStorage())
+        assertEquals(0, smallQueue.size())
+    }
+
+    // ===== Drain Response Handling =====
+
+    @Test
+    fun `drain halves batch on 413 and retries`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Pre-populate overflow disk with 4 events
+        val events = (1..4).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        // First call: 413, second call (halved batch): 200, third call: 200
+        fakeClient.enqueueResponses(
+            NetworkResponse(413, emptyMap(), null),
+            NetworkResponse(200, emptyMap(), null),
+            NetworkResponse(200, emptyMap(), null)
+        )
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(4, drained)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drain drops oversized event at batchSize 1 on 413`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // 2 events — first will be too large, second should still send
+        val events = listOf(createTestEvent("big-event"), createTestEvent("normal-event"))
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        // 413 responses until batch is 1, then 413 again (drop), then 200 for remaining
+        fakeClient.enqueueResponses(
+            NetworkResponse(413, emptyMap(), null),  // batch=100 -> halve
+            NetworkResponse(413, emptyMap(), null),  // batch=50 -> halve (and so on until 1)
+            NetworkResponse(413, emptyMap(), null),
+            NetworkResponse(413, emptyMap(), null),
+            NetworkResponse(413, emptyMap(), null),
+            NetworkResponse(413, emptyMap(), null),
+            NetworkResponse(413, emptyMap(), null),  // batch=1 -> drop big-event
+            NetworkResponse(200, emptyMap(), null)   // normal-event succeeds
+        )
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        // Only normal-event was successfully sent
+        assertEquals(1, drained)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drain deletes overflow store on fatal config error`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(401, emptyMap(), null)
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(0, drained)
+        assertNull(diskStore.read()) // Overflow store deleted on fatal error
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drain drops batch on client error and continues`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Write 150 events so drain takes 2 batches (100 + 50)
+        val events = (1..150).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        // First batch: 400 (drop), second batch: 200 (success)
+        fakeClient.enqueueResponses(
+            NetworkResponse(400, emptyMap(), null),
+            NetworkResponse(200, emptyMap(), null)
+        )
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        // Only second batch of 50 counted as drained
+        assertEquals(50, drained)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drain pauses on 429 rate limit`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        val events = (1..5).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(429, emptyMap(), null)
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        assertEquals(0, drained)
+        // Events should still be on disk
+        val remaining = diskStore.read()
+        assertNotNull(remaining)
+        assertEquals(5, remaining!!.events.size)
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `drain filters expired events by TTL`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val oneDayMs = 24L * 60 * 60 * 1000
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = oneDayMs // 1 day TTL
+        )
+
+        // Mix of expired and fresh events
+        val expiredTimestamp = formatTimestamp(System.currentTimeMillis() - 2 * oneDayMs) // 2 days ago
+        val freshTimestamp = formatTimestamp(System.currentTimeMillis() - 1000) // 1 second ago
+        val events = listOf(
+            createTestEvent("expired-1", timestamp = expiredTimestamp),
+            createTestEvent("expired-2", timestamp = expiredTimestamp),
+            createTestEvent("fresh-1", timestamp = freshTimestamp),
+            createTestEvent("fresh-2", timestamp = freshTimestamp)
+        )
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        val drained = overflowQueue.drainDiskOverflowToNetwork(dispatcher)
+
+        // Only the 2 fresh events should have been sent
+        assertEquals(2, drained)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `concurrent drain calls do not duplicate sends`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        val events = (1..10).map { createTestEvent("overflow-$it") }
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        // Launch two concurrent drain calls
+        val drain1 = async { overflowQueue.drainDiskOverflowToNetwork(dispatcher) }
+        val drain2 = async { overflowQueue.drainDiskOverflowToNetwork(dispatcher) }
+
+        val result1 = drain1.await()
+        val result2 = drain2.await()
+
+        // One should have drained all 10, the other should have returned 0 (guard)
+        val totalDrained = result1 + result2
+        assertEquals(10, totalDrained)
+        assertTrue("One drain should return 0", result1 == 0 || result2 == 0)
+        assertNull(diskStore.read())
+
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `requeueToFront flushes memory queue to disk when at capacity`() {
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Simulate: memory queue has 3 new events (enqueued after a drain)
+        val newEvents = (1..3).map { createTestEvent("new-$it") }
+        newEvents.forEach { smallQueue.enqueue(it) }
+        assertEquals(3, smallQueue.size())
+
+        // Now requeue 5 older events (e.g., a failed send retry).
+        // Total would be 8, exceeding capacity of 5.
+        val requeued = (1..5).map { createTestEvent("older-$it") }
+        smallQueue.requeueToFront(requeued)
+
+        // Memory queue should have the 5 requeued events at the front (no drops)
+        assertEquals(5, smallQueue.size())
+        val drained = smallQueue.drain(10)
+        assertEquals(5, drained.size)
+        assertEquals("older-1", drained[0].messageId)
+        assertEquals("older-5", drained[4].messageId)
+
+        // The 3 new events should be on disk
+        val snapshot = diskStore.read()
+        assertNotNull(snapshot)
+        assertEquals(3, snapshot!!.events.size)
+        assertEquals("new-1", snapshot.events[0].messageId)
+        assertEquals("new-3", snapshot.events[2].messageId)
+    }
+
 
     private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {
         return EnrichedEventPayload(

@@ -60,6 +60,12 @@ class Dispatcher(
      */
     var onFatalConfigError: ((Int) -> Unit)? = null
 
+    /**
+     * Callback invoked after a successful flush cycle completes.
+     * Used to trigger overflow disk drain when events spill to disk while online.
+     */
+    var onFlushComplete: (() -> Unit)? = null
+
     // ===== Lifecycle =====
 
     /**
@@ -169,6 +175,9 @@ class Dispatcher(
 
         try {
             processUntilEmpty()
+            if (!networkPaused) {
+                onFlushComplete?.invoke()
+            }
         } finally {
             isFlushing.set(false)
         }
@@ -191,6 +200,56 @@ class Dispatcher(
         )
     }
 
+    // ===== Direct Send (for disk overflow drain) =====
+
+    /**
+     * Send a batch of events directly to the network, bypassing the memory queue.
+     * Used by PersistableEventQueue.drainDiskOverflowToNetwork() to flush overflow
+     * events from disk without loading them into the memory queue.
+     *
+     * Note: intentionally does not update the circuit breaker or retry counters.
+     * The overflow drain is an independent pipeline — it stops on first failure and
+     * retries on the next online transition or flush cycle, not via the dispatcher's
+     * retry/backoff machinery.
+     *
+     * @return NetworkResponse on HTTP completion, null on encoding or network error
+     */
+    suspend fun sendBatchDirect(events: List<EnrichedEventPayload>): NetworkResponse? {
+        if (events.isEmpty()) return NetworkResponse(200, emptyMap(), null)
+
+        val sentAt = getIso8601Timestamp()
+        val batch = events.map { it.copy(sentAt = sentAt) }
+
+        val url = "${options.getNormalizedIngestionHost()}${config.endpointPath}"
+        val body: ByteArray
+        try {
+            val payload = BatchPayload(batch = batch)
+            body = json.encodeToString(payload).toByteArray(Charsets.UTF_8)
+        } catch (e: Exception) {
+            Logger.error("Failed to encode direct batch of ${batch.size} events: ${e.message}")
+            return null
+        }
+
+        val headers = mutableMapOf<String, String>()
+        if (tracingEnabled) {
+            headers["Trace"] = "true"
+        }
+
+        Logger.log("Making API call to: $url (overflow drain, ${batch.size} events)")
+
+        return try {
+            networkClient.postJson(
+                url = url,
+                body = body,
+                timeoutMs = config.timeoutMs,
+                additionalHeaders = if (headers.isNotEmpty()) headers else null
+            )
+        } catch (e: Exception) {
+            Logger.warn("Direct batch send failed: ${e.message}")
+            null
+        }
+    }
+
     // ===== Internal =====
 
     /**
@@ -209,7 +268,11 @@ class Dispatcher(
 
     private suspend fun processUntilEmpty() {
         if (networkPaused) {
-            Logger.log("Dispatcher skipping flush — device is offline")
+            if (queue.flushToOfflineStorage()) {
+                Logger.log("Flushed queue to offline storage")
+            } else {
+                Logger.log("Dispatcher skipping flush — device is offline")
+            }
             return
         }
 
@@ -282,8 +345,8 @@ class Dispatcher(
         response: NetworkResponse,
         batch: List<EnrichedEventPayload>
     ): FlushAction {
-        return when (response.statusCode) {
-            in 200..299 -> {
+        return when (ResponseCategory.from(response.statusCode)) {
+            ResponseCategory.SUCCESS -> {
                 consecutiveRetries.set(0)
                 circuitBreaker.onSuccess()
                 val current = maxBatchSize.get()
@@ -294,7 +357,7 @@ class Dispatcher(
                 Logger.log("API call successful")
                 FlushAction.Continue
             }
-            in 500..599, 408 -> {
+            ResponseCategory.SERVER_ERROR -> {
                 consecutiveRetries.incrementAndGet()
                 circuitBreaker.onFailure()
                 queue.requeueToFront(batch)
@@ -303,7 +366,7 @@ class Dispatcher(
                 Logger.warn("Server error ${response.statusCode}, will retry ${batch.size} event(s) in ${waitMs}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
                 FlushAction.RetryAfter(waitMs)
             }
-            429 -> {
+            ResponseCategory.RATE_LIMITED -> {
                 consecutiveRetries.incrementAndGet()
                 circuitBreaker.onFailure()
                 queue.requeueToFront(batch)
@@ -313,7 +376,7 @@ class Dispatcher(
                 Logger.warn("Rate limited (429), will retry ${batch.size} event(s) in ${waitMs}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
                 FlushAction.RetryAfter(waitMs)
             }
-            413 -> {
+            ResponseCategory.PAYLOAD_TOO_LARGE -> {
                 circuitBreaker.onNonRetryable()
                 val currentSize = maxBatchSize.get()
                 if (currentSize > 1) {
@@ -327,21 +390,16 @@ class Dispatcher(
                     FlushAction.Stop
                 }
             }
-            401, 403, 404 -> {
+            ResponseCategory.FATAL_CONFIG -> {
                 Logger.error("Fatal configuration error: ${response.statusCode} - clearing queue and stopping")
                 queue.clear()
                 stop()
                 onFatalConfigError?.invoke(response.statusCode)
                 FlushAction.Stop
             }
-            in 400..499 -> {
+            ResponseCategory.CLIENT_ERROR -> {
                 circuitBreaker.onNonRetryable()
                 Logger.warn("Client error ${response.statusCode} - dropping batch of ${batch.size} events")
-                FlushAction.Continue
-            }
-            else -> {
-                circuitBreaker.onNonRetryable()
-                Logger.warn("Unexpected status ${response.statusCode} - continuing")
                 FlushAction.Continue
             }
         }
@@ -368,7 +426,7 @@ class Dispatcher(
 }
 
 @kotlinx.serialization.Serializable
-private data class BatchPayload(
+internal data class BatchPayload(
     val batch: List<EnrichedEventPayload>
 )
 
@@ -376,6 +434,31 @@ private sealed class FlushAction {
     data object Continue : FlushAction()
     data class RetryAfter(val delayMs: Long) : FlushAction()
     data object Stop : FlushAction()
+}
+
+/**
+ * Classifies an HTTP status code into a response category.
+ * Shared by the main dispatcher flush loop and the overflow drain.
+ */
+internal enum class ResponseCategory {
+    SUCCESS,
+    SERVER_ERROR,
+    RATE_LIMITED,
+    PAYLOAD_TOO_LARGE,
+    FATAL_CONFIG,
+    CLIENT_ERROR;
+
+    companion object {
+        fun from(statusCode: Int): ResponseCategory = when (statusCode) {
+            in 200..299 -> SUCCESS
+            in 500..599, 408 -> SERVER_ERROR
+            429 -> RATE_LIMITED
+            413 -> PAYLOAD_TOO_LARGE
+            401, 403, 404 -> FATAL_CONFIG
+            in 400..499 -> CLIENT_ERROR
+            else -> CLIENT_ERROR // Unknown status codes are non-retryable (drop, don't retry)
+        }
+    }
 }
 
 data class DispatcherDebugInfo(
