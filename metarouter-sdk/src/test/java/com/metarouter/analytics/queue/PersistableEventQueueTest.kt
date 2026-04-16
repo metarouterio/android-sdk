@@ -13,6 +13,7 @@ import com.metarouter.analytics.types.*
 import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
@@ -1266,6 +1267,56 @@ class PersistableEventQueueTest {
 
         // Only the 2 fresh events should have been sent
         assertEquals(2, drained)
+        assertNull(overflowDiskStore.read())
+
+        overflowDir.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `concurrent drain calls do not duplicate sends`() = runTest {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val overflowDir = createTempDirectory("metarouter-overflow-concurrent").toFile()
+        val overflowDiskStore = EventDiskStore(overflowDir)
+
+        val overflowQueue = PersistableEventQueue(
+            maxCapacity = 5,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 100,
+            overflowDiskStore = overflowDiskStore,
+            eventTTLMs = 0
+        )
+
+        val events = (1..10).map { createTestEvent("overflow-$it") }
+        overflowDiskStore.write(QueueSnapshot(version = 1, events = events))
+
+        val fakeClient = FakeNetworkClient()
+        fakeClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        val dispatcher = Dispatcher(
+            options = InitOptions(writeKey = "test-key", ingestionHost = "https://api.example.com", flushIntervalSeconds = 10),
+            queue = overflowQueue,
+            networkClient = fakeClient,
+            circuitBreaker = CircuitBreaker(),
+            scope = this,
+            config = DispatcherConfig()
+        )
+
+        // Launch two concurrent drain calls
+        val drain1 = async { overflowQueue.drainDiskOverflowToNetwork(dispatcher) }
+        val drain2 = async { overflowQueue.drainDiskOverflowToNetwork(dispatcher) }
+
+        val result1 = drain1.await()
+        val result2 = drain2.await()
+
+        // One should have drained all 10, the other should have returned 0 (guard)
+        val totalDrained = result1 + result2
+        assertEquals(10, totalDrained)
+        assertTrue("One drain should return 0", result1 == 0 || result2 == 0)
         assertNull(overflowDiskStore.read())
 
         overflowDir.deleteRecursively()

@@ -207,6 +207,11 @@ class Dispatcher(
      * Used by PersistableEventQueue.drainDiskOverflowToNetwork() to flush overflow
      * events from disk without loading them into the memory queue.
      *
+     * Note: intentionally does not update the circuit breaker or retry counters.
+     * The overflow drain is an independent pipeline — it stops on first failure and
+     * retries on the next online transition or flush cycle, not via the dispatcher's
+     * retry/backoff machinery.
+     *
      * @return NetworkResponse on HTTP completion, null on encoding or network error
      */
     suspend fun sendBatchDirect(events: List<EnrichedEventPayload>): NetworkResponse? {

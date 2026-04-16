@@ -197,7 +197,7 @@ class MetaRouterAnalyticsClient private constructor(
             }
 
             // If online at launch and overflow exists from previous session, drain directly to network
-            if (networkMonitor.isConnected) {
+            if (networkMonitor.isConnected && persistableEventQueue?.hasOverflowData() == true) {
                 scope.launch { persistableEventQueue?.drainDiskOverflowToNetwork(dispatcher) }
             }
 
@@ -206,7 +206,7 @@ class MetaRouterAnalyticsClient private constructor(
             // After each successful flush, drain any overflow disk events
             persistableEventQueue?.let { pQueue ->
                 dispatcher.onFlushComplete = {
-                    if (networkMonitor.isConnected) {
+                    if (networkMonitor.isConnected && pQueue.hasOverflowData()) {
                         scope.launch { pQueue.drainDiskOverflowToNetwork(dispatcher) }
                     }
                 }
