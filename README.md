@@ -195,6 +195,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `debug` (Boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (Int, optional): Interval in seconds to flush events (default: 10)
 - `maxQueueEvents` (Int, optional): Max events stored in memory (default: 2000)
+- `maxDiskEvents` (Int, optional): Max events persisted to disk during extended offline periods (default: 10000). Set to `0` to disable disk persistence entirely — the queue then operates as a pure in-memory ring buffer (oldest event dropped at capacity). Negative values are rejected.
 
 **Proxy behavior (quick notes):**
 
@@ -306,7 +307,9 @@ Or in Android Studio: Filter by "MetaRouter"
 
 Queue capacity: The SDK keeps up to 2,000 events in memory (configurable via `maxQueueEvents` in `InitOptions`) with an additional 5 MB byte cap. When either limit is reached, the oldest events are dropped first (drop-oldest).
 
-Disk persistence: The SDK writes a snapshot of the in-memory queue to disk when the app goes to background, when a flush threshold is reached (500 events or 2 MB), and on low-memory callbacks. On next launch, events are rehydrated from disk — events older than 7 days are dropped during rehydration. The snapshot is stored in `noBackupFilesDir` and is deleted after successful rehydration or on `reset()`.
+Disk persistence: The SDK writes a snapshot of the in-memory queue to disk when the app goes to background, when a flush threshold is reached (500 events or 2 MB), and on low-memory callbacks. On next launch, events are rehydrated from disk — events older than 7 days are dropped during rehydration. The snapshot is stored in `noBackupFilesDir` and is deleted after successful rehydration or on `reset()`. Disk capacity is bounded by `maxDiskEvents` (default 10,000) — when the cap is hit, the oldest persisted events are dropped first.
+
+Opting out of disk persistence: Set `maxDiskEvents = 0` to disable the disk store entirely. In this mode the SDK behaves as a pure in-memory ring buffer — `maxQueueEvents` (and the 5 MB byte cap) still bound the queue, and the oldest event is dropped when full. Background/low-memory crash-safety flushes become no-ops, so events in memory will not survive a process kill. Use this when local persistence is unwanted (privacy constraints, ephemeral environments, tests).
 
 This SDK uses a circuit breaker around network I/O. It keeps ordering stable, avoids tight retry loops, and backs off cleanly when your cluster is unhealthy or throttling.
 

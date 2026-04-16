@@ -1,6 +1,13 @@
 package com.metarouter.analytics
 
+import android.util.Log
+import io.mockk.every
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import org.junit.After
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -200,26 +207,125 @@ class InitOptionsTest {
         assertTrue(exception?.message?.contains("writeKey") == true)
     }
 
-    // ===== maxOfflineDiskEvents =====
+    // ===== maxDiskEvents =====
 
     @Test
-    fun `maxOfflineDiskEvents defaults to 10000`() {
+    fun `maxDiskEvents defaults to 10000`() {
         val options = InitOptions(
             writeKey = "test-key",
             ingestionHost = "https://example.com"
         )
 
-        assertEquals(10000, options.maxOfflineDiskEvents)
+        assertEquals(10000, options.maxDiskEvents)
     }
 
     @Test
-    fun `custom maxOfflineDiskEvents accepted`() {
+    fun `custom maxDiskEvents accepted`() {
         val options = InitOptions(
             writeKey = "test-key",
             ingestionHost = "https://example.com",
-            maxOfflineDiskEvents = 5000
+            maxDiskEvents = 5000
         )
 
-        assertEquals(5000, options.maxOfflineDiskEvents)
+        assertEquals(5000, options.maxDiskEvents)
+    }
+
+    @Test
+    fun `zero maxDiskEvents is accepted as in-memory-only opt-out`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            maxDiskEvents = 0
+        )
+
+        assertEquals(0, options.maxDiskEvents)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `negative maxDiskEvents throws exception`() {
+        InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            maxDiskEvents = -1
+        )
+    }
+
+    // ===== maxDiskEvents vs maxQueueEvents mismatch warning =====
+
+    @Test
+    fun `warns when maxDiskEvents is less than maxQueueEvents`() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        try {
+            InitOptions(
+                writeKey = "test-key",
+                ingestionHost = "https://example.com",
+                maxQueueEvents = 2000,
+                maxDiskEvents = 500
+            )
+            verify {
+                Log.w(
+                    any(),
+                    match<String> {
+                        it.contains("maxDiskEvents (500)") &&
+                            it.contains("maxQueueEvents (2000)") &&
+                            it.contains("dropped")
+                    }
+                )
+            }
+        } finally {
+            unmockkStatic(Log::class)
+        }
+    }
+
+    @Test
+    fun `does not warn when maxDiskEvents equals maxQueueEvents`() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        try {
+            InitOptions(
+                writeKey = "test-key",
+                ingestionHost = "https://example.com",
+                maxQueueEvents = 2000,
+                maxDiskEvents = 2000
+            )
+            verify(exactly = 0) { Log.w(any(), any<String>()) }
+        } finally {
+            unmockkStatic(Log::class)
+        }
+    }
+
+    @Test
+    fun `does not warn when maxDiskEvents exceeds maxQueueEvents`() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        try {
+            InitOptions(
+                writeKey = "test-key",
+                ingestionHost = "https://example.com",
+                maxQueueEvents = 2000,
+                maxDiskEvents = 10000
+            )
+            verify(exactly = 0) { Log.w(any(), any<String>()) }
+        } finally {
+            unmockkStatic(Log::class)
+        }
+    }
+
+    @Test
+    fun `does not warn when maxDiskEvents is zero (in-memory-only opt-out)`() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        try {
+            InitOptions(
+                writeKey = "test-key",
+                ingestionHost = "https://example.com",
+                maxQueueEvents = 2000,
+                maxDiskEvents = 0
+            )
+            verify(exactly = 0) { Log.w(any(), any<String>()) }
+        } finally {
+            unmockkStatic(Log::class)
+        }
     }
 }
