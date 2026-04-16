@@ -500,6 +500,15 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
+    // ===== Identity Read Methods =====
+
+    fun getAnonymousId(): String {
+        check(lifecycleState.get() == LifecycleState.READY) {
+            "Cannot get anonymousId - SDK not ready (state: ${lifecycleState.get()})"
+        }
+        return identityManager.getAnonymousId()
+    }
+
     // ===== Debug Methods =====
 
     override fun enableDebugLogging() {
