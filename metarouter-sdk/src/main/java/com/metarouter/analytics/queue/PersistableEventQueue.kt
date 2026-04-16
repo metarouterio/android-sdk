@@ -92,10 +92,21 @@ class PersistableEventQueue(
      * Enqueue an event to memory.
      * When at capacity (event count or byte size), flushes the entire memory queue
      * to disk. Events are only dropped if capacity is hit and disk operations fail.
+     *
+     * If [maxOfflineDiskEvents] is 0, disk persistence is disabled and the queue
+     * acts as a pure in-memory ring buffer: at capacity, the oldest event is dropped.
      */
     @Synchronized
     override fun enqueue(event: EnrichedEventPayload) {
         val eventSize = estimateEventSize(event)
+
+        if (maxOfflineDiskEvents == 0) {
+            dropOldestUntilFits(eventSize)
+            memoryQueue.addLast(event)
+            eventSizes.addLast(eventSize)
+            estimatedBytes += eventSize
+            return
+        }
 
         // Over byte capacity: flush memory queue to disk
         if (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
@@ -135,6 +146,19 @@ class PersistableEventQueue(
      */
     @Synchronized
     override fun requeueToFront(events: List<EnrichedEventPayload>) {
+        if (maxOfflineDiskEvents == 0) {
+            // In-memory-only mode: at cap, drop newest (back of queue) so the
+            // requeued retry events at the front are preserved.
+            events.asReversed().forEach { event ->
+                val eventSize = estimateEventSize(event)
+                dropNewestUntilFits(eventSize)
+                memoryQueue.addFirst(event)
+                eventSizes.addFirst(eventSize)
+                estimatedBytes += eventSize
+            }
+            return
+        }
+
         // Initial flush: if adding these events would exceed capacity, flush current memory first.
         if ((memoryQueue.size + events.size > maxCapacity ||
              estimatedBytes + events.sumOf { estimateEventSize(it) } > maxCapacityBytes) &&
@@ -179,10 +203,12 @@ class PersistableEventQueue(
 
     /**
      * Flush memory queue to disk when the dispatcher triggers a flush while offline.
-     * Returns true if events were flushed to disk.
+     * Returns true if events were flushed to disk. No-op (returns false) when
+     * [maxOfflineDiskEvents] is 0.
      */
     @Synchronized
     override fun flushToOfflineStorage(): Boolean {
+        if (maxOfflineDiskEvents == 0) return false
         if (memoryQueue.isEmpty()) return false
         flushMemoryToDiskInternal()
         return true
@@ -190,10 +216,11 @@ class PersistableEventQueue(
 
     /**
      * Best-effort crash-safety flush: appends current memory queue to disk.
-     * Called on app background / onTrimMemory.
+     * Called on app background / onTrimMemory. No-op when [maxOfflineDiskEvents] is 0.
      */
     @Synchronized
     fun flushToDisk() {
+        if (maxOfflineDiskEvents == 0) return
         if (memoryQueue.isEmpty()) return
         flushMemoryToDiskInternal()
     }
@@ -392,6 +419,44 @@ class PersistableEventQueue(
             diskStore.write(QueueSnapshot(version = 1, events = combined))
             hasOverflowData = true
             Logger.log("Flushed ${batch.size} events to disk (total on disk: ${combined.size})")
+        }
+    }
+
+    /**
+     * In-memory-only mode: drop oldest events until the new event of [newEventSize]
+     * fits under both the event count and byte capacity caps.
+     * Must be called while holding `synchronized(this)`.
+     */
+    private fun dropOldestUntilFits(newEventSize: Long) {
+        var dropped = 0
+        while (memoryQueue.isNotEmpty() &&
+               (memoryQueue.size >= maxCapacity ||
+                estimatedBytes + newEventSize > maxCapacityBytes)) {
+            memoryQueue.removeFirst()
+            estimatedBytes -= eventSizes.removeFirst()
+            dropped++
+        }
+        if (dropped > 0) {
+            Logger.warn("In-memory queue cap reached — dropped $dropped oldest event(s) (maxOfflineDiskEvents=0)")
+        }
+    }
+
+    /**
+     * In-memory-only mode (requeue path): drop newest events from the back so that
+     * older requeued retries at the front are preserved.
+     * Must be called while holding `synchronized(this)`.
+     */
+    private fun dropNewestUntilFits(newEventSize: Long) {
+        var dropped = 0
+        while (memoryQueue.isNotEmpty() &&
+               (memoryQueue.size >= maxCapacity ||
+                estimatedBytes + newEventSize > maxCapacityBytes)) {
+            memoryQueue.removeLast()
+            estimatedBytes -= eventSizes.removeLast()
+            dropped++
+        }
+        if (dropped > 0) {
+            Logger.warn("In-memory queue cap reached during requeue — dropped $dropped newest event(s) (maxOfflineDiskEvents=0)")
         }
     }
 

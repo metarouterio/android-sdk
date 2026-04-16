@@ -222,4 +222,24 @@ class InitOptionsTest {
 
         assertEquals(5000, options.maxOfflineDiskEvents)
     }
+
+    @Test
+    fun `zero maxOfflineDiskEvents is accepted as in-memory-only opt-out`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            maxOfflineDiskEvents = 0
+        )
+
+        assertEquals(0, options.maxOfflineDiskEvents)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `negative maxOfflineDiskEvents throws exception`() {
+        InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            maxOfflineDiskEvents = -1
+        )
+    }
 }

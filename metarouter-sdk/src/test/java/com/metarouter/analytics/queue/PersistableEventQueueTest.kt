@@ -1007,6 +1007,102 @@ class PersistableEventQueueTest {
     }
 
 
+    // ===== maxOfflineDiskEvents = 0 (in-memory-only ring buffer) =====
+
+    @Test
+    fun `enqueue at event cap with zero disk drops oldest and writes no disk file`() {
+        val inMemQueue = PersistableEventQueue(
+            maxCapacity = 3,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 0,
+            eventTTLMs = 0
+        )
+
+        repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
+
+        assertEquals(3, inMemQueue.size())
+        assertNull("disk store must not be written when maxOfflineDiskEvents=0", diskStore.read())
+        assertFalse(inMemQueue.hasOverflowData())
+
+        val drained = inMemQueue.drain(3)
+        assertEquals(listOf("msg-2", "msg-3", "msg-4"), drained.map { it.messageId })
+    }
+
+    @Test
+    fun `enqueue at byte cap with zero disk drops oldest until fits and writes no disk file`() {
+        val tinyQueue = PersistableEventQueue(
+            maxCapacity = 2000,
+            diskStore = diskStore,
+            maxCapacityBytes = 500,
+            maxOfflineDiskEvents = 0,
+            eventTTLMs = 0
+        )
+
+        repeat(10) { i -> tinyQueue.enqueue(createTestEvent("msg-$i")) }
+
+        assertTrue(tinyQueue.estimatedSizeBytes() <= 500)
+        assertNull("disk store must not be written when maxOfflineDiskEvents=0", diskStore.read())
+        assertFalse(tinyQueue.hasOverflowData())
+    }
+
+    @Test
+    fun `flushToOfflineStorage with zero disk returns false and writes nothing`() {
+        val inMemQueue = PersistableEventQueue(
+            maxCapacity = 100,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 0,
+            eventTTLMs = 0
+        )
+        repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
+
+        val flushed = inMemQueue.flushToOfflineStorage()
+
+        assertFalse("flushToOfflineStorage must report no-op when disk disabled", flushed)
+        assertEquals("memory must be untouched when disk disabled", 5, inMemQueue.size())
+        assertNull(diskStore.read())
+    }
+
+    @Test
+    fun `flushToDisk with zero disk writes nothing and preserves memory`() {
+        val inMemQueue = PersistableEventQueue(
+            maxCapacity = 100,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 0,
+            eventTTLMs = 0
+        )
+        repeat(5) { i -> inMemQueue.enqueue(createTestEvent("msg-$i")) }
+
+        inMemQueue.flushToDisk()
+
+        assertEquals("memory must be untouched when disk disabled", 5, inMemQueue.size())
+        assertNull(diskStore.read())
+    }
+
+    @Test
+    fun `requeueToFront at cap with zero disk drops newest to keep requeued events`() {
+        val inMemQueue = PersistableEventQueue(
+            maxCapacity = 4,
+            diskStore = diskStore,
+            maxOfflineDiskEvents = 0,
+            eventTTLMs = 0
+        )
+        // Fill memory with newer events
+        repeat(4) { i -> inMemQueue.enqueue(createTestEvent("new-$i")) }
+
+        // Requeue 2 older events to the front. At cap, we must drop the newest
+        // events (back of queue) so the requeued retries survive.
+        val retries = listOf(createTestEvent("retry-0"), createTestEvent("retry-1"))
+        inMemQueue.requeueToFront(retries)
+
+        assertEquals(4, inMemQueue.size())
+        assertNull(diskStore.read())
+
+        val drained = inMemQueue.drain(4)
+        val ids = drained.map { it.messageId }
+        assertEquals(listOf("retry-0", "retry-1"), ids.subList(0, 2))
+        assertFalse("requeued events must not be evicted", ids.contains("retry-0").not())
+    }
+
     private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,
