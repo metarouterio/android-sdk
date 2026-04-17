@@ -170,6 +170,11 @@ class Dispatcher(
      * Uses isFlushing guard to prevent concurrent/duplicate flushes.
      */
     suspend fun flush() {
+        // If a retry is already armed, it IS the next attempt. Periodic flushJob
+        // ticks and offer() auto-flushes during the backoff window would otherwise
+        // re-enter processUntilEmpty, log redundantly, and cancel/relaunch the
+        // retry — visible as decreasing "retrying in Xms" log spam in a retry loop.
+        if (retryJob?.isActive == true) return
         if (!isFlushing.compareAndSet(false, true)) return
         if (queue.size() == 0) { isFlushing.set(false); return }
 
@@ -413,6 +418,9 @@ class Dispatcher(
         retryJob?.cancel()
         retryJob = scope.launch {
             if (delayMs > 0) delay(delayMs)
+            // Null self-reference before flushing so the retryJob guard in flush()
+            // doesn't short-circuit our own attempt.
+            retryJob = null
             flush()
         }
     }
