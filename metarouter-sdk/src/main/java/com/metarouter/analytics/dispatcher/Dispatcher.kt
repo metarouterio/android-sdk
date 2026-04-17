@@ -170,12 +170,22 @@ class Dispatcher(
      * Uses isFlushing guard to prevent concurrent/duplicate flushes.
      */
     suspend fun flush() {
+        // If a retry is already armed, it IS the next attempt. Periodic flushJob
+        // ticks and offer() auto-flushes during the backoff window would otherwise
+        // re-enter processUntilEmpty, log redundantly, and cancel/relaunch the
+        // retry — visible as decreasing "retrying in Xms" log spam in a retry loop.
+        if (retryJob?.isActive == true) return
         if (!isFlushing.compareAndSet(false, true)) return
         if (queue.size() == 0) { isFlushing.set(false); return }
 
         try {
-            processUntilEmpty()
-            if (!networkPaused) {
+            val hadSuccess = processUntilEmpty()
+            // Only fire onFlushComplete after an actual 2xx this cycle. If the
+            // main channel failed (5xx, network error, circuit open), a disk
+            // overflow drain triggered from the callback would fail on the same
+            // endpoint and thrash disk I/O. It'll resume on the next successful
+            // flush or offline→online transition.
+            if (hadSuccess) {
                 onFlushComplete?.invoke()
             }
         } finally {
@@ -235,7 +245,7 @@ class Dispatcher(
             headers["Trace"] = "true"
         }
 
-        Logger.log("Making API call to: $url (overflow drain, ${batch.size} events)")
+        Logger.log("Making API call to: $url (disk drain, ${batch.size} events)")
 
         return try {
             networkClient.postJson(
@@ -266,31 +276,32 @@ class Dispatcher(
         )
     }
 
-    private suspend fun processUntilEmpty() {
+    private suspend fun processUntilEmpty(): Boolean {
         if (networkPaused) {
             if (queue.flushToOfflineStorage()) {
                 Logger.log("Flushed queue to offline storage")
             } else {
                 Logger.log("Dispatcher skipping flush — device is offline")
             }
-            return
+            return false
         }
 
+        var anySuccess = false
         while (queue.size() > 0) {
             if (networkPaused) {
                 Logger.log("Dispatcher aborting flush — device went offline")
-                return
+                return anySuccess
             }
 
             val waitMs = circuitBreaker.beforeRequest()
             if (waitMs > 0) {
                 Logger.warn("Circuit breaker ${circuitBreaker.getState()}, retrying in ${waitMs}ms (${queue.size()} event(s) pending)")
                 scheduleRetry(waitMs)
-                return
+                return anySuccess
             }
 
             val events = queue.drain(maxBatchSize.get())
-            if (events.isEmpty()) return
+            if (events.isEmpty()) return anySuccess
 
             // Inject sentAt timestamp
             val sentAt = getIso8601Timestamp()
@@ -330,15 +341,20 @@ class Dispatcher(
                 val retryDelay = maxOf(retryFloorMs(), circuitBreaker.beforeRequest())
                 Logger.warn("API call failed: ${e.message}, ${queue.size()} event(s) pending retry in ${retryDelay}ms (circuit: ${circuitBreaker.getState()}, retry #${consecutiveRetries.get()})")
                 scheduleRetry(retryDelay)
-                return
+                return anySuccess
+            }
+
+            if (ResponseCategory.from(response.statusCode) == ResponseCategory.SUCCESS) {
+                anySuccess = true
             }
 
             when (val action = handleResponse(response, events)) {
                 is FlushAction.Continue -> {} // continue loop
-                is FlushAction.RetryAfter -> { scheduleRetry(action.delayMs); return }
-                is FlushAction.Stop -> return
+                is FlushAction.RetryAfter -> { scheduleRetry(action.delayMs); return anySuccess }
+                is FlushAction.Stop -> return anySuccess
             }
         }
+        return anySuccess
     }
 
     private fun handleResponse(
@@ -413,6 +429,9 @@ class Dispatcher(
         retryJob?.cancel()
         retryJob = scope.launch {
             if (delayMs > 0) delay(delayMs)
+            // Null self-reference before flushing so the retryJob guard in flush()
+            // doesn't short-circuit our own attempt.
+            retryJob = null
             flush()
         }
     }

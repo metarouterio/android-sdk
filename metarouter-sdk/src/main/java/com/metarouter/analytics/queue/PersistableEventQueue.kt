@@ -314,7 +314,7 @@ class PersistableEventQueue(
 
                 if (response == null) {
                     writeCheckpoint(remaining())
-                    Logger.warn("Offline overflow drain paused — network error ($totalDrained drained so far)")
+                    Logger.warn("Disk drain paused — network error ($totalDrained drained so far)")
                     return totalDrained
                 }
 
@@ -335,26 +335,26 @@ class PersistableEventQueue(
                     ResponseCategory.PAYLOAD_TOO_LARGE -> {
                         if (currentBatchSize > 1) {
                             currentBatchSize = maxOf(1, currentBatchSize / 2)
-                            Logger.warn("Overflow drain: payload too large (413) — reduced batch to $currentBatchSize")
+                            Logger.warn("Disk drain: payload too large (413) — reduced batch to $currentBatchSize")
                         } else {
-                            Logger.warn("Overflow drain: dropping oversized event at batchSize=1 (messageId: ${batch.first().messageId})")
+                            Logger.warn("Disk drain: dropping oversized event at batchSize=1 (messageId: ${batch.first().messageId})")
                             offset++
                         }
                     }
                     ResponseCategory.FATAL_CONFIG -> {
-                        Logger.error("Overflow drain: fatal config error ${response.statusCode} — discarding ${events.size - offset} overflow events")
+                        Logger.error("Disk drain: fatal config error ${response.statusCode} — discarding ${events.size - offset} events")
                         // Notify the dispatcher so the main pipeline also shuts down. Matches
                         // the main flush path's handling of auth/config failures.
                         dispatcher.onFatalConfigError?.invoke(response.statusCode)
                         return totalDrained
                     }
                     ResponseCategory.CLIENT_ERROR -> {
-                        Logger.warn("Overflow drain: client error ${response.statusCode} — dropping batch of ${batch.size}")
+                        Logger.warn("Disk drain: client error ${response.statusCode} — dropping batch of ${batch.size}")
                         offset += batch.size
                     }
                     ResponseCategory.SERVER_ERROR, ResponseCategory.RATE_LIMITED -> {
                         writeCheckpoint(remaining())
-                        Logger.warn("Offline overflow drain paused — ${response.statusCode} ($totalDrained drained so far)")
+                        Logger.warn("Disk drain paused — ${response.statusCode} ($totalDrained drained so far)")
                         return totalDrained
                     }
                 }
@@ -362,7 +362,7 @@ class PersistableEventQueue(
 
             // All events drained successfully
             synchronized(diskLock) { deleteDiskStore() }
-            Logger.log("Offline overflow disk drain complete ($totalDrained events)")
+            Logger.log("Disk drain complete ($totalDrained events)")
             return totalDrained
         } finally {
             isDraining.set(false)
