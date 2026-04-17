@@ -582,6 +582,39 @@ class DispatcherTest {
     }
 
     @Test
+    fun `onFlushComplete does not fire when flush fails and schedules retry`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        var completionCount = 0
+        dispatcher.onFlushComplete = { completionCount++ }
+
+        dispatcher.flush()
+
+        // Flush hit a 5xx and scheduled a retry — the drain (triggered via
+        // onFlushComplete) would just fail on the same failing endpoint, so
+        // the callback must not fire until a real success happens.
+        assertEquals(0, completionCount)
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `onFlushComplete fires after successful flush`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        var completionCount = 0
+        dispatcher.onFlushComplete = { completionCount++ }
+
+        dispatcher.flush()
+
+        assertEquals(1, completionCount)
+    }
+
+    @Test
     fun `flush is a no-op while retry is pending`() = runTest {
         val dispatcher = createDispatcher()
         networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
