@@ -581,6 +581,63 @@ class DispatcherTest {
         assertEquals(3, networkClient.requests.size) // 3 batches of 10, 10, 5
     }
 
+    @Test
+    fun `onFlushComplete does not fire when flush fails and schedules retry`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        var completionCount = 0
+        dispatcher.onFlushComplete = { completionCount++ }
+
+        dispatcher.flush()
+
+        // Flush hit a 5xx and scheduled a retry — the drain (triggered via
+        // onFlushComplete) would just fail on the same failing endpoint, so
+        // the callback must not fire until a real success happens.
+        assertEquals(0, completionCount)
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+        dispatcher.stop()
+    }
+
+    @Test
+    fun `onFlushComplete fires after successful flush`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        var completionCount = 0
+        dispatcher.onFlushComplete = { completionCount++ }
+
+        dispatcher.flush()
+
+        assertEquals(1, completionCount)
+    }
+
+    @Test
+    fun `flush is a no-op while retry is pending`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(500, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+
+        // First flush: 500 → retry scheduled. 1 HTTP request so far.
+        dispatcher.flush()
+        assertEquals(1, networkClient.requests.size)
+        assertTrue(dispatcher.getDebugInfo().pendingRetry)
+
+        // Additional flush() calls while the retry is armed must not issue new
+        // HTTP requests — the pending retry is the next attempt. This mirrors
+        // the periodic flushJob tick or offer() auto-flush calling flush() during
+        // the backoff window.
+        dispatcher.flush()
+        dispatcher.flush()
+
+        assertEquals("No additional requests while retry pending", 1, networkClient.requests.size)
+        assertTrue("Retry still pending", dispatcher.getDebugInfo().pendingRetry)
+
+        dispatcher.stop()
+    }
+
     // ===== Retry Backoff Floor Tests =====
 
     @Test
@@ -1029,8 +1086,10 @@ class DispatcherTest {
 
         queue.enqueue(createEvent("msg-1"))
         dispatcher.flush()
-        queue.enqueue(createEvent("msg-2"))
-        dispatcher.flush()
+        // Let the scheduled retry fire so the second failure hits the CB
+        // threshold naturally. flush() is a no-op while the retry is armed.
+        testScheduler.advanceTimeBy(1100)
+        testScheduler.runCurrent()
 
         // CB should be open after hitting failure threshold
         assertEquals(CircuitState.Open, breaker.getState())
@@ -1142,7 +1201,7 @@ class DispatcherTest {
             context = EventContext(
                 app = null,
                 device = null,
-                library = LibraryContext(name = "test-sdk", version = "1.1.0"),
+                library = LibraryContext(name = "test-sdk", version = "1.2.0"),
                 locale = null,
                 network = null,
                 os = null,
