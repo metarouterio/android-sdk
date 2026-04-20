@@ -4,7 +4,10 @@ import com.metarouter.analytics.utils.Logger
 import io.mockk.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -381,5 +384,62 @@ class AnalyticsProxyTest {
 
         // All events should have been processed (either replayed or forwarded)
         assertTrue(proxy.isBound())
+    }
+
+    // ===== getAnonymousId =====
+
+    @Test
+    fun `getAnonymousId returns value after bind`() = runTest {
+        coEvery { mockClient.getAnonymousId() } returns "anon-123"
+
+        proxy.bind(mockClient)
+
+        assertEquals("anon-123", proxy.getAnonymousId())
+    }
+
+    @Test
+    fun `getAnonymousId suspends until bind completes`() = runTest {
+        coEvery { mockClient.getAnonymousId() } returns "anon-456"
+
+        val result = async { proxy.getAnonymousId() }
+
+        // Give the coroutine a chance to start and suspend on the boundSignal.
+        // It must not complete before bind() runs.
+        delay(50)
+        assertFalse("getAnonymousId should still be suspended before bind", result.isCompleted)
+
+        proxy.bind(mockClient)
+
+        assertEquals("anon-456", result.await())
+    }
+
+    @Test
+    fun `getAnonymousId returns stable value across calls`() = runTest {
+        coEvery { mockClient.getAnonymousId() } returns "anon-stable"
+
+        proxy.bind(mockClient)
+
+        val id1 = proxy.getAnonymousId()
+        val id2 = proxy.getAnonymousId()
+        assertEquals(id1, id2)
+    }
+
+    @Test
+    fun `getAnonymousId hangs after unbind until next bind`() = runTest {
+        coEvery { mockClient.getAnonymousId() } returns "anon-first"
+        proxy.bind(mockClient)
+        assertEquals("anon-first", proxy.getAnonymousId())
+
+        proxy.unbind()
+
+        val result = async { proxy.getAnonymousId() }
+        val pollResult = withTimeoutOrNull(100) { result.await() }
+        assertNull("getAnonymousId should suspend while unbound", pollResult)
+
+        val secondClient = mockk<AnalyticsInterface>(relaxed = true)
+        coEvery { secondClient.getAnonymousId() } returns "anon-second"
+        proxy.bind(secondClient)
+
+        assertEquals("anon-second", result.await())
     }
 }

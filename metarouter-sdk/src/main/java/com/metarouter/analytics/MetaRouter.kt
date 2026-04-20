@@ -3,7 +3,6 @@ package com.metarouter.analytics
 import android.content.Context
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,10 +29,6 @@ object MetaRouter {
 
     /** Atomic flag to ensure only one initialization attempt proceeds. */
     private val initializationStarted = AtomicBoolean(false)
-
-    /** Signal that completes when the real client is bound to the proxy. */
-    @Volatile
-    private var boundSignal = CompletableDeferred<Unit>()
 
     @Volatile
     private var lifecycleObserver: AppLifecycleObserver? = null
@@ -62,11 +57,6 @@ object MetaRouter {
                 initializeInternal(context, options)
             } catch (e: Exception) {
                 Logger.error("Background initialization failed: ${e.message}")
-                // Wake current awaiters with failure, then swap in a fresh
-                // signal so a retry's later boundSignal.complete(Unit) isn't
-                // swallowed by an already-completed deferred.
-                boundSignal.completeExceptionally(e)
-                boundSignal = CompletableDeferred()
                 initializationStarted.set(false)
             }
         }
@@ -124,7 +114,6 @@ object MetaRouter {
             lifecycleObserver?.register()
 
             proxy.bind(client)
-            boundSignal.complete(Unit)
         }
     }
 
@@ -196,39 +185,6 @@ object MetaRouter {
         }
 
         /**
-         * Get the current anonymous ID, suspending until the SDK is ready.
-         *
-         * If initialization is still in progress, this suspends until the
-         * client is bound and ready, then returns the anonymous ID.
-         * If already initialized, returns immediately.
-         *
-         * @return The current anonymous ID
-         * @throws IllegalStateException if MetaRouter has not been initialized
-         */
-        suspend fun getAnonymousId(): String {
-            // Capture the current boundSignal reference under the same lock
-            // reset uses, so we can't observe a mid-reset state where the flag
-            // is still true but boundSignal has already been swapped for a
-            // fresh (never-completing) deferred.
-            val signal: CompletableDeferred<Unit> = initMutex.withLock {
-                if (!initializationStarted.get()) {
-                    throw IllegalStateException(
-                        "MetaRouter not initialized. Call MetaRouter.Analytics.initialize() first."
-                    )
-                }
-                boundSignal
-            }
-
-            signal.await()
-
-            val client = store.get()
-                ?: throw IllegalStateException(
-                    "MetaRouter bound signal completed but client store is empty (likely reset during getAnonymousId)"
-                )
-            return client.getAnonymousId()
-        }
-
-        /**
          * Enable or disable debug logging.
          *
          * @param enabled true to enable debug logging
@@ -258,9 +214,6 @@ object MetaRouter {
                 // Reset the proxy so it can be bound to a new client
                 proxy.unbind()
 
-                // Reset bound signal for next initialization
-                boundSignal = CompletableDeferred()
-
                 // Reset initialization flag
                 initializationStarted.set(false)
 
@@ -282,7 +235,6 @@ object MetaRouter {
             lifecycleObserver = null
             store.clear()
             proxy.resetForTesting()
-            boundSignal = CompletableDeferred()
             initializationStarted.set(false)
         }
     }

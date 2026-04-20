@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import com.metarouter.analytics.utils.Logger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicReference
@@ -20,6 +21,9 @@ class AnalyticsProxy(
     private val realClient = AtomicReference<AnalyticsInterface?>(null)
     private val pendingCalls = ArrayDeque<PendingCall>()
     private val mutex = Mutex()
+
+    @Volatile
+    private var boundSignal = CompletableDeferred<Unit>()
 
     /**
      * Bind a real client and replay all pending calls.
@@ -46,6 +50,7 @@ class AnalyticsProxy(
 
             // Set the real client atomically
             realClient.set(client)
+            boundSignal.complete(Unit)
         }
     }
 
@@ -178,6 +183,16 @@ class AnalyticsProxy(
         }
     }
 
+    override suspend fun getAnonymousId(): String {
+        val signal = boundSignal
+        signal.await()
+        val client = realClient.get()
+            ?: throw IllegalStateException(
+                "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
+            )
+        return client.getAnonymousId()
+    }
+
     override fun setTracing(enabled: Boolean) {
         val client = realClient.get()
         if (client != null) {
@@ -231,6 +246,7 @@ class AnalyticsProxy(
             synchronized(pendingCalls) {
                 pendingCalls.clear()
             }
+            boundSignal = CompletableDeferred()
         }
     }
 

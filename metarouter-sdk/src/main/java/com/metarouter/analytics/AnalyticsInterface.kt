@@ -112,7 +112,18 @@ interface AnalyticsInterface {
      */
     suspend fun reset()
 
-    /** 
+    /**
+     * Get the current anonymous ID, suspending until the SDK is ready.
+     *
+     * If initialization is still in progress, this suspends until the
+     * client is bound and ready, then returns the anonymous ID.
+     * If already initialized, returns immediately.
+     *
+     * @return The current anonymous ID
+     */
+    suspend fun getAnonymousId(): String
+
+    /**
      * Enable debug logging for troubleshooting.
      *
      * When enabled, the SDK will log detailed information about initialization, event

@@ -163,48 +163,23 @@ class MetaRouterTest {
         assertFalse(Logger.debugEnabled)
     }
 
-    // ===== getAnonymousId =====
-
-    @Test
-    fun `getAnonymousId throws if not initialized`() = runTest {
-        try {
-            MetaRouter.Analytics.getAnonymousId()
-            fail("Expected IllegalStateException")
-        } catch (e: IllegalStateException) {
-            // Expected
-        }
-    }
+    // ===== getAnonymousId (via client) =====
 
     @Test
     fun `getAnonymousId returns value after initializeAndWait`() = runTest {
-        MetaRouter.initializeAndWait(context, options)
+        val client = MetaRouter.initializeAndWait(context, options)
 
-        val anonId = MetaRouter.Analytics.getAnonymousId()
+        val anonId = client.getAnonymousId()
         assertNotNull(anonId)
     }
 
     @Test
     fun `getAnonymousId returns stable value across calls`() = runTest {
-        MetaRouter.initializeAndWait(context, options)
+        val client = MetaRouter.initializeAndWait(context, options)
 
-        val id1 = MetaRouter.Analytics.getAnonymousId()
-        val id2 = MetaRouter.Analytics.getAnonymousId()
+        val id1 = client.getAnonymousId()
+        val id2 = client.getAnonymousId()
         assertEquals(id1, id2)
-    }
-
-    @Test
-    fun `getAnonymousId throws after resetAndWait`() = runTest {
-        MetaRouter.initializeAndWait(context, options)
-        MetaRouter.Analytics.getAnonymousId() // should work
-
-        MetaRouter.Analytics.resetAndWait()
-
-        try {
-            MetaRouter.Analytics.getAnonymousId()
-            fail("Expected IllegalStateException")
-        } catch (e: IllegalStateException) {
-            // Expected
-        }
     }
 
     // ===== Reset =====

@@ -372,10 +372,12 @@ class MetaRouterAnalyticsClientTest {
 
         client.reset()
 
-        assertThrows(IllegalStateException::class.java) {
+        try {
             client.getAnonymousId()
+            fail("Expected IllegalStateException")
+        } catch (e: IllegalStateException) {
+            // Expected - lifecycle is no longer READY after reset
         }
-        Unit
     }
 
     // ===== Reset =====
