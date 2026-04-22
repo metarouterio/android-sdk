@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.io.IOException
 
 /**
  * Handles reading/writing queue snapshot files to disk.
@@ -17,10 +18,13 @@ import java.io.File
  * Uses atomic write-then-rename to prevent partial writes on crash.
  *
  * Error handling:
- * - Corrupt/unparseable files: returns null, deletes file, logs warning
- * - Unrecognized schema version: returns null, deletes file, logs warning
+ * - Missing file on read: returns null (no log, no throw)
+ * - Corrupt / unparseable snapshot, unrecognized version, missing version field:
+ *   deletes the offending file, then throws IOException so callers can distinguish
+ *   real failure from "nothing on disk"
  * - Individual event deserialization failure: skips that event, keeps valid events, logs warning
- * - Missing file: returns null (no log)
+ * - write failures: throws IOException after cleaning up the tmp file
+ * - delete on absent file: no-op; delete on real I/O failure: throws IOException
  *
  * Thread safety: callers must synchronize externally (PersistableEventQueue does this).
  */
@@ -75,7 +79,11 @@ class EventDiskStore(private val baseDir: File) {
     /**
      * Write a snapshot to disk. Uses atomic write-to-tmp-then-rename.
      * Overwrites any existing snapshot completely.
+     *
+     * Throws IOException if the write is not durable. Callers are expected to
+     * treat a throw as "batch still owned by the caller" so events can be retried.
      */
+    @Throws(IOException::class)
     fun write(snapshot: QueueSnapshot) {
         try {
             snapshotDir.mkdirs()
@@ -89,45 +97,47 @@ class EventDiskStore(private val baseDir: File) {
             Logger.log("Queue snapshot written to disk (${snapshot.events.size} events)")
         } catch (e: Exception) {
             Logger.error("Failed to write queue snapshot to disk: ${e.message}")
-            tmpFile.delete()
+            try { tmpFile.delete() } catch (_: Exception) {}
+            throw if (e is IOException) e else IOException("Failed to write queue snapshot", e)
         }
     }
 
     /**
      * Read the snapshot from disk with resilient per-event deserialization.
      *
-     * Returns null if: file missing, corrupted JSON structure, unrecognized version.
-     * Individual events that fail deserialization are skipped (not fatal).
-     * Deletes corrupt files and files with unrecognized versions.
+     * Returns null ONLY when the snapshot file is absent — that is the "nothing
+     * persisted" signal. All other failure modes (I/O error, corrupt JSON,
+     * unrecognized version, missing version field) delete the offending file
+     * and throw IOException, so callers can distinguish "no prior work" from
+     * "real error worth surfacing."
+     *
+     * Individual events that fail deserialization are still tolerated (skipped,
+     * not fatal) — a best-effort within an otherwise-valid envelope.
      */
+    @Throws(IOException::class)
     fun read(): QueueSnapshot? {
         if (!snapshotFile.exists()) return null
 
-        return try {
-            val data = snapshotFile.readText(Charsets.UTF_8)
+        val data = try {
+            snapshotFile.readText(Charsets.UTF_8)
+        } catch (e: Exception) {
+            Logger.warn("Failed to read queue snapshot from disk: ${e.message}")
+            throw if (e is IOException) e else IOException("Failed to read queue snapshot", e)
+        }
 
+        val parsed = try {
             // Parse as raw JSON first to extract version and handle events individually
             val jsonObject = json.parseToJsonElement(data).jsonObject
 
             val version = jsonObject["version"]?.jsonPrimitive?.int
-                ?: run {
-                    Logger.warn("Queue snapshot missing version field")
-                    delete()
-                    return null
-                }
+                ?: throw IOException("Queue snapshot missing version field")
 
             if (version != CURRENT_VERSION) {
-                Logger.warn("Skipping queue snapshot with unrecognized version: $version (expected $CURRENT_VERSION)")
-                delete()
-                return null
+                throw IOException("Queue snapshot has unrecognized version $version (expected $CURRENT_VERSION)")
             }
 
             val eventsArray = jsonObject["events"]?.jsonArray
-                ?: run {
-                    Logger.warn("Queue snapshot missing events array")
-                    delete()
-                    return null
-                }
+                ?: throw IOException("Queue snapshot missing events array")
 
             // Resilient per-event deserialization: skip individual corrupt events
             var skipped = 0
@@ -147,21 +157,25 @@ class EventDiskStore(private val baseDir: File) {
 
             QueueSnapshot(version = version, events = events)
         } catch (e: Exception) {
-            Logger.warn("Failed to read queue snapshot from disk (corrupted?): ${e.message}")
-            delete()
-            null
+            Logger.warn("Queue snapshot unreadable, deleting: ${e.message}")
+            try { delete() } catch (_: Exception) {}
+            throw if (e is IOException) e else IOException("Queue snapshot unreadable", e)
         }
+        return parsed
     }
 
     /**
-     * Delete the snapshot file from disk.
+     * Delete the snapshot file from disk. No-op when absent; throws on real
+     * I/O failure so callers can tell "already gone" from "filesystem said no."
+     * The tmp file (if any) is cleaned up best-effort — it's never user-visible.
      */
+    @Throws(IOException::class)
     fun delete() {
-        try {
-            snapshotFile.delete()
-            tmpFile.delete()
-        } catch (e: Exception) {
-            Logger.warn("Failed to delete queue snapshot: ${e.message}")
+        if (snapshotFile.exists() && !snapshotFile.delete()) {
+            throw IOException("Failed to delete queue snapshot: $snapshotFile")
+        }
+        if (tmpFile.exists()) {
+            try { tmpFile.delete() } catch (_: Exception) {}
         }
     }
 
