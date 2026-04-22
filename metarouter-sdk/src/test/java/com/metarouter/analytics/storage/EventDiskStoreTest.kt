@@ -73,30 +73,32 @@ class EventDiskStoreTest {
         assertEquals(1, loaded!!.events.size)
     }
 
-    @Test
-    fun `read returns null for corrupted file and deletes it`() {
+    @Test(expected = Exception::class)
+    fun `read throws on corrupted file and still deletes it`() {
         val dir = File(tempDir, "metarouter/disk-queue")
         dir.mkdirs()
         val corruptFile = File(dir, "queue.v1.json")
         corruptFile.writeText("not valid json {{{")
 
-        val loaded = store.read()
-
-        assertNull(loaded)
-        assertFalse(corruptFile.exists())
+        try {
+            store.read()
+        } finally {
+            assertFalse("corrupt file must be deleted even though read threw", corruptFile.exists())
+        }
     }
 
-    @Test
-    fun `read returns null for unrecognized schema version and deletes file`() {
+    @Test(expected = Exception::class)
+    fun `read throws on unrecognized schema version and still deletes file`() {
         val dir = File(tempDir, "metarouter/disk-queue")
         dir.mkdirs()
         val versionFile = File(dir, "queue.v1.json")
         versionFile.writeText("""{"version":99,"events":[]}""")
 
-        val loaded = store.read()
-
-        assertNull(loaded)
-        assertFalse(versionFile.exists())
+        try {
+            store.read()
+        } finally {
+            assertFalse("version-mismatched file must be deleted even though read threw", versionFile.exists())
+        }
     }
 
     @Test
@@ -164,17 +166,50 @@ class EventDiskStoreTest {
         store.delete()
     }
 
-    @Test
-    fun `read returns null when version field is missing`() {
+    @Test(expected = Exception::class)
+    fun `read throws when version field is missing and still deletes file`() {
         val dir = File(tempDir, "metarouter/disk-queue")
         dir.mkdirs()
         val snapshotFile = File(dir, "queue.v1.json")
         snapshotFile.writeText("""{"events":[]}""")
 
-        val loaded = store.read()
+        try {
+            store.read()
+        } finally {
+            assertFalse("version-less file must be deleted even though read threw", snapshotFile.exists())
+        }
+    }
 
-        assertNull(loaded)
-        assertFalse(snapshotFile.exists())
+    @Test
+    fun `read returns null only when file is absent`() {
+        // File absent → null (no log, no throw). Contract pinned so callers can
+        // distinguish "no prior snapshot" from "real I/O failure".
+        assertNull(store.read())
+    }
+
+    @Test(expected = Exception::class)
+    fun `write throws on real I-O failure`() {
+        // Poison the snapshot directory path with a regular file so mkdirs() and
+        // the subsequent tmp-file write both fail at the filesystem level.
+        val parent = File(tempDir, "metarouter")
+        parent.mkdirs()
+        val blocker = File(parent, "disk-queue")
+        blocker.writeText("not a directory")
+
+        val snapshot = QueueSnapshot(version = 1, events = listOf(createTestEvent("msg-1")))
+        store.write(snapshot)
+    }
+
+    @Test(expected = Exception::class)
+    fun `read throws on real I-O failure`() {
+        // Place a directory where the snapshot file should be. snapshotFile.exists()
+        // returns true, but readText() on a directory throws at the JVM layer.
+        val snapshotDir = File(tempDir, "metarouter/disk-queue")
+        snapshotDir.mkdirs()
+        val dirWhereFileShouldBe = File(snapshotDir, "queue.v1.json")
+        dirWhereFileShouldBe.mkdirs()
+
+        store.read()
     }
 
     private fun createTestEvent(messageId: String): EnrichedEventPayload {

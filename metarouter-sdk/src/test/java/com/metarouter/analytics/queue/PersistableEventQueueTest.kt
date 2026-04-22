@@ -1007,6 +1007,152 @@ class PersistableEventQueueTest {
     }
 
 
+    // ===== Pending Overflow (write-failure retention) =====
+
+    @Test
+    fun `pendingOverflow preserves events when disk write fails at capacity`() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        // Poison the disk path: place a regular file where metarouter/disk-queue dir should be.
+        val poisonedBase = createTempDirectory("metarouter-pq-poisoned").toFile()
+        val metarouterDir = File(poisonedBase, "metarouter")
+        metarouterDir.mkdirs()
+        val blocker = File(metarouterDir, "disk-queue")
+        blocker.writeText("not a directory")
+
+        val poisonedStore = EventDiskStore(poisonedBase)
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 3,
+            diskStore = poisonedStore,
+            maxDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Fill memory to capacity
+        repeat(3) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        assertEquals(3, smallQueue.size())
+
+        // Overflow: these two events trigger capacity-flushes which fail.
+        // They must land in pendingOverflow instead of being dropped.
+        smallQueue.enqueue(createTestEvent("overflow-0"))
+        smallQueue.enqueue(createTestEvent("overflow-1"))
+
+        // Memory remains at capacity because flush failed and we did not evict.
+        assertEquals(3, smallQueue.size())
+
+        // Remove poison and drain 1 from memory so a subsequent flush has room to append.
+        blocker.delete()
+        smallQueue.drain(1)
+
+        // Now a successful flush should write the remaining memory AND pendingOverflow
+        // in a single combined batch.
+        smallQueue.flushToDisk()
+
+        val snapshot = poisonedStore.read()
+        assertNotNull(snapshot)
+        val ids = snapshot!!.events.map { it.messageId }
+        assertEquals(4, ids.size)
+        assertTrue(
+            "expected memory + pendingOverflow events on disk after successful flush, got $ids",
+            ids.containsAll(listOf("fill-1", "fill-2", "overflow-0", "overflow-1"))
+        )
+
+        poisonedBase.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `pendingOverflow retained across repeated failures`() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val poisonedBase = createTempDirectory("metarouter-pq-poisoned2").toFile()
+        val metarouterDir = File(poisonedBase, "metarouter")
+        metarouterDir.mkdirs()
+        val blocker = File(metarouterDir, "disk-queue")
+        blocker.writeText("not a directory")
+
+        val poisonedStore = EventDiskStore(poisonedBase)
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 2,
+            diskStore = poisonedStore,
+            maxDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        // Fill to cap and keep trying. Every enqueue past cap hits a failing disk.
+        repeat(2) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        smallQueue.enqueue(createTestEvent("overflow-0"))
+        smallQueue.enqueue(createTestEvent("overflow-1"))
+        smallQueue.enqueue(createTestEvent("overflow-2"))
+
+        // Memory still pinned at cap across the failure streak — we did not silently evict.
+        assertEquals(2, smallQueue.size())
+
+        // Recovery: drain memory dry, then flush.
+        blocker.delete()
+        smallQueue.drain(2)
+        smallQueue.flushToDisk()
+
+        val snapshot = poisonedStore.read()
+        assertNotNull(snapshot)
+        assertEquals(
+            "all three overflow events must survive the failure streak",
+            listOf("overflow-0", "overflow-1", "overflow-2"),
+            snapshot!!.events.map { it.messageId }
+        )
+
+        poisonedBase.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `clear wipes pendingOverflow too`() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val poisonedBase = createTempDirectory("metarouter-pq-poisoned3").toFile()
+        val metarouterDir = File(poisonedBase, "metarouter")
+        metarouterDir.mkdirs()
+        val blocker = File(metarouterDir, "disk-queue")
+        blocker.writeText("not a directory")
+
+        val poisonedStore = EventDiskStore(poisonedBase)
+        val smallQueue = PersistableEventQueue(
+            maxCapacity = 2,
+            diskStore = poisonedStore,
+            maxDiskEvents = 100,
+            eventTTLMs = 0
+        )
+
+        repeat(2) { i -> smallQueue.enqueue(createTestEvent("fill-$i")) }
+        smallQueue.enqueue(createTestEvent("parked")) // lands in pendingOverflow
+
+        // Clear must drop both memory and pendingOverflow. After clear + unpoison,
+        // a flush with no memory events should be a true no-op.
+        smallQueue.clear()
+        blocker.delete()
+        smallQueue.flushToDisk()
+
+        assertNull(
+            "flushToDisk after clear() must not write anything — pendingOverflow was cleared too",
+            poisonedStore.read()
+        )
+
+        poisonedBase.deleteRecursively()
+        unmockkStatic(Log::class)
+    }
+
     // ===== maxDiskEvents = 0 (in-memory-only ring buffer) =====
 
     @Test
