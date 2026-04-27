@@ -30,6 +30,9 @@ import kotlin.math.roundToInt
  */
 class DeviceContextProvider(
     private val context: Context,
+    // The `appContext` default is for test ergonomics only. Production code must pass
+    // the cached snapshot read once at SDK init in `MetaRouterAnalyticsClient` so the
+    // per-event enrichment path never re-reads `PackageManager`.
     private val appContext: AppContext = AppContext.fromContext(context)
 ) {
 

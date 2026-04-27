@@ -256,15 +256,20 @@ class MetaRouterAnalyticsClient private constructor(
             // Build the lifecycle coordinator before flipping to READY so onReady() can run
             // immediately after the state transition. The tracker emits via track(), which
             // requires the lifecycle state to be READY.
-            lifecycleCoordinator = injectedLifecycleCoordinator ?: if (options.trackLifecycleEvents) {
-                val lifecycleStorage = injectedLifecycleStorage ?: LifecycleStorage(context)
-                val tracker = LifecycleEventTracker(
-                    analytics = this,
-                    storage = lifecycleStorage,
-                    appContext = appContext,
-                    identityManager = identityManager
-                )
-                LifecycleCoordinator(tracker)
+            //
+            // `trackLifecycleEvents` is the sole gate: if disabled, no coordinator is built
+            // even when a test seam supplies one. Keeps the off-state structurally enforced.
+            lifecycleCoordinator = if (options.trackLifecycleEvents) {
+                injectedLifecycleCoordinator ?: run {
+                    val lifecycleStorage = injectedLifecycleStorage ?: LifecycleStorage(context)
+                    val tracker = LifecycleEventTracker(
+                        analytics = this,
+                        storage = lifecycleStorage,
+                        appContext = appContext,
+                        identityManager = identityManager
+                    )
+                    LifecycleCoordinator(tracker)
+                }
             } else {
                 null
             }
@@ -494,11 +499,14 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.log("onForeground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
+        // Resume dispatcher first, then emit. Mirrors iOS so the resumed dispatcher
+        // picks up the just-emitted Opened in its next tick rather than waiting for the
+        // following flush cycle.
+        dispatcher.resume()
         lifecycleCoordinator?.onForeground()
         scope.launch {
             flush()
         }
-        dispatcher.resume()
     }
 
     override fun openURL(uri: Uri, sourceApplication: String?) {

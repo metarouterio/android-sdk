@@ -166,9 +166,10 @@ interface AnalyticsInterface {
     /**
      * Buffer a deep-link URL for the next `Application Opened` event.
      *
-     * Call this from the receiving Activity's `onCreate` / `onNewIntent`, typically
-     * passing `intent.data` and the referrer host (e.g. read via
-     * `intent.getStringExtra(Intent.EXTRA_REFERRER)` or `Activity.referrer?.host`).
+     * Call this from the receiving Activity's `onCreate` / `onNewIntent`, passing
+     * `intent.data` for the URI. Use `Activity.referrer?.host` for the referrer —
+     * `Intent.EXTRA_REFERRER` is documented as a `Uri`, not a String, so
+     * `getStringExtra` on it is virtually always `null`.
      *
      * The next `Application Opened` event the SDK emits will carry `url` and
      * (when provided) `referring_application` properties. The buffer is one-shot —
