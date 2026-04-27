@@ -17,6 +17,7 @@ A lightweight Android analytics SDK that transmits events to your MetaRouter clu
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
+- [Lifecycle Events](#lifecycle-events)
 - [Advertising ID (GAID)](#advertising-id-gaid)
 - [Using the alias() Method](#using-the-alias-method)
 - [License](#license)
@@ -218,6 +219,7 @@ The analytics client provides the following methods:
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
+- `openURL(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging
@@ -574,6 +576,130 @@ All identity data is stored in **Android SharedPreferences** (`com.metarouter.an
 - Persistent storage across app sessions
 - Thread-safe access with built-in synchronization
 - Cleared only on app uninstall or explicit `reset()` call
+
+## Lifecycle Events
+
+Opt-in automatic emission of four canonical application-lifecycle events: `Application Installed`, `Application Updated`, `Application Opened`, and `Application Backgrounded`. These anchor attribution, retention, and session reporting on top of the standard event pipeline.
+
+### Enabling
+
+Lifecycle events are **opt-in**. Set `trackLifecycleEvents = true` on `InitOptions` to enable:
+
+```kotlin
+val analytics = MetaRouter.Analytics.initialize(
+    context = applicationContext,
+    options = InitOptions(
+        writeKey = "your-write-key",
+        ingestionHost = "https://your-ingestion-endpoint.com",
+        trackLifecycleEvents = true,
+    )
+)
+```
+
+When the flag is `false` (the default), the SDK never emits these events and `openURL(...)` is a no-op that logs a warning. Existing customers upgrading the SDK do **not** start emitting lifecycle events without explicitly setting the flag.
+
+### Events
+
+| Event | When it fires | Properties |
+|---|---|---|
+| `Application Installed` | First launch after a truly fresh install (no prior identity, no prior lifecycle storage) | `version`, `build` |
+| `Application Updated` | First launch after a `(version, build)` change OR first launch after upgrading from a pre-lifecycle SDK build (existing identity, no lifecycle storage) | `version`, `build`, `previous_version`, `previous_build` (set to `"unknown"` for the SDK-upgrade case) |
+| `Application Opened` | Cold launch (foreground at SDK init) and on every `ProcessLifecycleOwner.ON_START` resume | `version`, `build`, `from_background` (false on cold launch, true on resume), optional `url` and `referring_application` from `openURL(...)` |
+| `Application Backgrounded` | `ProcessLifecycleOwner.ON_STOP`. Emitted **before** the dispatcher's flush-to-disk so the event ships in the same drain | (none) |
+
+### Cold-launch sequencing
+
+On cold launch, install/update events fire **before** `Application Opened` so attribution pipelines see the install/update before the session start.
+
+For background-launched processes (silent push, `JobScheduler`, `WorkManager`, broadcast receiver, content provider) where `ProcessLifecycleOwner.lifecycle.currentState` is below `STARTED` at SDK init, the cold-launch `Application Opened` is suppressed. The first subsequent `ON_START` transition emits the bridge event with `from_background = false` so analytics still see one Opened per app session — just at the moment the user actually engages.
+
+### Persistence
+
+`(version, build)` are persisted to SharedPreferences under `com.metarouter.analytics.lifecycle`, a separate file from identity prefs. `reset()` clears identity but **not** lifecycle storage — install/update is device-scope, not user-scope. Re-launching after `reset()` with the same `(version, build)` emits only `Application Opened`.
+
+### Deep links
+
+The SDK does not auto-instrument deep links. Hosts forward URLs explicitly via `analytics.openURL(uri, sourceApplication)`. The next `Application Opened` event the SDK emits will carry `url` and (if provided) `referring_application` properties. The buffer is **one-shot** (cleared on emit) and **last-write-wins** (multiple calls before the next Opened keep only the most recent URL).
+
+#### Activity entry point
+
+```kotlin
+import android.content.Intent
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import com.metarouter.analytics.MetaRouter
+
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        forwardDeepLink(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // singleTop / singleTask resumed via a fresh intent
+        forwardDeepLink(intent)
+    }
+
+    private fun forwardDeepLink(intent: Intent?) {
+        val uri = intent?.data ?: return
+        // `Activity.referrer` is the canonical Android API for the calling app's host.
+        // (Don't use `Intent.EXTRA_REFERRER` with `getStringExtra` — it's documented as
+        // a `Uri`, so the String overload returns null.)
+        val source = referrer?.host
+        MetaRouter.Analytics.client().openURL(uri, source)
+    }
+}
+```
+
+#### App Links (verified deep links)
+
+Wire up your manifest as usual; nothing changes for the SDK side:
+
+```xml
+<activity android:name=".MainActivity" android:exported="true">
+    <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" android:host="example.com" />
+    </intent-filter>
+</activity>
+```
+
+### Privacy
+
+Deep-link URLs frequently carry sensitive material — auth tokens, OTPs, magic-link secrets, query parameters with PII. The SDK forwards whatever URI you hand it and does not sanitize. Strip or redact secrets in the host before calling `openURL(...)`:
+
+```kotlin
+import android.net.Uri
+
+private fun sanitize(uri: Uri): Uri {
+    val sensitiveParams = setOf("token", "otp", "code", "auth", "secret")
+    val builder = uri.buildUpon().clearQuery()
+    uri.queryParameterNames
+        .filterNot { it.lowercase() in sensitiveParams }
+        .forEach { name ->
+            uri.getQueryParameters(name).forEach { value ->
+                builder.appendQueryParameter(name, value)
+            }
+        }
+    return builder.build()
+}
+
+intent.data?.let { uri ->
+    MetaRouter.Analytics.client().openURL(sanitize(uri), referrer?.host)
+}
+```
+
+### Why no auto-instrumentation?
+
+Several reasons:
+
+- **No manifest mutation.** A library that rewrites your manifest's intent filters fights with build pipelines, app-bundle splits, and dynamic feature modules.
+- **No `ActivityLifecycleCallbacks` proxy.** Auto-forwarding every Activity's `onCreate`/`onNewIntent` would force the SDK to interpret URLs that aren't deep links (e.g., internal navigation routed via `Intent`), and it would fight any lifecycle-callbacks instrumentation the host already runs.
+- **Privacy footgun.** Auto-forwarded URLs would ship sensitive material without the host having a chance to sanitize.
+- **Host control.** You already know which entry points are deep-link entry points. Forwarding from those specific Activities is a one-liner; auto-instrumentation would be lossy and surprising.
 
 ## Using the alias() Method
 
