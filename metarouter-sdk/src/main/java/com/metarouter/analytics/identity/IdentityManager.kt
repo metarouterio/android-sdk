@@ -83,4 +83,11 @@ class IdentityManager(
         storage.clear()
         Logger.log("Identity manager reset")
     }
+
+    /**
+     * Returns true if identity storage already has any value. Used by lifecycle-event
+     * detection to tell a true fresh install from a user upgrading from a pre-lifecycle
+     * SDK build (where the version/build keys would be missing despite prior usage).
+     */
+    fun hasAnyValue(): Boolean = storage.hasAnyValue()
 }
