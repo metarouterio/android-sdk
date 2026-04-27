@@ -1,5 +1,9 @@
 package com.metarouter.analytics.types
 
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import com.metarouter.analytics.utils.Logger
 import kotlinx.serialization.Serializable
 
 /**
@@ -27,7 +31,70 @@ data class AppContext(
     val version: String,
     val build: String,
     val namespace: String
-)
+) {
+    companion object {
+        private const val UNKNOWN = "unknown"
+
+        /**
+         * Read app metadata from `PackageManager` once. Safe to cache for the
+         * process lifetime — the manifest values are immutable post-install.
+         *
+         * Both the lifecycle subsystem and `DeviceContextProvider` consume this
+         * cached snapshot so per-event enrichment does not re-read the manifest.
+         */
+        fun fromContext(context: Context): AppContext {
+            return try {
+                val packageManager = context.packageManager
+                val packageName = context.packageName
+                val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageManager.getPackageInfo(packageName, 0)
+                }
+
+                val appName = try {
+                    packageInfo.applicationInfo?.let {
+                        packageManager.getApplicationLabel(it).toString()
+                    } ?: UNKNOWN
+                } catch (e: Exception) {
+                    UNKNOWN
+                }
+
+                val versionName = packageInfo.versionName ?: UNKNOWN
+                val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    packageInfo.longVersionCode.toString()
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageInfo.versionCode.toString()
+                }
+
+                AppContext(
+                    name = appName,
+                    version = versionName,
+                    build = versionCode,
+                    namespace = packageName
+                )
+            } catch (e: Exception) {
+                Logger.warn("Failed to read AppContext from PackageManager: ${e.message}")
+                // Derive a best-effort `name` from the package's last segment when the
+                // PackageManager read fails entirely. Better than literal "unknown" on
+                // ingest dashboards and matches what most launchers show when the
+                // applicationLabel resolution itself fails.
+                val packageName = context.packageName
+                val derivedName = packageName.substringAfterLast('.')
+                    .takeIf { it.isNotBlank() }
+                    ?: UNKNOWN
+                AppContext(
+                    name = derivedName,
+                    version = UNKNOWN,
+                    build = UNKNOWN,
+                    namespace = packageName
+                )
+            }
+        }
+    }
+}
 
 /**
  * Device information including manufacturer, model, device name, and type.
