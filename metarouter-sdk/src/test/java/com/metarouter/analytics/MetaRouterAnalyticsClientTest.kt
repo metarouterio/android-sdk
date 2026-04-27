@@ -48,7 +48,11 @@ class MetaRouterAnalyticsClientTest {
             ingestionHost = "https://events.example.com",
             flushIntervalSeconds = 10,
             debug = false,
-            maxQueueEvents = 100
+            maxQueueEvents = 100,
+            // Disable lifecycle events by default so existing assertions on queueLength
+            // are not affected by automatic Installed/Opened emission. Lifecycle tests
+            // re-enable explicitly via options.copy(trackLifecycleEvents = true).
+            trackLifecycleEvents = false
         )
     }
 
@@ -627,5 +631,86 @@ class MetaRouterAnalyticsClientTest {
         val debugInfo = client.getDebugInfo()
         assertNotNull(debugInfo["networkStatus"])
         assertTrue((debugInfo["queueLength"] as Int) > 0)
+    }
+
+    // ===== Lifecycle Events =====
+
+    @Test
+    fun `cold launch with trackLifecycleEvents enabled emits at least install event and persists version`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        // Use a fresh, real context so lifecycle prefs and identity prefs start empty.
+        val identityManager = IdentityManager(realContext)
+        identityManager.reset()
+        val lifecycleStorage = com.metarouter.analytics.storage.LifecycleStorage(realContext)
+        lifecycleStorage.clear()
+
+        val lifecycleOptions = options.copy(trackLifecycleEvents = true)
+        val client = MetaRouterAnalyticsClient.initialize(
+            realContext,
+            lifecycleOptions,
+            identityManager = identityManager,
+            lifecycleStorage = lifecycleStorage
+        )
+
+        // Cold-launch sequence persists the current (version, build) and enqueues at
+        // least the Installed event. The Opened event also fires when ProcessLifecycleOwner
+        // is in STARTED state — which Robolectric does not deterministically provide here,
+        // so we assert the lower bound and verify storage persistence directly.
+        awaitCondition { lifecycleStorage.getVersion() != null }
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) >= 1 }
+
+        client.reset()
+    }
+
+    @Test
+    fun `trackLifecycleEvents false produces no lifecycle events`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        val identityManager = IdentityManager(realContext)
+        identityManager.reset()
+        val lifecycleStorage = com.metarouter.analytics.storage.LifecycleStorage(realContext)
+        lifecycleStorage.clear()
+
+        // Default options has trackLifecycleEvents = false in this suite.
+        val client = MetaRouterAnalyticsClient.initialize(
+            realContext,
+            options,
+            identityManager = identityManager,
+            lifecycleStorage = lifecycleStorage
+        )
+
+        delay(100)
+        val info = client.getDebugInfo()
+        assertEquals(0, info["queueLength"])
+
+        client.reset()
+    }
+
+    @Test
+    fun `lifecycle storage survives client reset`() = runBlocking {
+        val realContext: Context = ApplicationProvider.getApplicationContext()
+        val identityManager = IdentityManager(realContext)
+        identityManager.reset()
+        val lifecycleStorage = com.metarouter.analytics.storage.LifecycleStorage(realContext)
+        lifecycleStorage.clear()
+
+        val lifecycleOptions = options.copy(trackLifecycleEvents = true)
+        val client = MetaRouterAnalyticsClient.initialize(
+            realContext,
+            lifecycleOptions,
+            identityManager = identityManager,
+            lifecycleStorage = lifecycleStorage
+        )
+        // Wait for cold-launch to persist version/build.
+        awaitCondition { lifecycleStorage.getVersion() != null }
+        val storedVersion = lifecycleStorage.getVersion()
+        val storedBuild = lifecycleStorage.getBuild()
+        assertNotNull(storedVersion)
+        assertNotNull(storedBuild)
+
+        client.reset()
+
+        // Reset must NOT clear lifecycle prefs.
+        assertEquals(storedVersion, lifecycleStorage.getVersion())
+        assertEquals(storedBuild, lifecycleStorage.getBuild())
     }
 }

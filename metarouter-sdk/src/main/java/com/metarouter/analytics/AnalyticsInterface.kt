@@ -1,5 +1,7 @@
 package com.metarouter.analytics
 
+import android.net.Uri
+
 /**
  * Public API for the MetaRouter Analytics SDK.
  *
@@ -160,4 +162,22 @@ interface AnalyticsInterface {
      * @param enabled Whether to enable tracing
      */
     fun setTracing(enabled: Boolean)
+
+    /**
+     * Buffer deep-link properties for the next `Application Opened` event.
+     *
+     * Call this from the receiving Activity's `onCreate` / `onNewIntent`, typically
+     * passing `intent.data` and the referrer host (e.g. read via
+     * `intent.getStringExtra(Intent.EXTRA_REFERRER)` or `Activity.referrer?.host`).
+     *
+     * The next `Application Opened` event the SDK emits will carry `url` and
+     * (when provided) `referring_application` properties. The buffer is one-shot —
+     * subsequent `Application Opened` events without a fresh call omit the props.
+     *
+     * No-op when `InitOptions.trackLifecycleEvents` is `false`.
+     *
+     * @param uri The deep-link URI that opened the app
+     * @param sourceApplication Optional referring application identifier
+     */
+    fun handleDeepLink(uri: Uri, sourceApplication: String? = null)
 }

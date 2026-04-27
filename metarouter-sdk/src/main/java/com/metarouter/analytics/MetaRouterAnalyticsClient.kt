@@ -4,11 +4,13 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.res.Configuration
+import android.net.Uri
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.lifecycle.LifecycleEventTracker
 import com.metarouter.analytics.network.AndroidNetworkMonitor
 import com.metarouter.analytics.network.CircuitBreaker
 import com.metarouter.analytics.network.DebouncedNetworkMonitor
@@ -18,6 +20,7 @@ import com.metarouter.analytics.network.OkHttpNetworkClient
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.queue.PersistableEventQueue
 import com.metarouter.analytics.storage.EventDiskStore
+import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.LifecycleState
@@ -43,7 +46,9 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedCircuitBreaker: CircuitBreaker? = null,
     private val injectedDispatcher: Dispatcher? = null,
     private val injectedDiskStore: EventDiskStore? = null,
-    private val injectedNetworkMonitor: NetworkMonitor? = null
+    private val injectedNetworkMonitor: NetworkMonitor? = null,
+    private val injectedLifecycleStorage: LifecycleStorage? = null,
+    private val injectedLifecycleTracker: LifecycleEventTracker? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -75,7 +80,9 @@ class MetaRouterAnalyticsClient private constructor(
             circuitBreaker: CircuitBreaker? = null,
             dispatcher: Dispatcher? = null,
             diskStore: EventDiskStore? = null,
-            networkMonitor: NetworkMonitor? = null
+            networkMonitor: NetworkMonitor? = null,
+            lifecycleStorage: LifecycleStorage? = null,
+            lifecycleTracker: LifecycleEventTracker? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -88,7 +95,9 @@ class MetaRouterAnalyticsClient private constructor(
                 circuitBreaker,
                 dispatcher,
                 diskStore,
-                networkMonitor
+                networkMonitor,
+                lifecycleStorage,
+                lifecycleTracker
             )
             client.initializeInternal()
             return client
@@ -118,6 +127,9 @@ class MetaRouterAnalyticsClient private constructor(
     // Persistence - null if an injected EventQueue was provided (bypasses persistence)
     private var persistableEventQueue: PersistableEventQueue? = null
     private var componentCallbacks: ComponentCallbacks2? = null
+
+    // Lifecycle event tracker (null when InitOptions.trackLifecycleEvents is false)
+    private var lifecycleTracker: LifecycleEventTracker? = null
 
     /**
      * Internal initialization. Sets up all components.
@@ -230,8 +242,28 @@ class MetaRouterAnalyticsClient private constructor(
                 componentCallbacks = callbacks
             }
 
+            // Build lifecycle event tracker before flipping to READY so onSdkReady() can run
+            // immediately after the state transition. The tracker emits via track(), which
+            // requires the lifecycle state to be READY.
+            lifecycleTracker = injectedLifecycleTracker ?: if (options.trackLifecycleEvents) {
+                val lifecycleStorage = injectedLifecycleStorage ?: LifecycleStorage(context)
+                LifecycleEventTracker(
+                    analytics = this,
+                    storage = lifecycleStorage,
+                    contextProvider = contextProvider,
+                    identityManager = identityManager,
+                    enabled = true
+                )
+            } else {
+                null
+            }
+
             lifecycleState.set(LifecycleState.READY)
             Logger.log("MetaRouter SDK initialized")
+
+            // Run cold-launch detection + emission. Must happen after READY so enqueueEvent
+            // accepts the events.
+            lifecycleTracker?.onSdkReady()
 
         } catch (e: Exception) {
             Logger.error("Failed to initialize SDK: ${e.message}")
@@ -426,13 +458,16 @@ class MetaRouterAnalyticsClient private constructor(
 
     /**
      * Called when app goes to background.
-     * Flushes pending events and pauses the dispatcher.
+     * Emits `Application Backgrounded` (when enabled), flushes pending events,
+     * and pauses the dispatcher. The lifecycle event must be emitted before flush
+     * so it lands in the same drain.
      */
     internal suspend fun onBackground() {
         if (lifecycleState.get() != LifecycleState.READY) {
             Logger.log("onBackground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
+        lifecycleTracker?.onBackground()
         flush()
         persistableEventQueue?.flushToDisk()
         dispatcher.pause()
@@ -440,17 +475,27 @@ class MetaRouterAnalyticsClient private constructor(
 
     /**
      * Called when app comes to foreground.
-     * Flushes pending events and resumes the dispatcher.
+     * Emits `Application Opened` (when enabled), flushes pending events, and
+     * resumes the dispatcher.
      */
     internal fun onForeground() {
         if (lifecycleState.get() != LifecycleState.READY) {
             Logger.log("onForeground ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
+        lifecycleTracker?.onForeground()
         scope.launch {
             flush()
         }
         dispatcher.resume()
+    }
+
+    override fun handleDeepLink(uri: Uri, sourceApplication: String?) {
+        if (lifecycleState.get() != LifecycleState.READY) {
+            Logger.log("handleDeepLink ignored - SDK not ready (state: ${lifecycleState.get()})")
+            return
+        }
+        lifecycleTracker?.handleDeepLink(uri, sourceApplication)
     }
 
     override suspend fun reset() {

@@ -1,5 +1,6 @@
 package com.metarouter.analytics
 
+import android.net.Uri
 import org.junit.Test
 import org.junit.Assert.*
 
@@ -57,6 +58,7 @@ class AnalyticsExtensionsTest {
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
+        override fun handleDeepLink(uri: Uri, sourceApplication: String?) {}
     }
 
     @Test
