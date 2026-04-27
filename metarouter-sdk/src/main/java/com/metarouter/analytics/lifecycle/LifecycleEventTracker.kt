@@ -43,7 +43,15 @@ internal class LifecycleEventTracker(
     private val pendingDeepLink = AtomicReference<DeepLink?>(null)
 
     /**
-     * Run the cold-launch detection + emission sequence.
+     * Idempotency guard for [onSdkReady] — re-running the cold-launch sequence on a
+     * second call would re-emit Installed/Updated/Opened and stomp `suppressNextForeground`,
+     * eating the next legitimate foreground transition.
+     */
+    private val coldLaunchRan = AtomicBoolean(false)
+
+    /**
+     * Run the cold-launch detection + emission sequence. Idempotent — only the first call
+     * runs the sequence; subsequent calls are no-ops.
      *
      * 1. Detect install vs update vs no-op based on persisted (version, build) and identity.
      * 2. Persist current (version, build).
@@ -51,6 +59,8 @@ internal class LifecycleEventTracker(
      *    otherwise defer it to the next foreground transition.
      */
     fun onSdkReady() {
+        if (!coldLaunchRan.compareAndSet(false, true)) return
+
         val currentVersion = appContext.version
         val currentBuild = appContext.build
 
@@ -129,7 +139,9 @@ internal class LifecycleEventTracker(
      * The buffer is one-shot — cleared after emission.
      *
      * Hosts should call this from the receiving Activity's `onCreate` / `onNewIntent`
-     * (typically reading `intent.data` and `intent.getStringExtra(Intent.EXTRA_REFERRER)`).
+     * (typically reading `intent.data` for the URI and `Activity.referrer?.host` for the
+     * referrer — `Intent.EXTRA_REFERRER` is documented as a `Uri`, not a String, and
+     * `getStringExtra` on it is virtually always `null`).
      */
     fun openURL(uri: Uri, sourceApplication: String?) {
         pendingDeepLink.set(DeepLink(uri.toString(), sourceApplication))
@@ -184,9 +196,13 @@ internal class LifecycleEventTracker(
             return try {
                 ProcessLifecycleOwner.get().lifecycle.currentState
                     .isAtLeast(Lifecycle.State.STARTED)
-            } catch (e: Throwable) {
-                // ProcessLifecycleOwner may not be available in some test contexts.
+            } catch (_: IllegalStateException) {
+                // ProcessLifecycleOwner.get() throws ISE off the main thread.
                 // Default to false (defer Opened) to avoid spurious double-emits.
+                false
+            } catch (_: NoClassDefFoundError) {
+                // androidx.lifecycle:lifecycle-process not on the runtime classpath
+                // (rare in production, can happen in test contexts that strip optional deps).
                 false
             }
         }

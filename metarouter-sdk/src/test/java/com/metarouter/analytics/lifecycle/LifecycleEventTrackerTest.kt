@@ -269,6 +269,42 @@ class LifecycleEventTrackerTest {
         assertEquals("com.second", opened.properties?.get("referring_application"))
     }
 
+    // ===== Idempotency / ordering invariants =====
+
+    @Test
+    fun `onSdkReady is idempotent`() {
+        val tracker = newTracker(foreground = true)
+        tracker.onSdkReady()
+        val firstCallCount = analytics.events.size
+
+        tracker.onSdkReady()
+
+        assertEquals(
+            "second onSdkReady should be a no-op",
+            firstCallCount,
+            analytics.events.size
+        )
+        // suppressNextForeground armed by the first call should still consume the
+        // imminent observer-driven onForeground — verify we don't double-emit.
+        tracker.onForeground()
+        assertEquals(firstCallCount, analytics.events.size)
+    }
+
+    @Test
+    fun `onForeground before onSdkReady emits resume-style Opened (documents wiring contract)`() {
+        // The host (LifecycleCoordinator in slice 3) is contractually required to
+        // invoke onSdkReady before any onForeground. This test documents what happens
+        // if that invariant breaks — wire-valid Opened with from_background=true, but
+        // missing the install/update detection that should run first.
+        val tracker = newTracker(foreground = true)
+
+        tracker.onForeground()
+
+        assertEquals(1, analytics.events.size)
+        assertEquals("Application Opened", analytics.events[0].event)
+        assertEquals(true, analytics.events[0].properties?.get("from_background"))
+    }
+
     private fun mockUri(value: String): Uri {
         val uri = mockk<Uri>()
         every { uri.toString() } returns value
