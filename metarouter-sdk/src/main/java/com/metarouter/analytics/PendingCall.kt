@@ -1,5 +1,7 @@
 package com.metarouter.analytics
 
+import android.net.Uri
+
 /**
  * Represents a queued analytics method call that will be replayed
  * once the real client is bound to the proxy.
@@ -15,6 +17,7 @@ sealed class PendingCall {
     data class Alias(val newUserId: String) : PendingCall()
     data class SetTracing(val enabled: Boolean) : PendingCall()
     data class SetAdvertisingId(val advertisingId: String) : PendingCall()
+    data class OpenURL(val uri: Uri, val sourceApplication: String?) : PendingCall()
     object ClearAdvertisingId : PendingCall()
     object Flush : PendingCall()
     object Reset : PendingCall()
