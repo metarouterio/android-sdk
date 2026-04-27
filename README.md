@@ -624,6 +624,11 @@ The SDK does not auto-instrument deep links. Hosts forward URLs explicitly via `
 #### Activity entry point
 
 ```kotlin
+import android.content.Intent
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import com.metarouter.analytics.MetaRouter
+
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -638,8 +643,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun forwardDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
-        val source = intent.getStringExtra(Intent.EXTRA_REFERRER)
-            ?: referrer?.host
+        // `Activity.referrer` is the canonical Android API for the calling app's host.
+        // (Don't use `Intent.EXTRA_REFERRER` with `getStringExtra` — it's documented as
+        // a `Uri`, so the String overload returns null.)
+        val source = referrer?.host
         MetaRouter.Analytics.client().openURL(uri, source)
     }
 }
@@ -665,6 +672,8 @@ Wire up your manifest as usual; nothing changes for the SDK side:
 Deep-link URLs frequently carry sensitive material — auth tokens, OTPs, magic-link secrets, query parameters with PII. The SDK forwards whatever URI you hand it and does not sanitize. Strip or redact secrets in the host before calling `openURL(...)`:
 
 ```kotlin
+import android.net.Uri
+
 private fun sanitize(uri: Uri): Uri {
     val sensitiveParams = setOf("token", "otp", "code", "auth", "secret")
     val builder = uri.buildUpon().clearQuery()
@@ -678,7 +687,9 @@ private fun sanitize(uri: Uri): Uri {
     return builder.build()
 }
 
-MetaRouter.Analytics.client().openURL(sanitize(intent.data!!), source)
+intent.data?.let { uri ->
+    MetaRouter.Analytics.client().openURL(sanitize(uri), referrer?.host)
+}
 ```
 
 ### Why no auto-instrumentation?
