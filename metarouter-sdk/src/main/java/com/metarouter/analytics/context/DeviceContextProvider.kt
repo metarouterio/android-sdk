@@ -1,7 +1,6 @@
 package com.metarouter.analytics.context
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -29,7 +28,13 @@ import kotlin.math.roundToInt
  * - Cache generation is synchronized to prevent duplicate work
  * - Safe for concurrent access from multiple threads
  */
-class DeviceContextProvider(private val context: Context) {
+class DeviceContextProvider(
+    private val context: Context,
+    // The `appContext` default is for test ergonomics only. Production code must pass
+    // the cached snapshot read once at SDK init in `MetaRouterAnalyticsClient` so the
+    // per-event enrichment path never re-reads `PackageManager`.
+    private val appContext: AppContext = AppContext.fromContext(context)
+) {
 
     companion object {
         private const val SDK_NAME = "metarouter-android-sdk"
@@ -49,6 +54,8 @@ class DeviceContextProvider(private val context: Context) {
 
     /**
      * Generate fresh context information by collecting all metadata.
+     * `appContext` is the cached snapshot read at SDK init — `PackageManager`
+     * is not consulted on the per-event enrichment path.
      */
     private fun generateContext(): EventContext {
         return EventContext(
@@ -57,7 +64,7 @@ class DeviceContextProvider(private val context: Context) {
             timezone = getTimezone(),
             device = getDeviceContext(),
             os = getOSContext(),
-            app = getAppContext(),
+            app = appContext,
             screen = getScreenContext(),
             network = getNetworkContext()
         )
@@ -125,54 +132,6 @@ class DeviceContextProvider(private val context: Context) {
             name = "Android",
             version = Build.VERSION.RELEASE.takeIf { it.isNotBlank() } ?: UNKNOWN
         )
-    }
-
-    /**
-     * Get app information from PackageManager.
-     * Collects app name, version, build number, and namespace (package name).
-     */
-    private fun getAppContext(): AppContext {
-        return try {
-            val packageManager = context.packageManager
-            val packageName = context.packageName
-            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getPackageInfo(packageName, 0)
-            }
-
-            val appName = try {
-                packageInfo.applicationInfo?.let {
-                    packageManager.getApplicationLabel(it).toString()
-                } ?: UNKNOWN
-            } catch (e: Exception) {
-                UNKNOWN
-            }
-
-            val versionName = packageInfo.versionName ?: UNKNOWN
-            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageInfo.longVersionCode.toString()
-            } else {
-                @Suppress("DEPRECATION")
-                packageInfo.versionCode.toString()
-            }
-
-            AppContext(
-                name = appName,
-                version = versionName,
-                build = versionCode,
-                namespace = packageName
-            )
-        } catch (e: Exception) {
-            Logger.warn("Failed to get app context: ${e.message}")
-            AppContext(
-                name = UNKNOWN,
-                version = UNKNOWN,
-                build = UNKNOWN,
-                namespace = context.packageName
-            )
-        }
     }
 
     /**
