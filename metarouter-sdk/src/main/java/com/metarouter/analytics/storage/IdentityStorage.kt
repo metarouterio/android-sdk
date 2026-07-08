@@ -16,6 +16,17 @@ class IdentityStorage(context: Context) {
     fun get(key: String): String? = prefs.getString(key, null)
 
     /**
+     * Returns true if any identity-related key is currently set in storage.
+     * Used to distinguish a fresh install from an upgrade that pre-dates lifecycle tracking.
+     */
+    fun hasAnyValue(): Boolean {
+        return prefs.contains(KEY_ANONYMOUS_ID) ||
+            prefs.contains(KEY_USER_ID) ||
+            prefs.contains(KEY_GROUP_ID) ||
+            prefs.contains(KEY_ADVERTISING_ID)
+    }
+
+    /**
      * Store a value asynchronously (non-blocking).
      * The write is guaranteed to be ordered with other apply() calls and will persist.
      */
