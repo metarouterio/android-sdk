@@ -678,9 +678,14 @@ class MetaRouterAnalyticsClientTest {
             lifecycleStorage = lifecycleStorage
         )
 
-        delay(100)
-        val info = client.getDebugInfo()
-        assertEquals(0, info["queueLength"])
+        // Absence assertion: awaiting `queueLength == 0` would pass instantly even if a
+        // buggy lifecycle event were still in the event channel (channel -> queue hand-off
+        // is async). Instead push a sentinel through the same single-consumer FIFO channel
+        // and wait for it — any lifecycle event emitted during init was trySend-ed before
+        // the sentinel, so it would already be in the queue ahead of it.
+        client.track("Sentinel Event")
+        awaitCondition { (client.getDebugInfo()["queueLength"] as Int) >= 1 }
+        assertEquals(1, client.getDebugInfo()["queueLength"])
 
         client.reset()
     }

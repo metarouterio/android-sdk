@@ -177,6 +177,12 @@ interface AnalyticsInterface {
      * If called multiple times before the next `Application Opened`, the most recent
      * URL wins (last-write-wins; no queue).
      *
+     * Cold-launch timing: with async `initialize`, a call made while the SDK is still
+     * initializing is queued by the proxy and replays after binding — by which time the
+     * cold-launch `Application Opened` may have already fired. The deep link then attaches
+     * to the *next* `Application Opened`, or not at all if the process is killed first
+     * (the buffer is in-memory only).
+     *
      * Logs a warning and is a no-op when `InitOptions.trackLifecycleEvents` is `false`.
      *
      * The method is named after the *signal* the host is forwarding, not what the SDK
