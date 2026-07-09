@@ -16,6 +16,11 @@ import com.metarouter.analytics.utils.Logger
  *   (default: 10000). Set to `0` to opt out of disk persistence entirely — the queue then
  *   operates as a purely in-memory ring buffer, dropping the oldest event when full.
  *   Negative values are rejected.
+ * @property trackLifecycleEvents Whether the SDK should automatically emit
+ *   `Application Installed`, `Application Updated`, `Application Opened`, and
+ *   `Application Backgrounded` events (default: `false` — opt-in). Set to `true`
+ *   to enable. Existing customers upgrading the SDK do not begin emitting
+ *   lifecycle events without explicitly enabling the flag.
  *
  * @throws IllegalArgumentException if validation fails
  */
@@ -25,7 +30,8 @@ data class InitOptions(
     val flushIntervalSeconds: Int = 10,
     val debug: Boolean = false,
     val maxQueueEvents: Int = 2000,
-    val maxDiskEvents: Int = 10000
+    val maxDiskEvents: Int = 10000,
+    val trackLifecycleEvents: Boolean = false
 ) {
     init {
         validateWriteKey()

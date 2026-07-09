@@ -328,4 +328,27 @@ class InitOptionsTest {
             unmockkStatic(Log::class)
         }
     }
+
+    // ===== trackLifecycleEvents =====
+
+    @Test
+    fun `trackLifecycleEvents defaults to false (opt-in)`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com"
+        )
+
+        assertEquals(false, options.trackLifecycleEvents)
+    }
+
+    @Test
+    fun `trackLifecycleEvents explicit true is accepted`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            trackLifecycleEvents = true
+        )
+
+        assertEquals(true, options.trackLifecycleEvents)
+    }
 }
