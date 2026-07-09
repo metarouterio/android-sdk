@@ -44,6 +44,7 @@ class LifecycleEventTrackerTest {
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
+        override fun openURL(uri: Uri, sourceApplication: String?) {}
     }
 
     private lateinit var analytics: RecordingAnalytics

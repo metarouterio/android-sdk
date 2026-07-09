@@ -1,5 +1,6 @@
 package com.metarouter.analytics
 
+import android.net.Uri
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
@@ -202,6 +203,15 @@ class AnalyticsProxy(
         }
     }
 
+    override fun openURL(uri: Uri, sourceApplication: String?) {
+        val client = realClient.get()
+        if (client != null) {
+            client.openURL(uri, sourceApplication)
+        } else {
+            enqueue(PendingCall.OpenURL(uri, sourceApplication))
+        }
+    }
+
 
     /**
      * Enqueue a pending call, dropping oldest if at capacity.
@@ -230,6 +240,7 @@ class AnalyticsProxy(
             is PendingCall.SetTracing -> client.setTracing(call.enabled)
             is PendingCall.SetAdvertisingId -> client.setAdvertisingId(call.advertisingId)
             is PendingCall.ClearAdvertisingId -> client.clearAdvertisingId()
+            is PendingCall.OpenURL -> client.openURL(call.uri, call.sourceApplication)
             is PendingCall.Flush -> client.flush()
             is PendingCall.Reset -> client.reset()
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()
