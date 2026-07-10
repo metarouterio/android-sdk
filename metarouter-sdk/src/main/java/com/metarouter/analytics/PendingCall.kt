@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import android.net.Uri
+import android.webkit.WebView
 
 /**
  * Represents a queued analytics method call that will be replayed
@@ -18,6 +19,10 @@ sealed class PendingCall {
     data class SetTracing(val enabled: Boolean) : PendingCall()
     data class SetAdvertisingId(val advertisingId: String) : PendingCall()
     data class OpenURL(val uri: Uri, val sourceApplication: String?) : PendingCall()
+
+    // Holds a strong WebView reference, which is safe only because the pending queue
+    // is short-lived: it drains at bind (init completing) or is cleared on reset.
+    data class AttachWebView(val webView: WebView, val allowedOrigins: List<String>) : PendingCall()
     object ClearAdvertisingId : PendingCall()
     object Flush : PendingCall()
     object Reset : PendingCall()
