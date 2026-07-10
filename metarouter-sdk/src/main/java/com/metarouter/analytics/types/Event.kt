@@ -12,7 +12,9 @@ data class BaseEvent(
     val event: String? = null,
     val traits: Map<String, JsonElement>? = null,
     val properties: Map<String, JsonElement>? = null,
-    val timestamp: String? = null
+    val timestamp: String? = null,
+    /** Set only by the webview bridge — carries the page facts into context.page. */
+    val page: PageContext? = null
 )
 
 /**

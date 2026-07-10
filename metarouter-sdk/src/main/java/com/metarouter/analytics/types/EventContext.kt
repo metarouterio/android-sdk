@@ -18,8 +18,22 @@ data class EventContext(
     val locale: String? = null,
     val network: NetworkContext? = null,
     val os: OSContext? = null,
+    val page: PageContext? = null,
     val screen: ScreenContext? = null,
     val timezone: String? = null
+)
+
+/**
+ * Web page facts for events that originate inside a webview. Only present on
+ * bridge-sourced events — native events have no page to describe. Matches the
+ * web SDK's context.page block so downstream config treats webview traffic the
+ * same as browser traffic.
+ */
+@Serializable
+data class PageContext(
+    val url: String? = null,
+    val title: String? = null,
+    val referrer: String? = null
 )
 
 /**

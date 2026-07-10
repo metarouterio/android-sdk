@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import android.net.Uri
+import android.webkit.WebView
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -230,6 +231,15 @@ class AnalyticsProxy(
         }
     }
 
+    override fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
+        val client = realClient.get()
+        if (client != null) {
+            client.attachWebView(webView, allowedOrigins)
+        } else {
+            enqueue(PendingCall.AttachWebView(webView, allowedOrigins))
+        }
+    }
+
 
     /**
      * Enqueue a pending call, dropping oldest if at capacity.
@@ -267,6 +277,7 @@ class AnalyticsProxy(
             is PendingCall.SetAdvertisingId -> client.setAdvertisingId(call.advertisingId)
             is PendingCall.ClearAdvertisingId -> client.clearAdvertisingId()
             is PendingCall.OpenURL -> client.openURL(call.uri, call.sourceApplication)
+            is PendingCall.AttachWebView -> client.attachWebView(call.webView, call.allowedOrigins)
             is PendingCall.Flush -> client.flush()
             is PendingCall.Reset -> client.reset()
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()

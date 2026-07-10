@@ -1,6 +1,7 @@
 package com.metarouter.analytics
 
 import android.net.Uri
+import android.webkit.WebView
 
 /**
  * Public API for the MetaRouter Analytics SDK.
@@ -187,4 +188,29 @@ interface AnalyticsInterface {
      * @param sourceApplication Optional referring application identifier
      */
     fun openURL(uri: Uri, sourceApplication: String? = null)
+
+    /**
+     * Attach the webview event bridge to a host-owned WebView.
+     *
+     * Pages loaded from [allowedOrigins] get a `window.metarouterBridge` object with
+     * `track(name, properties)` and `page(name, properties)` methods. Calls are
+     * enveloped in the page, validated and deduplicated natively, enriched with the
+     * device's identity and context, and delivered through the normal event queue —
+     * webview activity and native activity arrive as one user.
+     *
+     * Call this on the main thread when the WebView is created, **before** `loadUrl` —
+     * the registrations only apply to page loads that start afterwards. The SDK never
+     * discovers webviews on its own: the host owns the WebView, this call is the
+     * explicit hand-off.
+     *
+     * Origins must be explicit (`https://host[:port]`); the wildcard `"*"` is rejected,
+     * since origin scoping is what keeps arbitrary pages from injecting events into the
+     * native queue. On devices whose WebView provider lacks the required features the
+     * bridge logs a warning and captures nothing — it never falls back to an unscoped
+     * mechanism.
+     *
+     * @param webView The host-owned WebView to bridge
+     * @param allowedOrigins Explicit page origins allowed to produce events
+     */
+    fun attachWebView(webView: WebView, allowedOrigins: List<String>)
 }
