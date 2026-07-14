@@ -6,9 +6,13 @@ import com.metarouter.analytics.utils.Logger
  * Receives validated, deduplicated envelopes for merge + enqueue. Implemented by the
  * client wiring; kept as a single-method seam so the processing pipeline is testable
  * without a real SDK instance.
+ *
+ * Returns whether the event actually entered the delivery path — an `ok` ack for an
+ * event that was silently dropped (SDK resetting, channel full) would lie to the
+ * producer, so the reply must reflect this result.
  */
 internal fun interface BridgeEventSink {
-    fun enqueue(envelope: BridgeEnvelope)
+    fun enqueue(envelope: BridgeEnvelope): Boolean
 }
 
 /**
@@ -42,9 +46,21 @@ internal class BridgeMessageProcessor(
                         "WebView bridge duplicate dropped (messageId=${envelope.messageId})"
                     )
                     BridgeReply.ok(envelope.messageId)
-                } else {
-                    sink.enqueue(envelope)
+                } else if (sink.enqueue(envelope)) {
                     BridgeReply.ok(envelope.messageId)
+                } else {
+                    // The event never entered the delivery path — un-record the id so
+                    // a producer retry is not misread as a duplicate of a message that
+                    // was in fact lost.
+                    dedupStore.forget(envelope.messageId)
+                    Logger.warn(
+                        "WebView bridge event not accepted (messageId=${envelope.messageId})"
+                    )
+                    BridgeReply.error(
+                        BridgeErrorCode.NOT_READY,
+                        "SDK not ready to accept events",
+                        envelope.messageId
+                    )
                 }
             }
         }

@@ -10,14 +10,16 @@ import org.robolectric.RobolectricTestRunner
 class BridgeMessageProcessorTest {
 
     private class RecordingSink : BridgeEventSink {
+        var accept = true
         val enqueued = mutableListOf<BridgeEnvelope>()
-        override fun enqueue(envelope: BridgeEnvelope) {
-            enqueued.add(envelope)
+        override fun enqueue(envelope: BridgeEnvelope): Boolean {
+            if (accept) enqueued.add(envelope)
+            return accept
         }
     }
 
-    private fun envelopeJson(messageId: String = "m-1", name: String = "flight_search") =
-        """{"version":1,"messageId":"$messageId","type":"track","name":"$name","properties":{"origin":"AMS"}}"""
+    private fun envelopeJson(messageId: String = "m-1", name: String = "product_viewed") =
+        """{"version":1,"messageId":"$messageId","type":"track","name":"$name","properties":{"sku":"SKU-1"}}"""
 
     @Test
     fun `valid envelope is enqueued and acked ok`() {
@@ -27,7 +29,7 @@ class BridgeMessageProcessorTest {
         val reply = processor.process(envelopeJson())
 
         assertEquals(1, sink.enqueued.size)
-        assertEquals("flight_search", sink.enqueued[0].name)
+        assertEquals("product_viewed", sink.enqueued[0].name)
         assertEquals("ok", reply.status)
         assertEquals("m-1", reply.messageId)
     }
@@ -98,6 +100,26 @@ class BridgeMessageProcessorTest {
     }
 
     @Test
+    fun `rejected enqueue NAKs not_ready and allows a retry`() {
+        val sink = RecordingSink()
+        val processor = BridgeMessageProcessor(sink)
+        sink.accept = false
+
+        val first = processor.process(envelopeJson(messageId = "m-r"))
+
+        assertEquals("error", first.status)
+        assertEquals("not_ready", first.code)
+
+        // The failed delivery must not poison dedup: the retry succeeds once the
+        // sink accepts again.
+        sink.accept = true
+        val retry = processor.process(envelopeJson(messageId = "m-r"))
+
+        assertEquals("ok", retry.status)
+        assertEquals(1, sink.enqueued.size)
+    }
+
+    @Test
     fun `sink receives the parsed envelope not the raw string`() {
         val sink = RecordingSink()
         val processor = BridgeMessageProcessor(sink)
@@ -105,7 +127,7 @@ class BridgeMessageProcessorTest {
         processor.process(envelopeJson())
 
         val envelope = sink.enqueued[0]
-        assertTrue(envelope.properties.containsKey("origin"))
+        assertTrue(envelope.properties.containsKey("sku"))
         assertEquals(1, envelope.version)
     }
 }
