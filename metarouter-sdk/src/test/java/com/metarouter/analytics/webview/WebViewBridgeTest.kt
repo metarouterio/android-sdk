@@ -26,8 +26,10 @@ class WebViewBridgeTest {
 
     private class RecordingSink : BridgeEventSink {
         val enqueued = mutableListOf<BridgeEnvelope>()
-        override fun enqueue(envelope: BridgeEnvelope) {
-            enqueued.add(envelope)
+        var accept = true
+        override fun enqueue(envelope: BridgeEnvelope): Boolean {
+            if (accept) enqueued.add(envelope)
+            return accept
         }
     }
 
@@ -103,6 +105,32 @@ class WebViewBridgeTest {
         featuresSupported(true)
 
         assertFalse(WebViewBridge.attach(webView, emptyList(), processor))
+    }
+
+    @Test
+    fun `attach rejects malformed origin rules instead of throwing downstream`() {
+        featuresSupported(true)
+
+        // Each of these would throw IllegalArgumentException inside the platform API
+        // or silently never match the wrapper's exact-origin check.
+        assertFalse(WebViewBridge.attach(webView, listOf("https://x.com/"), processor))
+        assertFalse(WebViewBridge.attach(webView, listOf("https://x.com/path"), processor))
+        assertFalse(WebViewBridge.attach(webView, listOf("x.com"), processor))
+        assertFalse(WebViewBridge.attach(webView, listOf("https://*.x.com"), processor))
+        verify(exactly = 0) { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `second attach on the same WebView is rejected`() {
+        featuresSupported(true)
+        every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } returns Unit
+        every { WebViewCompat.addDocumentStartJavaScript(any(), any(), any()) } returns mockk()
+
+        assertTrue(WebViewBridge.attach(webView, origins, processor))
+        // Re-registering the same JS object name on a WebView throws in the platform;
+        // the bridge must refuse instead of crashing the host.
+        assertFalse(WebViewBridge.attach(webView, origins, processor))
+        verify(exactly = 1) { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) }
     }
 
     @Test
