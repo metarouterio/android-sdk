@@ -88,9 +88,9 @@ class BridgeWrapperScriptTest {
         // native parser accepts it — keeps script and parser from drifting apart.
         val envelope = """
             {"version":1,"messageId":"11111111-2222-4333-8444-555555555555","type":"track",
-             "name":"flight_search","properties":{"origin":"DXB"},
+             "name":"product_viewed","properties":{"sku":"SKU-1"},
              "sentAt":"2026-07-09T14:03:22.114Z",
-             "page":{"url":"https://www.metarouter.com/search","title":"Search","referrer":""},
+             "page":{"url":"https://www.metarouter.com/products","title":"Search","referrer":""},
              "source":{"producer":"wrapper","wrapperVersion":"${BridgeWrapperScript.WRAPPER_VERSION}"}}
         """.trimIndent()
 

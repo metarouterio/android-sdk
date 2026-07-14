@@ -1,6 +1,7 @@
 package com.metarouter.analytics.webview
 
 import com.metarouter.analytics.types.EventType
+import com.metarouter.analytics.types.PageContext
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -9,6 +10,11 @@ import kotlinx.serialization.json.JsonElement
  * Instances are only produced by [BridgeEnvelopeParser.parse] — construction implies the
  * required-field, version, and type rules have already been enforced, so downstream code
  * (merge, dedup) never re-validates.
+ *
+ * `version`, `sentAt`, and `source` are contract fields carried but not yet consumed:
+ * `version` feeds the parser's compatibility gate, `sentAt` is the producer's untrusted
+ * clock (native sets the real timestamp at merge), and `source` distinguishes the
+ * injected wrapper from the future web-SDK producer.
  */
 internal data class BridgeEnvelope(
     val version: Int,
@@ -17,19 +23,10 @@ internal data class BridgeEnvelope(
     val type: EventType,
     val name: String,
     val properties: Map<String, JsonElement>,
-    /** Producer clock, informational only — native sets the event timestamp at merge. */
     val sentAt: String?,
-    val page: BridgePageContext?,
+    /** Point-in-time page facts stamped by the wrapper at call time. */
+    val page: PageContext?,
     val source: BridgeSource?
-)
-
-/**
- * Point-in-time page facts stamped by the wrapper at call time.
- */
-internal data class BridgePageContext(
-    val url: String?,
-    val title: String?,
-    val referrer: String?
 )
 
 /**

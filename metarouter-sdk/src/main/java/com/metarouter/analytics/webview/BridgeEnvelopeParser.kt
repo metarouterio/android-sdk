@@ -1,6 +1,7 @@
 package com.metarouter.analytics.webview
 
 import com.metarouter.analytics.types.EventType
+import com.metarouter.analytics.types.PageContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -137,7 +138,7 @@ internal object BridgeEnvelopeParser {
             }
 
         val page = (root["page"] as? JsonObject)?.let {
-            BridgePageContext(
+            PageContext(
                 url = it.stringOrNull("url"),
                 title = it.stringOrNull("title"),
                 referrer = it.stringOrNull("referrer")

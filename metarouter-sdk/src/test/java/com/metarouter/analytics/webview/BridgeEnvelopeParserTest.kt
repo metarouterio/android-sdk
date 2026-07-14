@@ -11,11 +11,11 @@ class BridgeEnvelopeParserTest {
 
     // Full envelopes exactly as the injected wrapper produces them, every field populated.
     private val validTrack = """
-        {"version":1,"messageId":"9b2f2c4e-8b1a-4d7e-9c3f-2e6a1d5b8f01","type":"track","name":"flight_search","properties":{"origin":"DXB","destination":"LHR","cabin":"J"},"sentAt":"2026-07-09T14:03:22.114Z","page":{"url":"https://www.metarouter.com/search","title":"Search flights","referrer":"https://www.metarouter.com/"},"source":{"producer":"wrapper","wrapperVersion":"1.0.0"}}
+        {"version":1,"messageId":"9b2f2c4e-8b1a-4d7e-9c3f-2e6a1d5b8f01","type":"track","name":"product_viewed","properties":{"sku":"SKU-123","qty":2,"price":19.99},"sentAt":"2026-07-09T14:03:22.114Z","page":{"url":"https://www.metarouter.com/products","title":"Products","referrer":"https://www.metarouter.com/"},"source":{"producer":"wrapper","wrapperVersion":"1.0.0"}}
     """.trimIndent()
 
     private val validPage = """
-        {"version":1,"messageId":"c41d09aa-3e02-4f4b-b0d7-77f21c9d54c2","type":"page","name":"page_view","properties":{"language":"en"},"sentAt":"2026-07-09T14:02:59.801Z","page":{"url":"https://www.metarouter.com/booking","title":"Book a flight","referrer":"https://www.metarouter.com/search"},"source":{"producer":"wrapper","wrapperVersion":"1.0.0"}}
+        {"version":1,"messageId":"c41d09aa-3e02-4f4b-b0d7-77f21c9d54c2","type":"page","name":"page_view","properties":{"language":"en"},"sentAt":"2026-07-09T14:02:59.801Z","page":{"url":"https://www.metarouter.com/detail","title":"Product details","referrer":"https://www.metarouter.com/products"},"source":{"producer":"wrapper","wrapperVersion":"1.0.0"}}
     """.trimIndent()
 
     private fun valid(result: BridgeParseResult): BridgeEnvelope {
@@ -37,11 +37,11 @@ class BridgeEnvelopeParserTest {
         assertEquals(1, envelope.version)
         assertEquals("9b2f2c4e-8b1a-4d7e-9c3f-2e6a1d5b8f01", envelope.messageId)
         assertEquals(EventType.TRACK, envelope.type)
-        assertEquals("flight_search", envelope.name)
-        assertEquals("DXB", envelope.properties["origin"]?.jsonPrimitive?.content)
+        assertEquals("product_viewed", envelope.name)
+        assertEquals("SKU-123", envelope.properties["sku"]?.jsonPrimitive?.content)
         assertEquals("2026-07-09T14:03:22.114Z", envelope.sentAt)
-        assertEquals("https://www.metarouter.com/search", envelope.page?.url)
-        assertEquals("Search flights", envelope.page?.title)
+        assertEquals("https://www.metarouter.com/products", envelope.page?.url)
+        assertEquals("Products", envelope.page?.title)
         assertEquals("https://www.metarouter.com/", envelope.page?.referrer)
         assertEquals("wrapper", envelope.source?.producer)
         assertEquals("1.0.0", envelope.source?.wrapperVersion)
