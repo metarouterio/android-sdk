@@ -56,6 +56,15 @@ internal class BridgeDedupStore(
         }
     }
 
+    /**
+     * Removes a recorded id. Used when the message it marked never entered the
+     * delivery path — leaving it recorded would make a legitimate producer retry
+     * read as a duplicate of an event that was actually lost.
+     */
+    fun forget(messageId: String) {
+        synchronized(this) { seen.remove(messageId) }
+    }
+
     fun size(): Int = synchronized(this) { seen.size }
 
     companion object {
