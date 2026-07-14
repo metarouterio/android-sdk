@@ -2,6 +2,7 @@ package com.metarouter.analytics
 
 import android.net.Uri
 import com.metarouter.analytics.utils.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,21 +38,45 @@ class AnalyticsProxy(
                 return
             }
 
+            // Drain-and-replay until quiet, then keep draining once more after the
+            // client is set: every proxy method does an unlocked realClient check
+            // before enqueueing, so a call can race this drain and land in the queue
+            // after a pass — without the extra passes it would sit in a queue nothing
+            // ever drains again.
+            drainAndReplay(client)
+
+            // Set the real client atomically
+            realClient.set(client)
+            boundSignal.complete(Unit)
+
+            drainAndReplay(client)
+        }
+    }
+
+    private suspend fun drainAndReplay(client: AnalyticsInterface) {
+        while (true) {
             val callsToReplay = synchronized(pendingCalls) {
                 val calls = pendingCalls.toList()
                 pendingCalls.clear()
                 calls
             }
+            if (callsToReplay.isEmpty()) return
 
-
-            // Replay all pending calls (outside synchronized block to avoid blocking enqueue)
+            // Replay outside the synchronized block to avoid blocking enqueue. Each
+            // call is guarded individually: one throwing call (bad input, platform
+            // exception) must not abort the bind — that would strand the remaining
+            // queue and leave boundSignal incomplete, hanging getAnonymousId forever.
             for (call in callsToReplay) {
-                replayCall(client, call)
+                try {
+                    replayCall(client, call)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.error(
+                        "Dropped queued ${call::class.simpleName} during replay: ${e.message}"
+                    )
+                }
             }
-
-            // Set the real client atomically
-            realClient.set(client)
-            boundSignal.complete(Unit)
         }
     }
 
