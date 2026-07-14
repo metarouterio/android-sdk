@@ -76,7 +76,7 @@ class BridgeEventPlumbingTest {
         val enriched = enrichment.enrichEvent(
             BaseEvent(
                 type = EventType.TRACK,
-                event = "flight_search",
+                event = "product_viewed",
                 page = PageContext(url = "https://www.metarouter.com/search")
             )
         )

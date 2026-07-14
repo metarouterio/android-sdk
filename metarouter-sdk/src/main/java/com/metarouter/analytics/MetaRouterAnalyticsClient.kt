@@ -27,7 +27,6 @@ import com.metarouter.analytics.types.AppContext
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.LifecycleState
-import com.metarouter.analytics.types.PageContext
 import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.utils.toJsonElementMap
 import com.metarouter.analytics.webview.BridgeEnvelope
@@ -461,17 +460,19 @@ class MetaRouterAnalyticsClient private constructor(
      * Internal helper to enqueue events.
      * Sends event to processing channel (non-blocking, with backpressure).
      */
-    private fun enqueueEvent(baseEvent: BaseEvent) {
+    private fun enqueueEvent(baseEvent: BaseEvent): Boolean {
         if (lifecycleState.get() != LifecycleState.READY) {
             Logger.warn("Cannot enqueue event - SDK not ready (state: ${lifecycleState.get()})")
-            return
+            return false
         }
 
         // Try to send to channel - drops if buffer is full (backpressure)
         val result = eventChannel.trySend(baseEvent)
         if (result.isFailure) {
             Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
+            return false
         }
+        return true
     }
 
     // ===== Lifecycle Management =====
@@ -522,10 +523,9 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     override fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
-        if (lifecycleState.get() != LifecycleState.READY) {
-            Logger.log("attachWebView ignored - SDK not ready (state: ${lifecycleState.get()})")
-            return
-        }
+        // No lifecycle gate: attach needs nothing from initialized state (the sink's
+        // enqueue has its own READY check), and gating would silently drop attaches
+        // during init or after reset — breaking the attach-before-loadUrl contract.
         WebViewBridge.attach(webView, allowedOrigins, bridgeProcessor)
     }
 
@@ -535,15 +535,13 @@ class MetaRouterAnalyticsClient private constructor(
      * applied by the existing enrichment — the envelope only contributes what native
      * cannot know: the event itself and the page it happened on.
      */
-    internal fun enqueueBridgeEvent(envelope: BridgeEnvelope) {
-        enqueueEvent(
+    internal fun enqueueBridgeEvent(envelope: BridgeEnvelope): Boolean {
+        return enqueueEvent(
             BaseEvent(
                 type = envelope.type,
                 event = envelope.name,
                 properties = envelope.properties,
-                page = envelope.page?.let {
-                    PageContext(url = it.url, title = it.title, referrer = it.referrer)
-                }
+                page = envelope.page
             )
         )
     }
