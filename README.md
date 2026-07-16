@@ -18,6 +18,7 @@ A lightweight Android analytics SDK that transmits events to your MetaRouter clu
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
 - [Lifecycle Events](#lifecycle-events)
+- [WebView Bridge](#webview-bridge)
 - [Advertising ID (GAID)](#advertising-id-gaid)
 - [Using the alias() Method](#using-the-alias-method)
 - [License](#license)
@@ -220,6 +221,7 @@ The analytics client provides the following methods:
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `openURL(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
+- `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging
@@ -700,6 +702,77 @@ Several reasons:
 - **No `ActivityLifecycleCallbacks` proxy.** Auto-forwarding every Activity's `onCreate`/`onNewIntent` would force the SDK to interpret URLs that aren't deep links (e.g., internal navigation routed via `Intent`), and it would fight any lifecycle-callbacks instrumentation the host already runs.
 - **Privacy footgun.** Auto-forwarded URLs would ship sensitive material without the host having a chance to sanitize.
 - **Host control.** You already know which entry points are deep-link entry points. Forwarding from those specific Activities is a one-liner; auto-instrumentation would be lossy and surprising.
+
+## WebView Bridge
+
+Hybrid apps render some screens as web content inside a WebView. Without extra work that activity is invisible to MetaRouter — or worse, double-tracked by an in-page analytics setup on a separate identity. The webview bridge captures events fired by page JavaScript and delivers them through the native SDK, so webview and native activity arrive at your cluster as **one user, one pipeline**: native identity, device context, and the page's own facts on every event.
+
+### Attaching
+
+The SDK never discovers WebViews on its own — the host attaches each one explicitly, at creation time, **before** `loadUrl` (the registrations only affect page loads that start afterwards):
+
+```kotlin
+val webView = WebView(context)
+analytics.attachWebView(webView, allowedOrigins = listOf("https://www.example.com"))
+webView.loadUrl("https://www.example.com/checkout")
+```
+
+Origins must be explicit `scheme://host[:port]` rules — no wildcards, paths, or trailing slashes. Origin scoping is the bridge's security boundary: it is what keeps arbitrary pages (ads, redirects) loaded in the same WebView from injecting events into your event stream.
+
+### What the page sees
+
+Pages loaded from an allowed origin get a `window.metarouterBridge` object with two methods. Properties may be a plain object or a JSON string of one:
+
+```js
+window.metarouterBridge.page('page_view', { section: 'checkout' });
+window.metarouterBridge.track('product_viewed', JSON.stringify({ sku: 'SKU-123' }));
+```
+
+A typical integration is a small shim in the page's tag manager, branching page views to `page()` and everything else to `track()`:
+
+```js
+function logEvent(name, params) {
+  var value = JSON.stringify(params);
+  if (!window.metarouterBridge) return; // origin not allowed, or old WebView provider
+  if (name === 'page_view') {
+    window.metarouterBridge.page(name, value);
+  } else {
+    window.metarouterBridge.track(name, value);
+  }
+}
+```
+
+### What arrives at the cluster
+
+Bridged events go through the same enrichment as native events. The page contributes only what native cannot know; native contributes everything durable:
+
+| From the page (stamped at call time) | From the SDK (merged at receipt) |
+|---|---|
+| event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context |
+| `context.page` — url, title, referrer | `messageId`, `timestamp`, consent (when set) |
+
+Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message on the underlying channel — malformed input is rejected, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
+
+### Lifecycle
+
+Attachment is per-WebView and lives as long as the WebView does:
+
+- Attaching before SDK initialization completes is safe — registration happens immediately, so the first page load is captured.
+- `reset()` + re-initialization does **not** require re-attaching: an attached WebView keeps delivering to the current client.
+- A page loaded *before* attach is never captured — that page's JS world has no bridge. Attach first, then load.
+- Destroying the WebView tears everything down; there is no detach API because the platform offers no listener removal.
+
+### Debugging
+
+- `adb logcat -s MetaRouter` shows attach confirmations, rejected messages with their error codes, and duplicate drops — the primary debugging surface.
+- From Chrome DevTools (`chrome://inspect` → the WebView), check `typeof window.metarouterBridge` to verify injection, and read the native replies live with `window.__metaRouterNativeChannel.onmessage = e => console.log(e.data)`.
+- On devices whose WebView provider lacks the required features, attach logs a warning and captures nothing — it never falls back to an unscoped mechanism.
+
+### Why no auto-attach?
+
+- **The host owns the WebView.** Auto-discovering WebViews would require instrumentation the SDK deliberately avoids, and would capture WebViews (login pages, third-party content) the host never intended to track.
+- **Origins are a policy decision.** Only the host knows which origins are its own content; a default allowlist would be either useless or unsafe.
+- **Timing is load-bearing.** Registrations only affect subsequent page loads, so the attach point must sit in the host's WebView-creation path — exactly where an explicit call naturally lives.
 
 ## Using the alias() Method
 
