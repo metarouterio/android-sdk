@@ -2,6 +2,7 @@ package com.metarouter.analytics
 
 import android.net.Uri
 import com.metarouter.analytics.utils.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,21 +38,38 @@ class AnalyticsProxy(
                 return
             }
 
-            val callsToReplay = synchronized(pendingCalls) {
+            // Publish the client and snapshot the backlog in one critical section on
+            // the pendingCalls monitor. enqueue() checks realClient under that same
+            // monitor, so once the client is set no further call can be queued: a call
+            // racing this transition either lands in `pending` (replayed below) or sees
+            // the client in enqueue() and runs directly. Nothing can be stranded.
+            val pending = synchronized(pendingCalls) {
+                realClient.set(client)
                 val calls = pendingCalls.toList()
                 pendingCalls.clear()
                 calls
             }
-
-
-            // Replay all pending calls (outside synchronized block to avoid blocking enqueue)
-            for (call in callsToReplay) {
-                replayCall(client, call)
-            }
-
-            // Set the real client atomically
-            realClient.set(client)
             boundSignal.complete(Unit)
+
+            // Each replay is guarded individually: one throwing call (bad input,
+            // platform exception) must not abort the bind — that would strand the
+            // remaining queue and leave boundSignal incomplete.
+            var dropped = 0
+            for (call in pending) {
+                try {
+                    replayCall(client, call)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    dropped++
+                    Logger.error("Dropped queued ${call::class.simpleName} during replay", e)
+                }
+            }
+            if (dropped > 0) {
+                // Per-call errors scatter in the log; one summary line is the signal
+                // that the pre-bind buffer (partially) failed to replay.
+                Logger.warn("Replay dropped $dropped of ${pending.size} queued call(s)")
+            }
         }
     }
 
@@ -71,7 +89,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.track(event, properties)
         } else {
-            enqueue(PendingCall.Track(event, properties))
+            enqueue(PendingCall.Track(event, properties))?.track(event, properties)
         }
     }
 
@@ -80,7 +98,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.identify(userId, traits)
         } else {
-            enqueue(PendingCall.Identify(userId, traits))
+            enqueue(PendingCall.Identify(userId, traits))?.identify(userId, traits)
         }
     }
 
@@ -89,7 +107,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.group(groupId, traits)
         } else {
-            enqueue(PendingCall.Group(groupId, traits))
+            enqueue(PendingCall.Group(groupId, traits))?.group(groupId, traits)
         }
     }
 
@@ -98,7 +116,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.screen(name, properties)
         } else {
-            enqueue(PendingCall.Screen(name, properties))
+            enqueue(PendingCall.Screen(name, properties))?.screen(name, properties)
         }
     }
 
@@ -107,7 +125,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.page(name, properties)
         } else {
-            enqueue(PendingCall.Page(name, properties))
+            enqueue(PendingCall.Page(name, properties))?.page(name, properties)
         }
     }
 
@@ -116,7 +134,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.alias(newUserId)
         } else {
-            enqueue(PendingCall.Alias(newUserId))
+            enqueue(PendingCall.Alias(newUserId))?.alias(newUserId)
         }
     }
 
@@ -125,7 +143,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.setAdvertisingId(advertisingId)
         } else {
-            enqueue(PendingCall.SetAdvertisingId(advertisingId))
+            enqueue(PendingCall.SetAdvertisingId(advertisingId))?.setAdvertisingId(advertisingId)
         }
     }
 
@@ -134,7 +152,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.clearAdvertisingId()
         } else {
-            enqueue(PendingCall.ClearAdvertisingId)
+            enqueue(PendingCall.ClearAdvertisingId)?.clearAdvertisingId()
         }
     }
 
@@ -143,7 +161,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.flush()
         } else {
-            enqueue(PendingCall.Flush)
+            enqueue(PendingCall.Flush)?.flush()
         }
     }
 
@@ -152,7 +170,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.reset()
         } else {
-            enqueue(PendingCall.Reset)
+            enqueue(PendingCall.Reset)?.reset()
         }
     }
 
@@ -164,7 +182,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.enableDebugLogging()
         } else {
-            enqueue(PendingCall.EnableDebugLogging)
+            enqueue(PendingCall.EnableDebugLogging)?.enableDebugLogging()
         }
     }
 
@@ -199,7 +217,7 @@ class AnalyticsProxy(
         if (client != null) {
             client.setTracing(enabled)
         } else {
-            enqueue(PendingCall.SetTracing(enabled))
+            enqueue(PendingCall.SetTracing(enabled))?.setTracing(enabled)
         }
     }
 
@@ -208,21 +226,29 @@ class AnalyticsProxy(
         if (client != null) {
             client.openURL(uri, sourceApplication)
         } else {
-            enqueue(PendingCall.OpenURL(uri, sourceApplication))
+            enqueue(PendingCall.OpenURL(uri, sourceApplication))?.openURL(uri, sourceApplication)
         }
     }
 
 
     /**
      * Enqueue a pending call, dropping oldest if at capacity.
+     *
+     * Re-checks realClient under the pendingCalls monitor: if the proxy bound between
+     * the caller's unlocked check and now, the call is NOT queued (it would never be
+     * replayed) — the bound client is returned so the caller runs the call directly.
+     * Returns null when the call was queued.
      */
-    private fun enqueue(call: PendingCall) {
+    private fun enqueue(call: PendingCall): AnalyticsInterface? {
         synchronized(pendingCalls) {
+            val client = realClient.get()
+            if (client != null) return client
             if (pendingCalls.size >= maxPendingCalls) {
                 val dropped = pendingCalls.removeFirst()
                 Logger.warn("Pending call queue at capacity ($maxPendingCalls), dropping oldest: ${dropped::class.simpleName}")
             }
             pendingCalls.addLast(call)
+            return null
         }
     }
 
