@@ -203,12 +203,12 @@ class AnalyticsProxy(
         }
     }
 
-    override fun openURL(uri: Uri, sourceApplication: String?) {
+    override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {
         val client = realClient.get()
         if (client != null) {
-            client.openURL(uri, sourceApplication)
+            client.recordOpenedUrl(uri, sourceApplication)
         } else {
-            enqueue(PendingCall.OpenURL(uri, sourceApplication))
+            enqueue(PendingCall.RecordOpenedUrl(uri, sourceApplication))
         }
     }
 
@@ -240,7 +240,7 @@ class AnalyticsProxy(
             is PendingCall.SetTracing -> client.setTracing(call.enabled)
             is PendingCall.SetAdvertisingId -> client.setAdvertisingId(call.advertisingId)
             is PendingCall.ClearAdvertisingId -> client.clearAdvertisingId()
-            is PendingCall.OpenURL -> client.openURL(call.uri, call.sourceApplication)
+            is PendingCall.RecordOpenedUrl -> client.recordOpenedUrl(call.uri, call.sourceApplication)
             is PendingCall.Flush -> client.flush()
             is PendingCall.Reset -> client.reset()
             is PendingCall.EnableDebugLogging -> client.enableDebugLogging()

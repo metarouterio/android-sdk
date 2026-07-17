@@ -509,21 +509,21 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
-    override fun openURL(uri: Uri, sourceApplication: String?) {
+    override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {
         if (lifecycleState.get() != LifecycleState.READY) {
-            Logger.log("openURL ignored - SDK not ready (state: ${lifecycleState.get()})")
+            Logger.log("recordOpenedUrl ignored - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
         val coordinator = lifecycleCoordinator
         if (coordinator == null) {
             Logger.warn(
-                "openURL called but trackLifecycleEvents is disabled — no-op. " +
+                "recordOpenedUrl called but trackLifecycleEvents is disabled — no-op. " +
                     "Set InitOptions.trackLifecycleEvents=true to buffer deep links " +
                     "for the next Application Opened event."
             )
             return
         }
-        coordinator.openURL(uri, sourceApplication)
+        coordinator.recordOpenedUrl(uri, sourceApplication)
     }
 
     override suspend fun reset() {

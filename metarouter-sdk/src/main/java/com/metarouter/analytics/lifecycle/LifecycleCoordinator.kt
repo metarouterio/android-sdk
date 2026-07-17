@@ -27,5 +27,5 @@ internal class LifecycleCoordinator(
     fun onReady() = tracker.onSdkReady()
 
     /** Buffer a deep link for the next `Application Opened` emission. */
-    fun openURL(uri: Uri, sourceApplication: String?) = tracker.openURL(uri, sourceApplication)
+    fun recordOpenedUrl(uri: Uri, sourceApplication: String?) = tracker.recordOpenedUrl(uri, sourceApplication)
 }
