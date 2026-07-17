@@ -64,6 +64,21 @@ class ProxyReplayHardeningTest {
     }
 
     @Test
+    fun `bind completes even when every queued call throws`() = runTest {
+        val proxy = AnalyticsProxy()
+        val client = ThrowingClient()
+        repeat(5) { proxy.track("poison") }
+
+        proxy.bind(client)
+
+        // The whole pre-bind buffer failing to replay must still leave a usable proxy.
+        assertTrue(proxy.isBound())
+        assertEquals(0, proxy.pendingCallCount())
+        proxy.track("direct")
+        assertEquals(listOf("direct"), client.tracked)
+    }
+
+    @Test
     fun `queue is empty and calls go direct after a poisoned bind`() = runTest {
         val proxy = AnalyticsProxy()
         val client = ThrowingClient()
