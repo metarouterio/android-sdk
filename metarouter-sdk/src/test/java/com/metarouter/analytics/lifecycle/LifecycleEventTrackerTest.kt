@@ -44,7 +44,7 @@ class LifecycleEventTrackerTest {
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
-        override fun openURL(uri: Uri, sourceApplication: String?) {}
+        override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {}
     }
 
     private lateinit var analytics: RecordingAnalytics
@@ -230,7 +230,7 @@ class LifecycleEventTrackerTest {
     fun `deep link before next Opened is included and buffer cleared after emit`() {
         val tracker = newTracker(foreground = true)
 
-        tracker.openURL(mockUri("https://example.com/x"), "com.referrer.app")
+        tracker.recordOpenedUrl(mockUri("https://example.com/x"), "com.referrer.app")
         tracker.onSdkReady()
 
         val opened = analytics.events.first { it.event == "Application Opened" }
@@ -249,7 +249,7 @@ class LifecycleEventTrackerTest {
     fun `deep link without source application omits referring_application`() {
         val tracker = newTracker(foreground = true)
 
-        tracker.openURL(mockUri("https://example.com"), null)
+        tracker.recordOpenedUrl(mockUri("https://example.com"), null)
         tracker.onSdkReady()
 
         val opened = analytics.events.first { it.event == "Application Opened" }
@@ -258,11 +258,11 @@ class LifecycleEventTrackerTest {
     }
 
     @Test
-    fun `multiple openURL calls before Opened keep only the last URL`() {
+    fun `multiple recordOpenedUrl calls before Opened keep only the last URL`() {
         val tracker = newTracker(foreground = true)
 
-        tracker.openURL(mockUri("https://example.com/first"), "com.first")
-        tracker.openURL(mockUri("https://example.com/second"), "com.second")
+        tracker.recordOpenedUrl(mockUri("https://example.com/first"), "com.first")
+        tracker.recordOpenedUrl(mockUri("https://example.com/second"), "com.second")
         tracker.onSdkReady()
 
         val opened = analytics.events.first { it.event == "Application Opened" }

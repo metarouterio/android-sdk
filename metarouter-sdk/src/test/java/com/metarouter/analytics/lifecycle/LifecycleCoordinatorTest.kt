@@ -35,24 +35,24 @@ class LifecycleCoordinatorTest {
     }
 
     @Test
-    fun `openURL forwards uri and source application to tracker`() {
+    fun `recordOpenedUrl forwards uri and source application to tracker`() {
         val tracker = mockk<LifecycleEventTracker>(relaxed = true)
         val uri = mockk<Uri>()
         every { uri.toString() } returns "https://example.com"
 
-        LifecycleCoordinator(tracker).openURL(uri, "com.referrer")
+        LifecycleCoordinator(tracker).recordOpenedUrl(uri, "com.referrer")
 
-        verify(exactly = 1) { tracker.openURL(uri, "com.referrer") }
+        verify(exactly = 1) { tracker.recordOpenedUrl(uri, "com.referrer") }
     }
 
     @Test
-    fun `openURL forwards null source application unchanged`() {
+    fun `recordOpenedUrl forwards null source application unchanged`() {
         val tracker = mockk<LifecycleEventTracker>(relaxed = true)
         val uri = mockk<Uri>()
         every { uri.toString() } returns "https://example.com"
 
-        LifecycleCoordinator(tracker).openURL(uri, null)
+        LifecycleCoordinator(tracker).recordOpenedUrl(uri, null)
 
-        verify(exactly = 1) { tracker.openURL(uri, null) }
+        verify(exactly = 1) { tracker.recordOpenedUrl(uri, null) }
     }
 }

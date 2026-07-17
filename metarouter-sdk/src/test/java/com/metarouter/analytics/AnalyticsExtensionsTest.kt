@@ -58,7 +58,7 @@ class AnalyticsExtensionsTest {
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
-        override fun openURL(uri: Uri, sourceApplication: String?) {}
+        override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {}
     }
 
     @Test

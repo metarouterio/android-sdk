@@ -186,5 +186,5 @@ interface AnalyticsInterface {
      * @param uri The deep-link URI that opened the app
      * @param sourceApplication Optional referring application identifier
      */
-    fun openURL(uri: Uri, sourceApplication: String? = null)
+    fun recordOpenedUrl(uri: Uri, sourceApplication: String? = null)
 }
