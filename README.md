@@ -749,7 +749,7 @@ Bridged events go through the same enrichment as native events. The page contrib
 | From the page (stamped at call time) | From the SDK (merged at receipt) |
 |---|---|
 | event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context |
-| `context.page` — url, title, referrer | `messageId`, `timestamp`, consent (when set) |
+| `context.page` — url, path, search, title, referrer | `messageId`, `timestamp` |
 
 Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message on the underlying channel — malformed input is rejected, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
 
