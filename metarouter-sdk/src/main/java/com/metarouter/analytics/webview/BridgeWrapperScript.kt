@@ -80,6 +80,8 @@ internal object BridgeWrapperScript {
                   sentAt: new Date().toISOString(),
                   page: {
                     url: location.href,
+                    path: location.pathname,
+                    search: location.search,
                     title: document.title,
                     referrer: document.referrer
                   },

@@ -154,6 +154,8 @@ data class NetworkContext(
 @Serializable
 data class PageContext(
     val url: String? = null,
+    val path: String? = null,
+    val search: String? = null,
     val title: String? = null,
     val referrer: String? = null
 )

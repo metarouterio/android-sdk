@@ -49,12 +49,34 @@ internal sealed class BridgeParseResult {
 internal object BridgeEnvelopeParser {
 
     const val SUPPORTED_VERSION = 1
+
+    /**
+     * Max envelope size accepted at the untrusted JS→native boundary. A policy cap that
+     * bounds parse cost — not receive memory (the platform materializes the full String
+     * before we ever see it).
+     *
+     * 64 KiB sits well under the cluster's single-event ingest cap (StreamingLimitBytes =
+     * 250 KiB; ingestor/limits.go:3-14), leaving headroom for native enrichment before the
+     * event is sent. The cluster enforces size per HTTP request body, so batch totals
+     * (BatchLimitBytes = 500 KiB) are the dispatcher's concern, absorbed by its 413 backoff.
+     */
     const val MAX_ENVELOPE_BYTES = 64 * 1024
+
+    // UUIDs are 36 chars; a generous ceiling keeps the dedup store's aggregate memory
+    // bounded in bytes, not just entry count — 1000 retained near-64KB ids would be ~64MB.
+    const val MAX_MESSAGE_ID_CHARS = 256
 
     private val json = Json { ignoreUnknownKeys = true }
 
     fun parse(raw: String): BridgeParseResult {
-        if (raw.toByteArray(Charsets.UTF_8).size > MAX_ENVELOPE_BYTES) {
+        // The cap is a UTF-8 *byte* budget, not a char budget.
+        // Fast path: a String's UTF-8 length is always >= its char count, so an over-length
+        // string is definitely oversized and short-circuits before we encode a throwaway
+        // copy. Precise path: exact UTF-8 wire size for the plausible range, where one char
+        // may be several bytes.
+        if (raw.length > MAX_ENVELOPE_BYTES ||
+            raw.toByteArray(Charsets.UTF_8).size > MAX_ENVELOPE_BYTES
+        ) {
             return BridgeParseResult.Invalid(
                 BridgeErrorCode.PAYLOAD_TOO_LARGE,
                 "envelope exceeds $MAX_ENVELOPE_BYTES bytes"
@@ -81,6 +103,14 @@ internal object BridgeEnvelopeParser {
             return BridgeParseResult.Invalid(
                 BridgeErrorCode.MISSING_FIELD,
                 "messageId is required"
+            )
+        }
+        if (messageId.length > MAX_MESSAGE_ID_CHARS) {
+            // Deliberately not echoing the oversized id back — the reply would amplify
+            // the same bytes straight back to the page.
+            return BridgeParseResult.Invalid(
+                BridgeErrorCode.MALFORMED_PAYLOAD,
+                "messageId exceeds $MAX_MESSAGE_ID_CHARS chars"
             )
         }
 
@@ -140,6 +170,8 @@ internal object BridgeEnvelopeParser {
         val page = (root["page"] as? JsonObject)?.let {
             PageContext(
                 url = it.stringOrNull("url"),
+                path = it.stringOrNull("path"),
+                search = it.stringOrNull("search"),
                 title = it.stringOrNull("title"),
                 referrer = it.stringOrNull("referrer")
             )

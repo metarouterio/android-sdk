@@ -39,6 +39,17 @@ class BridgeWrapperScriptTest {
     }
 
     @Test
+    fun `script stamps the full page block including path and search`() {
+        val script = BridgeWrapperScript.build(origins)
+
+        assertTrue(script.contains("url: location.href"))
+        assertTrue(script.contains("path: location.pathname"))
+        assertTrue(script.contains("search: location.search"))
+        assertTrue(script.contains("title: document.title"))
+        assertTrue(script.contains("referrer: document.referrer"))
+    }
+
+    @Test
     fun `script stamps envelope version and wrapper version`() {
         val script = BridgeWrapperScript.build(origins)
 
