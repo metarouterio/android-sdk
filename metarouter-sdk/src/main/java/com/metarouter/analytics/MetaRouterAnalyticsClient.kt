@@ -522,6 +522,13 @@ class MetaRouterAnalyticsClient private constructor(
         }
     }
 
+    /**
+     * Bridge attach for direct-client usage (`MetaRouterAnalyticsClient.initialize()`).
+     * The sink enqueues to THIS client instance, which is correct here: a directly
+     * created client is caller-owned and is never swapped by `reset()` (that only
+     * replaces the proxy's client). Do NOT mirror this in the proxy path — there the
+     * listener must resolve the live client at delivery, since it outlives client swaps.
+     */
     override fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
         // No lifecycle gate: attach needs nothing from initialized state (the sink's
         // enqueue has its own READY check), and gating would silently drop attaches
