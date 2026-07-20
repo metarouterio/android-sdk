@@ -1,5 +1,7 @@
 package com.metarouter.analytics.webview
 
+import android.os.SystemClock
+
 /**
  * Bounded record of recently seen bridge `messageId`s.
  *
@@ -16,7 +18,10 @@ package com.metarouter.analytics.webview
 internal class BridgeDedupStore(
     private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
     private val ttlMillis: Long = DEFAULT_TTL_MILLIS,
-    private val clock: () -> Long = System::currentTimeMillis
+    // Monotonic: immune to wall-clock jumps (NTP, user time changes), and unlike
+    // uptimeMillis it keeps counting across deep sleep — so the window measures
+    // real elapsed time, which is what a redelivery window means.
+    private val clock: () -> Long = SystemClock::elapsedRealtime
 ) {
 
     init {

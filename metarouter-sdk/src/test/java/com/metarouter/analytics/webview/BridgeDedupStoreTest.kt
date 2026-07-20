@@ -46,6 +46,17 @@ class BridgeDedupStoreTest {
     }
 
     @Test
+    fun `sighting at exactly the ttl boundary counts as expired`() {
+        // The window check is strict (<): elapsed == ttl is outside the window. A
+        // flipped comparison would silently change this; one assertion pins it.
+        val store = store(ttlMillis = 1_000)
+
+        assertTrue(store.markIfNew("m-1"))
+        now += 1_000
+        assertTrue(store.markIfNew("m-1"))
+    }
+
+    @Test
     fun `duplicate does not refresh the ttl window`() {
         val store = store(ttlMillis = 1_000)
 
