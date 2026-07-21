@@ -19,6 +19,11 @@ import kotlinx.serialization.json.JsonPrimitive
  *   that fails to parse is forwarded as-is so the native validator rejects it with
  *   `malformed_payload` and the producer gets an error reply rather than silence.
  * - Calls made before the native channel exists (or with a blank name) are dropped.
+ * - JSON.stringify of the envelope is guarded: unstringifiable object properties
+ *   (circular reference, BigInt) are coerced to a string and the post retried — the
+ *   rest of the envelope is SDK-built strings, so the retry cannot fail, and native
+ *   rejects non-object properties with malformed_payload. A coded error reply, never
+ *   a TypeError thrown into the page's own calling code.
  */
 internal object BridgeWrapperScript {
 
@@ -88,9 +93,15 @@ internal object BridgeWrapperScript {
                   source: { producer: 'wrapper', wrapperVersion: '$WRAPPER_VERSION' }
                 };
                 var channel = window.$NATIVE_CHANNEL_NAME;
-                if (channel && typeof channel.postMessage === 'function') {
-                  channel.postMessage(JSON.stringify(envelope));
+                if (!channel || typeof channel.postMessage !== 'function') { return; }
+                var payload;
+                try {
+                  payload = JSON.stringify(envelope);
+                } catch (e) {
+                  envelope.properties = String(props);
+                  payload = JSON.stringify(envelope);
                 }
+                channel.postMessage(payload);
               }
 
               window.$bridgeObjectName = {
