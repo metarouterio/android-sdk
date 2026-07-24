@@ -98,9 +98,10 @@ class BridgeWrapperScriptTest {
         val script = BridgeWrapperScript.build(origins)
 
         // A circular reference or BigInt in object properties would otherwise throw a
-        // TypeError out of track()/page() into the page's own calling code.
+        // TypeError out of track()/page() into the page's own calling code — and so
+        // would the String() coercion itself on a value with no primitive path.
         assertTrue(script.contains("payload = JSON.stringify(envelope);"))
-        assertTrue(script.contains("envelope.properties = String(props);"))
+        assertTrue(script.contains("try { envelope.properties = String(props); } catch (e2) { envelope.properties = 'unserializable'; }"))
         assertFalse(script.contains("channel.postMessage(JSON.stringify(envelope))"))
     }
 

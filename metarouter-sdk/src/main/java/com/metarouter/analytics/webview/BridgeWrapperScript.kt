@@ -23,7 +23,9 @@ import kotlinx.serialization.json.JsonPrimitive
  *   (circular reference, BigInt) are coerced to a string and the post retried — the
  *   rest of the envelope is SDK-built strings, so the retry cannot fail, and native
  *   rejects non-object properties with malformed_payload. A coded error reply, never
- *   a TypeError thrown into the page's own calling code.
+ *   a TypeError thrown into the page's own calling code. The coercion itself is
+ *   guarded too: String() throws on values with no primitive path (a circular
+ *   Object.create(null)), and that TypeError must stay in here as well.
  */
 internal object BridgeWrapperScript {
 
@@ -98,7 +100,7 @@ internal object BridgeWrapperScript {
                 try {
                   payload = JSON.stringify(envelope);
                 } catch (e) {
-                  envelope.properties = String(props);
+                  try { envelope.properties = String(props); } catch (e2) { envelope.properties = 'unserializable'; }
                   payload = JSON.stringify(envelope);
                 }
                 channel.postMessage(payload);

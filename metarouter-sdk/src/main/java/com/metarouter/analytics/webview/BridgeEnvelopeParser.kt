@@ -55,10 +55,10 @@ internal object BridgeEnvelopeParser {
      * bounds parse cost — not receive memory (the platform materializes the full String
      * before we ever see it).
      *
-     * 64 KiB sits well under the cluster's single-event ingest cap (StreamingLimitBytes =
-     * 250 KiB; ingestor/limits.go:3-14), leaving headroom for native enrichment before the
-     * event is sent. The cluster enforces size per HTTP request body, so batch totals
-     * (BatchLimitBytes = 500 KiB) are the dispatcher's concern, absorbed by its 413 backoff.
+     * 64 KiB sits well under the cluster's single-event ingest cap (250 KiB —
+     * StreamingLimitBytes in the ingestor repo), leaving headroom for native enrichment
+     * before the event is sent. The cluster enforces size per HTTP request body, so batch
+     * totals (BatchLimitBytes) are the dispatcher's concern, absorbed by its 413 backoff.
      */
     const val MAX_ENVELOPE_BYTES = 64 * 1024
 
