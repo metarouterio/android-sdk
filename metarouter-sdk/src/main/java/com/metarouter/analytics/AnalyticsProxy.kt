@@ -1,7 +1,10 @@
 package com.metarouter.analytics
 
 import android.net.Uri
+import android.webkit.WebView
 import com.metarouter.analytics.utils.Logger
+import com.metarouter.analytics.webview.BridgeMessageProcessor
+import com.metarouter.analytics.webview.WebViewBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
@@ -228,6 +231,25 @@ class AnalyticsProxy(
         } else {
             enqueue(PendingCall.OpenURL(uri, sourceApplication))?.openURL(uri, sourceApplication)
         }
+    }
+
+    // The bridge is owned here, not by a client: clients are disposable (reset()
+    // creates a new one) while attached WebViews live on, and the platform has no API
+    // to remove a WebMessageListener. The sink resolves "the current client" at
+    // delivery time — a webview attached before init, or surviving a reset/re-init
+    // cycle, delivers to whichever client is bound when its events arrive, and events
+    // arriving with no ready client are NAKed not_ready instead of silently lost.
+    private val bridgeProcessor by lazy {
+        BridgeMessageProcessor(sink = { envelope ->
+            (realClient.get() as? MetaRouterAnalyticsClient)?.enqueueBridgeEvent(envelope) ?: false
+        })
+    }
+
+    override fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
+        // Registers immediately regardless of bind state — the WebView registrations
+        // only apply to page loads that start afterwards, so deferring to bind-replay
+        // would lose the wrapper on the host's first loadUrl.
+        WebViewBridge.attach(webView, allowedOrigins, bridgeProcessor)
     }
 
 

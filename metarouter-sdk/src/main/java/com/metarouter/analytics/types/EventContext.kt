@@ -18,6 +18,7 @@ data class EventContext(
     val locale: String? = null,
     val network: NetworkContext? = null,
     val os: OSContext? = null,
+    val page: PageContext? = null,
     val screen: ScreenContext? = null,
     val timezone: String? = null
 )

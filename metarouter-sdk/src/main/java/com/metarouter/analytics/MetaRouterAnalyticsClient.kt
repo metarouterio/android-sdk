@@ -5,6 +5,7 @@ import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
+import android.webkit.WebView
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
@@ -28,6 +29,9 @@ import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.LifecycleState
 import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.utils.toJsonElementMap
+import com.metarouter.analytics.webview.BridgeEnvelope
+import com.metarouter.analytics.webview.BridgeMessageProcessor
+import com.metarouter.analytics.webview.WebViewBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -135,6 +139,13 @@ class MetaRouterAnalyticsClient private constructor(
 
     // Lifecycle coordinator (null when InitOptions.trackLifecycleEvents is false)
     private var lifecycleCoordinator: LifecycleCoordinator? = null
+
+    // One processor for all attached webviews: bridge messageIds are UUIDs, so a shared
+    // dedup store cannot cross-drop between webviews, and sharing keeps the memory
+    // bound per client rather than per webview.
+    private val bridgeProcessor by lazy {
+        BridgeMessageProcessor(sink = { envelope -> enqueueBridgeEvent(envelope) })
+    }
 
     /**
      * Internal initialization. Sets up all components.
@@ -449,17 +460,19 @@ class MetaRouterAnalyticsClient private constructor(
      * Internal helper to enqueue events.
      * Sends event to processing channel (non-blocking, with backpressure).
      */
-    private fun enqueueEvent(baseEvent: BaseEvent) {
+    private fun enqueueEvent(baseEvent: BaseEvent): Boolean {
         if (lifecycleState.get() != LifecycleState.READY) {
             Logger.warn("Cannot enqueue event - SDK not ready (state: ${lifecycleState.get()})")
-            return
+            return false
         }
 
         // Try to send to channel - drops if buffer is full (backpressure)
         val result = eventChannel.trySend(baseEvent)
         if (result.isFailure) {
             Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
+            return false
         }
+        return true
     }
 
     // ===== Lifecycle Management =====
@@ -507,6 +520,37 @@ class MetaRouterAnalyticsClient private constructor(
         scope.launch {
             flush()
         }
+    }
+
+    /**
+     * Bridge attach for direct-client usage (`MetaRouterAnalyticsClient.initialize()`).
+     * The sink enqueues to THIS client instance, which is correct here: a directly
+     * created client is caller-owned and is never swapped by `reset()` (that only
+     * replaces the proxy's client). Do NOT mirror this in the proxy path — there the
+     * listener must resolve the live client at delivery, since it outlives client swaps.
+     */
+    override fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
+        // No lifecycle gate: attach needs nothing from initialized state (the sink's
+        // enqueue has its own READY check), and gating would silently drop attaches
+        // during init or after reset — breaking the attach-before-loadUrl contract.
+        WebViewBridge.attach(webView, allowedOrigins, bridgeProcessor)
+    }
+
+    /**
+     * Bridge sink: a validated, deduplicated webview envelope enters the normal event
+     * path here. The native messageId, timestamp, identity, and device context are all
+     * applied by the existing enrichment — the envelope only contributes what native
+     * cannot know: the event itself and the page it happened on.
+     */
+    internal fun enqueueBridgeEvent(envelope: BridgeEnvelope): Boolean {
+        return enqueueEvent(
+            BaseEvent(
+                type = envelope.type,
+                event = envelope.name,
+                properties = envelope.properties,
+                page = envelope.page
+            )
+        )
     }
 
     override fun openURL(uri: Uri, sourceApplication: String?) {
