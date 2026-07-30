@@ -28,6 +28,12 @@ internal class BridgeMessageProcessor(
     private val dedupStore: BridgeDedupStore = BridgeDedupStore()
 ) {
 
+    /**
+     * Synchronous; the caller chooses the thread. NOT safe to call concurrently for the
+     * same processor — `markIfNew → enqueue → forget` is a check-then-act across two lock
+     * regions, so a concurrent duplicate could be acked `ok` and dropped while the
+     * original's enqueue fails, losing the event. Invoke from a single confined thread.
+     */
     fun process(raw: String): BridgeReply {
         return when (val result = BridgeEnvelopeParser.parse(raw)) {
             is BridgeParseResult.Invalid -> {

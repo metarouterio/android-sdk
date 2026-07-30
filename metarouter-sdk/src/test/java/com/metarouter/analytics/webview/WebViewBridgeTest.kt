@@ -121,6 +121,23 @@ class WebViewBridgeTest {
     }
 
     @Test
+    fun `attach that throws in registration is caught and un-tracks the WebView`() {
+        featuresSupported(true)
+        every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } throws
+            RuntimeException("platform rejected")
+        every { WebViewCompat.addDocumentStartJavaScript(any(), any(), any()) } returns mockk()
+
+        // No exception reaches the caller — the failure mode is no capture, logged.
+        assertTrue(WebViewBridge.attach(webView, origins, processor))
+
+        // The failed WebView was un-tracked, so a retry is not falsely rejected as
+        // "already attached" — and this time registration succeeds.
+        every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } returns Unit
+        assertTrue(WebViewBridge.attach(webView, origins, processor))
+        verify(exactly = 2) { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `second attach on the same WebView is rejected`() {
         featuresSupported(true)
         every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } returns Unit

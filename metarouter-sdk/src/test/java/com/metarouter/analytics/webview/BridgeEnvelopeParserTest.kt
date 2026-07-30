@@ -3,6 +3,7 @@ package com.metarouter.analytics.webview
 import com.metarouter.analytics.types.EventType
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -143,6 +144,46 @@ class BridgeEnvelopeParserTest {
         val error = invalid(BridgeEnvelopeParser.parse("""{"version":1,"type":"track","name":"x"}"""))
 
         assertEquals(BridgeErrorCode.MISSING_FIELD, error.code)
+    }
+
+    @Test
+    fun `oversized messageId is rejected without echoing it back`() {
+        val hugeId = "x".repeat(BridgeEnvelopeParser.MAX_MESSAGE_ID_CHARS + 1)
+        val error = invalid(
+            BridgeEnvelopeParser.parse(
+                """{"version":1,"messageId":"$hugeId","type":"track","name":"x"}"""
+            )
+        )
+
+        assertEquals(BridgeErrorCode.MALFORMED_PAYLOAD, error.code)
+        // The reply must not amplify the oversized bytes back to the page.
+        assertNull(error.messageId)
+        assertFalse(error.message.contains(hugeId))
+    }
+
+    @Test
+    fun `messageId at exactly the cap is accepted`() {
+        val maxId = "x".repeat(BridgeEnvelopeParser.MAX_MESSAGE_ID_CHARS)
+        val envelope = valid(
+            BridgeEnvelopeParser.parse(
+                """{"version":1,"messageId":"$maxId","type":"track","name":"x"}"""
+            )
+        )
+
+        assertEquals(maxId, envelope.messageId)
+    }
+
+    @Test
+    fun `page path and search are parsed`() {
+        val envelope = valid(
+            BridgeEnvelopeParser.parse(
+                """{"version":1,"messageId":"m-1","type":"page","name":"page_view",""" +
+                    """"page":{"url":"https://www.metarouter.com/products?q=fern","path":"/products","search":"?q=fern"}}"""
+            )
+        )
+
+        assertEquals("/products", envelope.page?.path)
+        assertEquals("?q=fern", envelope.page?.search)
     }
 
     @Test

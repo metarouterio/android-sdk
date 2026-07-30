@@ -35,7 +35,18 @@ class BridgeWrapperScriptTest {
         val script = BridgeWrapperScript.build(origins)
 
         assertTrue(script.contains("window.${BridgeWrapperScript.NATIVE_CHANNEL_NAME}"))
-        assertTrue(script.contains("channel.postMessage(JSON.stringify(envelope))"))
+        assertTrue(script.contains("channel.postMessage(payload)"))
+    }
+
+    @Test
+    fun `script stamps the full page block including path and search`() {
+        val script = BridgeWrapperScript.build(origins)
+
+        assertTrue(script.contains("url: location.href"))
+        assertTrue(script.contains("path: location.pathname"))
+        assertTrue(script.contains("search: location.search"))
+        assertTrue(script.contains("title: document.title"))
+        assertTrue(script.contains("referrer: document.referrer"))
     }
 
     @Test
@@ -80,6 +91,31 @@ class BridgeWrapperScriptTest {
     @Test(expected = IllegalArgumentException::class)
     fun `invalid JS identifier for bridge object name is rejected`() {
         BridgeWrapperScript.build(origins, bridgeObjectName = "bad-name;alert(1)")
+    }
+
+    @Test
+    fun `stringify is guarded and coerces unserializable properties`() {
+        val script = BridgeWrapperScript.build(origins)
+
+        // A circular reference or BigInt in object properties would otherwise throw a
+        // TypeError out of track()/page() into the page's own calling code — and so
+        // would the String() coercion itself on a value with no primitive path.
+        assertTrue(script.contains("payload = JSON.stringify(envelope);"))
+        assertTrue(script.contains("try { envelope.properties = String(props); } catch (e2) { envelope.properties = 'unserializable'; }"))
+        assertFalse(script.contains("channel.postMessage(JSON.stringify(envelope))"))
+    }
+
+    @Test
+    fun `coerced string properties are rejected by the parser as malformed_payload`() {
+        // The wrapper's stringify fallback sends properties as a coerced string; this
+        // pins the native half of that contract — a coded error reply, id echoed.
+        val result = BridgeEnvelopeParser.parse(
+            """{"version":1,"messageId":"m-1","type":"track","name":"x","properties":"[object Object]"}"""
+        )
+
+        assertTrue(result is BridgeParseResult.Invalid)
+        assertEquals(BridgeErrorCode.MALFORMED_PAYLOAD, (result as BridgeParseResult.Invalid).code)
+        assertEquals("m-1", result.messageId)
     }
 
     @Test
