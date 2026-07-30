@@ -39,10 +39,18 @@ class EventEnrichmentService(
         val baseContext = contextProvider.getContext()
 
         // Merge advertisingId into device context if present
-        val context = if (advertisingId != null && baseContext.device != null) {
+        val contextWithAdId = if (advertisingId != null && baseContext.device != null) {
             baseContext.copy(device = baseContext.device.copy(advertisingId = advertisingId))
         } else {
             baseContext
+        }
+
+        // Bridge-sourced events carry their page facts on the BaseEvent; native events
+        // leave it null and context.page stays absent, matching web SDK output.
+        val context = if (baseEvent.page != null) {
+            contextWithAdId.copy(page = baseEvent.page)
+        } else {
+            contextWithAdId
         }
 
         // Generate unique message ID
