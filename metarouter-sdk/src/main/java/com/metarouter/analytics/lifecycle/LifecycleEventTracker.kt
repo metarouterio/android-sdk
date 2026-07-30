@@ -143,7 +143,7 @@ internal class LifecycleEventTracker(
      * referrer — `Intent.EXTRA_REFERRER` is documented as a `Uri`, not a String, and
      * `getStringExtra` on it is virtually always `null`).
      */
-    fun openURL(uri: Uri, sourceApplication: String?) {
+    fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {
         pendingDeepLink.set(DeepLink(uri.toString(), sourceApplication))
     }
 

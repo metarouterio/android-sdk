@@ -41,7 +41,7 @@ Then add the dependency in your module-level `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.metarouterio:android-sdk:1.2.1")
+    implementation("com.github.metarouterio:android-sdk:1.3.1")
 }
 ```
 
@@ -220,8 +220,7 @@ The analytics client provides the following methods:
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
-- `openURL(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
-- `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
+- `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging
@@ -490,7 +489,7 @@ analytics.track("Button Clicked", "buttonName" to "Submit")
     "app": { "name": "MyApp", "version": "1.0.0", "build": "42" },
     "screen": { "width": 411, "height": 891, "density": 2.63 },
     "network": { "wifi": true },
-    "library": { "name": "metarouter-android-sdk", "version": "1.2.1" },
+    "library": { "name": "metarouter-android-sdk", "version": "1.3.1" },
     "locale": "en-US",
     "timezone": "America/New_York"
   }
@@ -598,7 +597,7 @@ val analytics = MetaRouter.Analytics.initialize(
 )
 ```
 
-When the flag is `false` (the default), the SDK never emits these events and `openURL(...)` is a no-op that logs a warning. Existing customers upgrading the SDK do **not** start emitting lifecycle events without explicitly setting the flag.
+When the flag is `false` (the default), the SDK never emits these events and `recordOpenedUrl(...)` is a no-op that logs a warning. Existing customers upgrading the SDK do **not** start emitting lifecycle events without explicitly setting the flag.
 
 ### Events
 
@@ -606,7 +605,7 @@ When the flag is `false` (the default), the SDK never emits these events and `op
 |---|---|---|
 | `Application Installed` | First launch after a truly fresh install (no prior identity, no prior lifecycle storage) | `version`, `build` |
 | `Application Updated` | First launch after a `(version, build)` change OR first launch after upgrading from a pre-lifecycle SDK build (existing identity, no lifecycle storage) | `version`, `build`, `previous_version`, `previous_build` (set to `"unknown"` for the SDK-upgrade case) |
-| `Application Opened` | Cold launch (foreground at SDK init) and on every `ProcessLifecycleOwner.ON_START` resume | `version`, `build`, `from_background` (false on cold launch, true on resume), optional `url` and `referring_application` from `openURL(...)` |
+| `Application Opened` | Cold launch (foreground at SDK init) and on every `ProcessLifecycleOwner.ON_START` resume | `version`, `build`, `from_background` (false on cold launch, true on resume), optional `url` and `referring_application` from `recordOpenedUrl(...)` |
 | `Application Backgrounded` | `ProcessLifecycleOwner.ON_STOP`. Emitted **before** the dispatcher's flush-to-disk so the event ships in the same drain | (none) |
 
 ### Cold-launch sequencing
@@ -621,7 +620,7 @@ For background-launched processes (silent push, `JobScheduler`, `WorkManager`, b
 
 ### Deep links
 
-The SDK does not auto-instrument deep links. Hosts forward URLs explicitly via `analytics.openURL(uri, sourceApplication)`. The next `Application Opened` event the SDK emits will carry `url` and (if provided) `referring_application` properties. The buffer is **one-shot** (cleared on emit) and **last-write-wins** (multiple calls before the next Opened keep only the most recent URL).
+The SDK does not auto-instrument deep links. Hosts forward URLs explicitly via `analytics.recordOpenedUrl(uri, sourceApplication)`. The next `Application Opened` event the SDK emits will carry `url` and (if provided) `referring_application` properties. The buffer is **one-shot** (cleared on emit) and **last-write-wins** (multiple calls before the next Opened keep only the most recent URL).
 
 #### Activity entry point
 
@@ -649,7 +648,7 @@ class MainActivity : AppCompatActivity() {
         // (Don't use `Intent.EXTRA_REFERRER` with `getStringExtra` — it's documented as
         // a `Uri`, so the String overload returns null.)
         val source = referrer?.host
-        MetaRouter.Analytics.client().openURL(uri, source)
+        MetaRouter.Analytics.client().recordOpenedUrl(uri, source)
     }
 }
 ```
@@ -671,7 +670,7 @@ Wire up your manifest as usual; nothing changes for the SDK side:
 
 ### Privacy
 
-Deep-link URLs frequently carry sensitive material — auth tokens, OTPs, magic-link secrets, query parameters with PII. The SDK forwards whatever URI you hand it and does not sanitize. Strip or redact secrets in the host before calling `openURL(...)`:
+Deep-link URLs frequently carry sensitive material — auth tokens, OTPs, magic-link secrets, query parameters with PII. The SDK forwards whatever URI you hand it and does not sanitize. Strip or redact secrets in the host before calling `recordOpenedUrl(...)`:
 
 ```kotlin
 import android.net.Uri
@@ -690,7 +689,7 @@ private fun sanitize(uri: Uri): Uri {
 }
 
 intent.data?.let { uri ->
-    MetaRouter.Analytics.client().openURL(sanitize(uri), referrer?.host)
+    MetaRouter.Analytics.client().recordOpenedUrl(sanitize(uri), referrer?.host)
 }
 ```
 

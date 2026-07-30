@@ -187,7 +187,7 @@ interface AnalyticsInterface {
      * @param uri The deep-link URI that opened the app
      * @param sourceApplication Optional referring application identifier
      */
-    fun openURL(uri: Uri, sourceApplication: String? = null)
+
 
     /**
      * Attach the webview event bridge to a host-owned WebView.
@@ -213,4 +213,7 @@ interface AnalyticsInterface {
      * @param allowedOrigins Explicit page origins allowed to produce events
      */
     fun attachWebView(webView: WebView, allowedOrigins: List<String>)
+
+    fun recordOpenedUrl(uri: Uri, sourceApplication: String? = null)
+
 }
