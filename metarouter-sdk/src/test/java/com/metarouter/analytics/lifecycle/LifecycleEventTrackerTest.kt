@@ -44,6 +44,7 @@ class LifecycleEventTrackerTest {
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
+        override fun attachWebView(webView: android.webkit.WebView, allowedOrigins: List<String>) {}
         override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {}
     }
 
