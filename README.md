@@ -221,6 +221,7 @@ The analytics client provides the following methods:
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
+- `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging

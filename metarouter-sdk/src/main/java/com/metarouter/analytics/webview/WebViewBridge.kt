@@ -6,6 +6,7 @@ import android.webkit.WebView
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.metarouter.analytics.utils.Logger
+import com.metarouter.analytics.utils.LoopbackHost
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -23,8 +24,10 @@ internal object WebViewBridge {
 
     // Origin rules must be scheme://host[:port] — anything else (paths, trailing
     // slashes, wildcards) either throws IllegalArgumentException inside the platform
-    // API or silently never matches in the wrapper's exact-origin check.
-    private val ORIGIN_RULE = Regex("^https?://[A-Za-z0-9.-]+(:\\d+)?$")
+    // API or silently never matches in the wrapper's exact-origin check. The host
+    // alternation carries bracketed IPv6 literals so http://[::1]:3000 reaches the
+    // loopback check below instead of being rejected as a malformed rule.
+    private val ORIGIN_RULE = Regex("^https?://([A-Za-z0-9.-]+|\\[[0-9A-Fa-f:]+\\])(:\\d+)?$")
 
     // The platform has no API to remove a WebMessageListener, so a second attach on
     // the same WebView would throw on the duplicate JS object name. Weak keys: a
@@ -59,6 +62,21 @@ internal object WebViewBridge {
                     "use explicit scheme://host[:port] origins."
             )
             return false
+        }
+        val insecure = allowedOrigins.filter { origin ->
+            // Origins here already matched the rule pattern, so the host group is
+            // always extractable.
+            origin.startsWith("http://") &&
+                !LoopbackHost.isLoopback(ORIGIN_RULE.matchEntire(origin)!!.groupValues[1])
+        }
+        if (insecure.isNotEmpty()) {
+            // A cleartext origin is spoofable in transit, and the platform's origin
+            // scoping then trusts it — legitimate for local development, worth a
+            // warning (not a rejection) anywhere else.
+            Logger.warn(
+                "attachWebView origins $insecure are cleartext http — use https " +
+                    "outside local development."
+            )
         }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
             !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
