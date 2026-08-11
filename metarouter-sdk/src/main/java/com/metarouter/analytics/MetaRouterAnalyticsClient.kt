@@ -63,9 +63,10 @@ class MetaRouterAnalyticsClient private constructor(
          * Initialize the MetaRouter Analytics SDK.
          *
          * @param context Android application context
-         * @param options Configuration options (writeKey, ingestionHost, etc.)
+         * @param options Configuration options (writeKey, ingestionHost, etc.) —
+         *   already vetted by MetaRouter's config gate; a client is never built
+         *   from options carrying a configError
          * @return Initialized analytics client
-         * @throws IllegalArgumentException if options validation fails
          */
         suspend fun initialize(context: Context, options: InitOptions): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(context.applicationContext, options)

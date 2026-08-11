@@ -121,6 +121,49 @@ class WebViewBridgeTest {
     }
 
     @Test
+    fun `attach accepts bracketed IPv6 loopback origins`() {
+        featuresSupported(true)
+        every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } returns Unit
+        every { WebViewCompat.addDocumentStartJavaScript(any(), any(), any()) } returns mockk()
+
+        // The IPv6 loopback is a normal local-development origin. It has to clear
+        // the rule pattern to reach the loopback check, or the cleartext-http
+        // allowance for ::1 never applies to the bridge at all.
+        assertTrue(WebViewBridge.attach(webView, listOf("http://[::1]:3000"), processor))
+
+        // A bracketed literal is still a host, not a licence to skip the format rules.
+        val other = mockk<WebView>(relaxed = true)
+        assertFalse(WebViewBridge.attach(other, listOf("http://[::1]:3000/path"), processor))
+    }
+
+    @Test
+    fun `cleartext non-loopback origins warn but still attach`() {
+        featuresSupported(true)
+        every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } returns Unit
+        every { WebViewCompat.addDocumentStartJavaScript(any(), any(), any()) } returns mockk()
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.w(any(), any<String>()) } returns 0
+        every { android.util.Log.d(any(), any<String>()) } returns 0
+
+        try {
+            // A cleartext origin is spoofable in transit — accepted for flexibility,
+            // but never silently.
+            assertTrue(WebViewBridge.attach(webView, listOf("http://shop.example.com"), processor))
+            verify {
+                android.util.Log.w(any(), match<String> { it.contains("cleartext") })
+            }
+
+            val local = mockk<WebView>(relaxed = true)
+            assertTrue(WebViewBridge.attach(local, listOf("http://localhost:3000"), processor))
+            verify(exactly = 1) {
+                android.util.Log.w(any(), match<String> { it.contains("cleartext") })
+            }
+        } finally {
+            unmockkStatic(android.util.Log::class)
+        }
+    }
+
+    @Test
     fun `attach that throws in registration is caught and un-tracks the WebView`() {
         featuresSupported(true)
         every { WebViewCompat.addWebMessageListener(any(), any(), any(), any()) } throws

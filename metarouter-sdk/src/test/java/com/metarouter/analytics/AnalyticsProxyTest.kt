@@ -414,6 +414,45 @@ class AnalyticsProxyTest {
     }
 
     @Test
+    fun `getAnonymousId resolves degraded on a config-disabled session`() = runTest {
+        proxy.markConfigDisabled("writeKey must not be empty or whitespace-only")
+
+        // A refused session must resolve, not suspend forever — a permanent hang
+        // would be a worse outcome than the crash the config gate replaces.
+        assertEquals("", proxy.getAnonymousId())
+    }
+
+    @Test
+    fun `clearConfigDisabled makes awaiters suspend for the incoming client`() = runTest {
+        proxy.markConfigDisabled("writeKey must not be empty or whitespace-only")
+
+        // A valid re-initialize clears the refusal before the new client is built.
+        // Callers arriving in that pre-bind window must wait for the incoming bind,
+        // not resolve degraded against the previous session's verdict.
+        proxy.clearConfigDisabled()
+
+        val result = async { proxy.getAnonymousId() }
+        delay(50)
+        assertFalse("must suspend for the incoming bind, not return degraded", result.isCompleted)
+
+        coEvery { mockClient.getAnonymousId() } returns "anon-recovered"
+        proxy.bind(mockClient)
+
+        assertEquals("anon-recovered", result.await())
+    }
+
+    @Test
+    fun `getDebugInfo carries the config error on a refused session`() = runTest {
+        proxy.markConfigDisabled("writeKey must not be empty or whitespace-only")
+
+        val info = proxy.getDebugInfo()
+
+        assertEquals("disabled", info["lifecycle"])
+        assertEquals(false, info["bound"])
+        assertEquals("writeKey must not be empty or whitespace-only", info["configError"])
+    }
+
+    @Test
     fun `getAnonymousId returns stable value across calls`() = runTest {
         coEvery { mockClient.getAnonymousId() } returns "anon-stable"
 

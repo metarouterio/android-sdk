@@ -30,6 +30,15 @@ class AnalyticsProxy(
     @Volatile
     private var boundSignal = CompletableDeferred<Unit>()
 
+    // Set when initialize was refused over invalid config: no bind is coming this
+    // session, so awaiting APIs must resolve (degraded) instead of suspending forever
+    // — a permanent hang would be a worse outcome than the crash this replaces.
+    @Volatile
+    private var configDisabled = false
+
+    @Volatile
+    private var configErrorDescription: String? = null
+
     /**
      * Bind a real client and replay all pending calls.
      * This is idempotent - calling bind() again after binding is a no-op.
@@ -52,6 +61,9 @@ class AnalyticsProxy(
                 pendingCalls.clear()
                 calls
             }
+            // A successful (re)initialize supersedes an earlier config refusal.
+            configDisabled = false
+            configErrorDescription = null
             boundSignal.complete(Unit)
 
             // Each replay is guarded individually: one throwing call (bad input,
@@ -196,11 +208,14 @@ class AnalyticsProxy(
             if (client != null) {
                 client.getDebugInfo() + ("bound" to true)
             } else {
-                mapOf(
-                    "lifecycle" to "initializing",
-                    "pendingCalls" to pendingCallCount(),
-                    "bound" to false
-                )
+                buildMap {
+                    put("lifecycle", if (configDisabled) "disabled" else "initializing")
+                    put("pendingCalls", pendingCallCount())
+                    put("bound", false)
+                    // The refused session has no client to report the error — the
+                    // proxy carries it so getDebugInfo stays the one diagnostic API.
+                    configErrorDescription?.let { put("configError", it) }
+                }
             }
         }
     }
@@ -209,10 +224,15 @@ class AnalyticsProxy(
         val signal = boundSignal
         signal.await()
         val client = realClient.get()
+        if (client == null && configDisabled) {
+            // Empty only on a config-disabled session — the degraded-but-resolved
+            // answer; normal operation still awaits binding and never returns empty.
+            return ""
+        }
+        return client?.getAnonymousId()
             ?: throw IllegalStateException(
                 "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
             )
-        return client.getAnonymousId()
     }
 
     override fun setTracing(enabled: Boolean) {
@@ -305,7 +325,41 @@ class AnalyticsProxy(
             synchronized(pendingCalls) {
                 pendingCalls.clear()
             }
+            // reset() tears down a session without refusing one. Leaving the flag set
+            // would make every later awaiting call resolve degraded for a session
+            // that was never gated. disableSession() marks it again after this.
+            configDisabled = false
+            configErrorDescription = null
             boundSignal = CompletableDeferred()
+        }
+    }
+
+    /**
+     * Invalid-config refusal: no bind is coming this session, so waiters must
+     * resolve degraded rather than suspend forever. Completing the (fresh, post-
+     * unbind) bound signal is what wakes them; they see no client, flag set.
+     */
+    internal suspend fun markConfigDisabled(errorDescription: String) {
+        mutex.withLock {
+            configDisabled = true
+            configErrorDescription = errorDescription
+            boundSignal.complete(Unit)
+        }
+    }
+
+    /**
+     * Clears the refusal ahead of a bind that is still being built, so callers
+     * awaiting in the pre-bind window suspend for the incoming client instead of
+     * resolving degraded against the previous session's verdict. The refused
+     * session's bound signal is already completed, so a fresh one is required.
+     */
+    internal suspend fun clearConfigDisabled() {
+        mutex.withLock {
+            if (configDisabled) {
+                configDisabled = false
+                configErrorDescription = null
+                boundSignal = CompletableDeferred()
+            }
         }
     }
 
