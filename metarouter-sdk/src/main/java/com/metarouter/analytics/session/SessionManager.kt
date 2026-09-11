@@ -23,7 +23,7 @@ internal object SessionEventNames {
  *   minted it. Drives the optional `Session Started` event without a second
  *   bookkeeping channel.
  */
-data class SessionInfo(
+internal data class SessionInfo(
     val sessionId: String,
     val sessionCount: Int,
     val startedNewSession: Boolean
@@ -83,7 +83,7 @@ internal class SessionStartRelay {
  * Rollover uses `>` (exactly `timeout` old is still the same session) to stay
  * boundary-identical with the web and iOS implementations.
  */
-class SessionManager(
+internal class SessionManager(
     private val storage: SessionStorage,
     timeoutMinutes: Int = DEFAULT_TIMEOUT_MINUTES,
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
@@ -97,7 +97,7 @@ class SessionManager(
     }
 
     /** Notified on every mint; see [SessionStartRelay] for why it is not a setter. */
-    internal val onSessionStart = SessionStartRelay()
+    val onSessionStart = SessionStartRelay()
 
     private val timeoutMillis: Long = timeoutMinutes * 60_000L
 
@@ -115,11 +115,15 @@ class SessionManager(
      * events at cold start mints exactly one session.
      */
     fun touch(): SessionInfo {
-        val wallNow = wallClockMillis()
-        val monoNow = monotonicClockMillis()
         var minted: SessionInfo? = null
 
         val info = synchronized(this) {
+            // Clocks are read INSIDE the lock: a caller preempted between an
+            // outside read and the lock would write its stale timestamp over a
+            // newer one, silently shrinking the inactivity window by the
+            // preemption delay. (The iOS actor gets this for free.)
+            val wallNow = wallClockMillis()
+            val monoNow = monotonicClockMillis()
             val currentId = sessionId
             if (currentId != null) {
                 if (monoNow - lastActivityMono > timeoutMillis) {

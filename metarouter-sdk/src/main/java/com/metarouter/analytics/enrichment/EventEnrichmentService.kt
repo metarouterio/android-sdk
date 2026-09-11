@@ -21,7 +21,7 @@ import java.util.TimeZone
  * double-incremented sessionCount, and events inside one real session stamped
  * with different sessionIDs.
  */
-class EventEnrichmentService(
+internal class EventEnrichmentService(
     private val identityManager: IdentityManager,
     private val contextProvider: DeviceContextProvider,
     private val writeKey: String,
