@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.metarouter.analytics.utils.Logger
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Complete context information for an event, including app, device, OS, screen, network,
@@ -19,6 +20,17 @@ data class EventContext(
     val network: NetworkContext? = null,
     val os: OSContext? = null,
     val page: PageContext? = null,
+    /**
+     * Session (and future provider) values keyed by provider name, set per
+     * event by enrichment — the mobile counterpart of the web SDK's
+     * `context.providers` block, so pipeline mappings read one path from every
+     * platform. Session values change over the app's lifetime, so this is
+     * assigned at enrichment time like `page`, never captured in the
+     * provider's cached context. The null default is load-bearing: enriched
+     * events are JSON-persisted to disk, and a decoder that requires this key
+     * would silently discard every event queued by a build that predates it.
+     */
+    val providers: Map<String, JsonObject>? = null,
     val screen: ScreenContext? = null,
     val timezone: String? = null
 )

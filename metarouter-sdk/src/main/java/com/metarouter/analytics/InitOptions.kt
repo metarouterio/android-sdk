@@ -53,6 +53,13 @@ sealed class ConfigError {
  *   `Application Backgrounded` events (default: `false` — opt-in). Set to `true`
  *   to enable. Existing customers upgrading the SDK do not begin emitting
  *   lifecycle events without explicitly enabling the flag.
+ * @property sessionTimeoutMinutes Minutes of inactivity after which the next
+ *   event starts a new session (default: 30). Session stamping itself is
+ *   always on; this only tunes the window.
+ * @property fireSessionStarted When `true`, a `Session Started` track event is
+ *   emitted each time a new session is minted. Off by default so upgrading
+ *   never changes a customer's event volume — matching the web SDK's
+ *   `fireSessionStarted`.
  * @property configError Non-null when construction received invalid config. The SDK
  *   never crashes the host over local config in release — `MetaRouter.initialize`
  *   sees this, logs an always-on error, fires [onConfigError], and leaves the SDK
@@ -71,6 +78,8 @@ class InitOptions private constructor(
     val maxQueueEvents: Int,
     val maxDiskEvents: Int,
     val trackLifecycleEvents: Boolean,
+    val sessionTimeoutMinutes: Int,
+    val fireSessionStarted: Boolean,
     val configError: ConfigError?,
     val onConfigError: ((ConfigError) -> Unit)?
 ) {
@@ -83,11 +92,14 @@ class InitOptions private constructor(
         maxQueueEvents: Int = 2000,
         maxDiskEvents: Int = 10000,
         trackLifecycleEvents: Boolean = false,
+        sessionTimeoutMinutes: Int = 30,
+        fireSessionStarted: Boolean = false,
         onConfigError: ((ConfigError) -> Unit)? = null
     ) : this(
-        validate(writeKey, ingestionHost, flushIntervalSeconds, maxQueueEvents, maxDiskEvents),
+        validate(writeKey, ingestionHost, flushIntervalSeconds, maxQueueEvents, maxDiskEvents, sessionTimeoutMinutes),
         debug,
         trackLifecycleEvents,
+        fireSessionStarted,
         onConfigError
     )
 
@@ -95,6 +107,7 @@ class InitOptions private constructor(
         validated: Validated,
         debug: Boolean,
         trackLifecycleEvents: Boolean,
+        fireSessionStarted: Boolean,
         onConfigError: ((ConfigError) -> Unit)?
     ) : this(
         writeKey = validated.writeKey,
@@ -104,6 +117,8 @@ class InitOptions private constructor(
         maxQueueEvents = validated.maxQueueEvents,
         maxDiskEvents = validated.maxDiskEvents,
         trackLifecycleEvents = trackLifecycleEvents,
+        sessionTimeoutMinutes = validated.sessionTimeoutMinutes,
+        fireSessionStarted = fireSessionStarted,
         configError = validated.configError,
         onConfigError = onConfigError
     )
@@ -116,6 +131,8 @@ class InitOptions private constructor(
         maxQueueEvents: Int = this.maxQueueEvents,
         maxDiskEvents: Int = this.maxDiskEvents,
         trackLifecycleEvents: Boolean = this.trackLifecycleEvents,
+        sessionTimeoutMinutes: Int = this.sessionTimeoutMinutes,
+        fireSessionStarted: Boolean = this.fireSessionStarted,
         onConfigError: ((ConfigError) -> Unit)? = this.onConfigError
     ): InitOptions = InitOptions(
         writeKey = writeKey,
@@ -125,6 +142,8 @@ class InitOptions private constructor(
         maxQueueEvents = maxQueueEvents,
         maxDiskEvents = maxDiskEvents,
         trackLifecycleEvents = trackLifecycleEvents,
+        sessionTimeoutMinutes = sessionTimeoutMinutes,
+        fireSessionStarted = fireSessionStarted,
         onConfigError = onConfigError
     )
 
@@ -145,6 +164,8 @@ class InitOptions private constructor(
         maxQueueEvents = maxQueueEvents,
         maxDiskEvents = maxDiskEvents,
         trackLifecycleEvents = trackLifecycleEvents,
+        sessionTimeoutMinutes = sessionTimeoutMinutes,
+        fireSessionStarted = fireSessionStarted,
         configError = configError,
         onConfigError = null
     )
@@ -167,6 +188,7 @@ class InitOptions private constructor(
         val flushIntervalSeconds: Int,
         val maxQueueEvents: Int,
         val maxDiskEvents: Int,
+        val sessionTimeoutMinutes: Int,
         val configError: ConfigError?
     )
 
@@ -175,7 +197,7 @@ class InitOptions private constructor(
         /**
          * Single validation funnel, run exactly once per user-supplied construction.
          * Records the first error (writeKey, then host) instead of throwing; numeric
-         * bounds clamp with a warning — one policy for all three fields, where
+         * bounds clamp with a warning — one policy for all four fields, where
          * previously all were process-killing requires.
          */
         fun validate(
@@ -183,7 +205,8 @@ class InitOptions private constructor(
             ingestionHost: String,
             flushIntervalSeconds: Int,
             maxQueueEvents: Int,
-            maxDiskEvents: Int
+            maxDiskEvents: Int,
+            sessionTimeoutMinutes: Int
         ): Validated {
             var error: ConfigError? = null
 
@@ -216,6 +239,9 @@ class InitOptions private constructor(
             if (maxDiskEvents < 0) {
                 Logger.warn("maxDiskEvents ($maxDiskEvents) clamped to 0 — use 0 to disable disk persistence")
             }
+            if (sessionTimeoutMinutes < 1) {
+                Logger.warn("sessionTimeoutMinutes ($sessionTimeoutMinutes) clamped to 1")
+            }
 
             val clampedQueue = maxOf(1, maxQueueEvents)
             val clampedDisk = maxOf(0, maxDiskEvents)
@@ -232,6 +258,7 @@ class InitOptions private constructor(
                 flushIntervalSeconds = maxOf(1, flushIntervalSeconds),
                 maxQueueEvents = clampedQueue,
                 maxDiskEvents = clampedDisk,
+                sessionTimeoutMinutes = maxOf(1, sessionTimeoutMinutes),
                 configError = error
             )
         }

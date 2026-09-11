@@ -55,6 +55,7 @@ class AnalyticsExtensionsTest {
         override suspend fun flush() {}
         override suspend fun reset() {}
         override suspend fun getAnonymousId(): String = "mock-anon-id"
+        override suspend fun getSessionId(): String? = "mock-session-id"
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
