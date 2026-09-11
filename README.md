@@ -18,6 +18,7 @@ A lightweight Android analytics SDK that transmits events to your MetaRouter clu
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
 - [Lifecycle Events](#lifecycle-events)
+- [Session Tracking](#session-tracking)
 - [WebView Bridge](#webview-bridge)
 - [Advertising ID (GAID)](#advertising-id-gaid)
 - [Using the alias() Method](#using-the-alias-method)
@@ -219,6 +220,7 @@ The analytics client provides the following methods:
 - `setAdvertisingId(advertisingId: String)`: Set the Google Advertising ID (GAID) for ad tracking. See [Advertising ID](#advertising-id-gaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
+- `getSessionId(): String?` (suspend): The current analytics session id, or `null` before the first event of the process. Never suspends for initialization and never starts or extends a session. See [Session Tracking](#session-tracking)
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
 - `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
@@ -702,6 +704,40 @@ Several reasons:
 - **No `ActivityLifecycleCallbacks` proxy.** Auto-forwarding every Activity's `onCreate`/`onNewIntent` would force the SDK to interpret URLs that aren't deep links (e.g., internal navigation routed via `Intent`), and it would fight any lifecycle-callbacks instrumentation the host already runs.
 - **Privacy footgun.** Auto-forwarded URLs would ship sensitive material without the host having a chance to sanitize.
 - **Host control.** You already know which entry points are deep-link entry points. Forwarding from those specific Activities is a one-liner; auto-instrumentation would be lossy and surprising.
+
+## Session Tracking
+
+Every event carries the analytics session it belongs to, stamped at enrichment as:
+
+```json
+"context": {
+  "providers": {
+    "metarouter": {
+      "sessionID": "1757400000000",
+      "sessionCount": 3
+    }
+  }
+}
+```
+
+This is the same path and shape the web SDK's MetaRouter session sync produces (and the iOS SDK stamps), so pipeline mappings (e.g. GA4 `session_id` / `session_number`) read one field from every platform. `sessionID` is the epoch-millisecond timestamp of the session's first activity, as a string; `sessionCount` is the lifetime session ordinal for the install.
+
+Session stamping is **always on** — there is nothing to enable and no network cost. A session is minted lazily by the first event and ends after `sessionTimeoutMinutes` (default 30) of inactivity; the window slides, so steady activity keeps one session alive indefinitely. Any tracked, lifecycle, or webview-bridge event counts as activity. Sessions survive process restarts that happen inside the window, and survive `reset()` — a logout mid-session does not fragment the session.
+
+### Session Started event
+
+Optionally, the SDK emits a `Session Started` track event (no properties, matching web) each time a new session is minted:
+
+```kotlin
+val options = InitOptions(
+    writeKey = "YOUR_WRITE_KEY",
+    ingestionHost = "https://your-ingestion-host.com",
+    sessionTimeoutMinutes = 30,   // default
+    fireSessionStarted = true     // default false
+)
+```
+
+`fireSessionStarted` is off by default so upgrading the SDK never changes an app's event volume. Turn it on when a downstream destination needs an explicit session-start signal (GA4's `session_start`, for example).
 
 ## WebView Bridge
 

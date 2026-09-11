@@ -21,6 +21,9 @@ import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.network.OkHttpNetworkClient
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.queue.PersistableEventQueue
+import com.metarouter.analytics.session.SessionEventNames
+import com.metarouter.analytics.session.SessionManager
+import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.AppContext
@@ -55,7 +58,9 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedNetworkMonitor: NetworkMonitor? = null,
     private val injectedLifecycleStorage: LifecycleStorage? = null,
     private val injectedLifecycleCoordinator: LifecycleCoordinator? = null,
-    private val injectedAppContext: AppContext? = null
+    private val injectedAppContext: AppContext? = null,
+    private val injectedSessionStorage: SessionStorage? = null,
+    private val injectedSessionManager: SessionManager? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -91,7 +96,9 @@ class MetaRouterAnalyticsClient private constructor(
             networkMonitor: NetworkMonitor? = null,
             lifecycleStorage: LifecycleStorage? = null,
             lifecycleCoordinator: LifecycleCoordinator? = null,
-            appContext: AppContext? = null
+            appContext: AppContext? = null,
+            sessionStorage: SessionStorage? = null,
+            sessionManager: SessionManager? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -107,7 +114,9 @@ class MetaRouterAnalyticsClient private constructor(
                 networkMonitor,
                 lifecycleStorage,
                 lifecycleCoordinator,
-                appContext
+                appContext,
+                sessionStorage,
+                sessionManager
             )
             client.initializeInternal()
             return client
@@ -125,6 +134,7 @@ class MetaRouterAnalyticsClient private constructor(
     // Core components
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
+    private lateinit var sessionManager: SessionManager
     private lateinit var enrichmentService: EventEnrichmentService
     private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
@@ -176,10 +186,51 @@ class MetaRouterAnalyticsClient private constructor(
             // Initialize components (use injected or create new)
             identityManager = injectedIdentityManager ?: IdentityManager(context)
             contextProvider = injectedContextProvider ?: DeviceContextProvider(context, appContext)
+            // The client and the enrichment service must share ONE SessionManager:
+            // enrichment touches it per event, and the client reads it for
+            // diagnostics — a second instance would report a different session
+            // than the one being stamped. An injected service carries its own
+            // manager, so the matching instance must be injected alongside it or
+            // the relay and getSessionId() would watch a manager no event touches.
+            require(injectedEnrichmentService == null || injectedSessionManager != null) {
+                "injecting enrichmentService requires injecting the same sessionManager it was built with"
+            }
+            sessionManager = injectedSessionManager ?: SessionManager(
+                storage = injectedSessionStorage ?: SessionStorage(context),
+                timeoutMinutes = options.sessionTimeoutMinutes
+            )
+            // Installed before startEventProcessor(): once the processor is
+            // consuming, any event can mint the install's first session, and a
+            // handler installed after that mint silently drops the very first
+            // `Session Started` — which never recurs for that session.
+            //
+            // Delivery bypasses enqueueEvent's trySend: regular events tolerate
+            // backpressure drops (they recur), but this signal fires once per
+            // session, and a cold-start replay burst can hold the channel at
+            // capacity at exactly the moment the first session mints. A
+            // suspending send waits for space instead of dropping; it still
+            // rides the normal channel, so the event is enriched and stamped
+            // with the session it announces.
+            if (options.fireSessionStarted) {
+                sessionManager.onSessionStart.set {
+                    scope.launch {
+                        try {
+                            eventChannel.send(
+                                BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED)
+                            )
+                        } catch (e: Exception) {
+                            // Channel closed = session torn down mid-mint; the
+                            // announcement has nothing left to announce.
+                            Logger.warn("Session Started dropped — client torn down: ${e.message}")
+                        }
+                    }
+                }
+            }
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
-                writeKey = options.writeKey
+                writeKey = options.writeKey,
+                sessionManager = sessionManager
             )
             if (injectedEventQueue != null) {
                 eventQueue = injectedEventQueue
@@ -627,6 +678,19 @@ class MetaRouterAnalyticsClient private constructor(
         return identityManager.getAnonymousId()
     }
 
+    override suspend fun getSessionId(): String? {
+        // peek, not touch: a diagnostic read is not user activity and must not
+        // extend the inactivity window. Null until the first event of the
+        // process has been enriched — sessions are minted by events, not reads.
+        // Deliberately NO lifecycle gate: session state survives reset(), so a
+        // post-reset diagnostic read must still see the surviving session —
+        // gating on READY would report a phantom session boundary that the
+        // event stream (and iOS) does not have. The lateinit check covers the
+        // only truly session-less window, mid-initialization.
+        if (!::sessionManager.isInitialized) return null
+        return sessionManager.peek()?.sessionId
+    }
+
     // ===== Debug Methods =====
 
     override fun enableDebugLogging() {
@@ -650,6 +714,14 @@ class MetaRouterAnalyticsClient private constructor(
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })
+
+                // Unmasked on purpose: a session id is an epoch-ms timestamp,
+                // not an identifier tied to a person, and the whole point of
+                // surfacing it here is matching it against event payloads.
+                sessionManager.peek()?.let { session ->
+                    put("sessionId", session.sessionId)
+                    put("sessionCount", session.sessionCount)
+                }
 
                 // Dispatcher info
                 val dispatcherInfo = dispatcher.getDebugInfo()

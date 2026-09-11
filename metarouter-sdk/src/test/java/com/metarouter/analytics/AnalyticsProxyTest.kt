@@ -481,4 +481,33 @@ class AnalyticsProxyTest {
 
         assertEquals("anon-second", result.await())
     }
+
+    /**
+     * Unlike getAnonymousId (which awaits a bind), getSessionId must resolve
+     * null promptly on an unbound proxy: "no session yet" is its documented
+     * pre-init answer, and suspending would hang a diagnostics read for the
+     * process lifetime when initialize() is never called. Raced against a
+     * timeout so a regression to await-the-bind FAILS this test by name
+     * instead of stalling the run.
+     */
+    @Test
+    fun `getSessionId resolves null promptly when unbound`() = runTest {
+        val outcome = kotlinx.coroutines.withTimeoutOrNull(2_000) {
+            Result.success(proxy.getSessionId())
+        }
+
+        assertNotNull(
+            "getSessionId suspended on an unbound proxy instead of resolving null",
+            outcome
+        )
+        assertNull(outcome!!.getOrNull())
+    }
+
+    @Test
+    fun `getSessionId forwards when bound`() = runTest {
+        coEvery { mockClient.getSessionId() } returns "1757400000000"
+        proxy.bind(mockClient)
+
+        assertEquals("1757400000000", proxy.getSessionId())
+    }
 }

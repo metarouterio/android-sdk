@@ -3,6 +3,8 @@ package com.metarouter.analytics.enrichment
 import android.content.Context
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.session.SessionManager
+import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.DeviceContext
 import com.metarouter.analytics.types.EventContext
@@ -29,12 +31,16 @@ class EventEnrichmentServiceTest {
     private lateinit var context: Context
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
+    private lateinit var sessionStorage: SessionStorage
+    private lateinit var sessionManager: SessionManager
     private lateinit var enrichmentService: EventEnrichmentService
 
     private val testWriteKey = "test-write-key-12345"
     private val testAnonymousId = "test-anonymous-id"
     private val testUserId = "test-user-id"
     private val testGroupId = "test-group-id"
+    private var wallNow = 1_757_400_000_000L
+    private var monoNow = 50_000L
 
     @Before
     fun setup() {
@@ -50,10 +56,26 @@ class EventEnrichmentServiceTest {
         // Mock context provider
         every { contextProvider.getContext() } returns mockk(relaxed = true)
 
+        // Real manager over a mocked empty store: enrichment now drives the
+        // session lifecycle, so the stamp must come from real mint logic.
+        sessionStorage = mockk(relaxUnitFun = true) {
+            every { getSessionId() } returns null
+            every { getSessionCount() } returns null
+            every { getLastActivityMs() } returns null
+        }
+        wallNow = 1_757_400_000_000L
+        monoNow = 50_000L
+        sessionManager = SessionManager(
+            storage = sessionStorage,
+            wallClockMillis = { wallNow },
+            monotonicClockMillis = { monoNow }
+        )
+
         enrichmentService = EventEnrichmentService(
             identityManager = identityManager,
             contextProvider = contextProvider,
-            writeKey = testWriteKey
+            writeKey = testWriteKey,
+            sessionManager = sessionManager
         )
     }
 
@@ -387,5 +409,84 @@ class EventEnrichmentServiceTest {
 
         // Should not crash, device remains null
         assertNull(enriched.context.device)
+    }
+
+    // ===== Session stamping =====
+
+    private fun sessionOf(enriched: com.metarouter.analytics.types.EnrichedEventPayload): JsonObject? =
+        enriched.context.providers?.get("metarouter")
+
+    /** The stamp lands via `copy()`, which a relaxed context mock cannot honor. */
+    private fun useRealContext() {
+        every { contextProvider.getContext() } returns EventContext(
+            library = LibraryContext(name = "metarouter-android-sdk", version = "test")
+        )
+    }
+
+    /**
+     * Web-parity path pin: `context.providers.metarouter.{sessionID, sessionCount}`
+     * is what pipeline mappings read on every platform — renaming any part forks them.
+     */
+    @Test
+    fun `enriched event carries session stamp at providers metarouter`() = runBlocking {
+        useRealContext()
+        val enriched = enrichmentService.enrichEvent(
+            BaseEvent(type = EventType.TRACK, event = "Order Completed")
+        )
+
+        val session = sessionOf(enriched)
+        assertEquals(JsonPrimitive("1757400000000"), session?.get("sessionID"))
+        assertEquals(JsonPrimitive(1), session?.get("sessionCount"))
+    }
+
+    @Test
+    fun `events within timeout share one session`() = runBlocking {
+        useRealContext()
+        val first = enrichmentService.enrichEvent(BaseEvent(type = EventType.TRACK, event = "A"))
+        wallNow += 20 * 60_000L
+        monoNow += 20 * 60_000L
+        val second = enrichmentService.enrichEvent(BaseEvent(type = EventType.SCREEN, event = "B"))
+
+        assertEquals(sessionOf(first)?.get("sessionID"), sessionOf(second)?.get("sessionID"))
+        assertEquals(JsonPrimitive(1), sessionOf(second)?.get("sessionCount"))
+    }
+
+    @Test
+    fun `inactivity gap rolls session mid-stream`() = runBlocking {
+        useRealContext()
+        val before = enrichmentService.enrichEvent(BaseEvent(type = EventType.TRACK, event = "A"))
+        wallNow += 31 * 60_000L
+        monoNow += 31 * 60_000L
+        val after = enrichmentService.enrichEvent(BaseEvent(type = EventType.TRACK, event = "B"))
+
+        assertNotEquals(sessionOf(before)?.get("sessionID"), sessionOf(after)?.get("sessionID"))
+        assertEquals(JsonPrimitive(wallNow.toString()), sessionOf(after)?.get("sessionID"))
+        assertEquals(JsonPrimitive(2), sessionOf(after)?.get("sessionCount"))
+    }
+
+    /**
+     * Events persisted to disk by a build that predates `providers` must still
+     * decode — a required key here would silently discard a customer's entire
+     * pre-upgrade offline queue on their first launch after updating.
+     */
+    @Test
+    fun `payload without providers key still decodes`() {
+        val legacyJson = """
+            {
+              "type": "track",
+              "event": "Legacy Event",
+              "anonymousId": "anon-legacy",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "context": {"library": {"name": "metarouter-android-sdk", "version": "1.0.0"}},
+              "messageId": "m",
+              "writeKey": "k"
+            }
+        """.trimIndent()
+
+        val payload = kotlinx.serialization.json.Json.decodeFromString(
+            com.metarouter.analytics.types.EnrichedEventPayload.serializer(), legacyJson
+        )
+        assertEquals("Legacy Event", payload.event)
+        assertNull(payload.context.providers)
     }
 }
