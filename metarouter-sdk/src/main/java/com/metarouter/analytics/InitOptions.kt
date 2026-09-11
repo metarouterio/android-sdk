@@ -51,6 +51,13 @@ sealed class ConfigError {
  *   `Application Backgrounded` events (default: `false` — opt-in). Set to `true`
  *   to enable. Existing customers upgrading the SDK do not begin emitting
  *   lifecycle events without explicitly enabling the flag.
+ * @property sessionTimeoutMinutes Minutes of inactivity after which the next
+ *   event starts a new session (default: 30). Session stamping itself is
+ *   always on; this only tunes the window.
+ * @property fireSessionStarted When `true`, a `Session Started` track event is
+ *   emitted each time a new session is minted. Off by default so upgrading
+ *   never changes a customer's event volume — matching the web SDK's
+ *   `fireSessionStarted`.
  * @property onConfigError Fired synchronously by `MetaRouter.initialize` (caller's
  *   thread) when [configError] is non-null — the programmatic complement to the error
  *   log, so a host can surface misconfiguration to its own diagnostics.
@@ -63,6 +70,8 @@ class InitOptions(
     maxQueueEvents: Int = 2000,
     maxDiskEvents: Int = 10000,
     val trackLifecycleEvents: Boolean = false,
+    sessionTimeoutMinutes: Int = 30,
+    val fireSessionStarted: Boolean = false,
     val onConfigError: ((ConfigError) -> Unit)? = null
 ) {
     val writeKey: String
@@ -70,6 +79,7 @@ class InitOptions(
     val flushIntervalSeconds: Int
     val maxQueueEvents: Int
     val maxDiskEvents: Int
+    val sessionTimeoutMinutes: Int
 
     /**
      * Non-null when construction received invalid config. The SDK never crashes the
@@ -116,12 +126,16 @@ class InitOptions(
         if (maxDiskEvents < 0) {
             Logger.warn("maxDiskEvents ($maxDiskEvents) clamped to 0 — use 0 to disable disk persistence")
         }
+        if (sessionTimeoutMinutes < 1) {
+            Logger.warn("sessionTimeoutMinutes ($sessionTimeoutMinutes) clamped to 1")
+        }
 
         this.writeKey = trimmedKey
         this.ingestionHost = normalizedHost
         this.flushIntervalSeconds = maxOf(1, flushIntervalSeconds)
         this.maxQueueEvents = maxOf(1, maxQueueEvents)
         this.maxDiskEvents = maxOf(0, maxDiskEvents)
+        this.sessionTimeoutMinutes = maxOf(1, sessionTimeoutMinutes)
         this.configError = error
 
         if (this.maxDiskEvents in 1 until this.maxQueueEvents) {
@@ -140,6 +154,8 @@ class InitOptions(
         maxQueueEvents: Int = this.maxQueueEvents,
         maxDiskEvents: Int = this.maxDiskEvents,
         trackLifecycleEvents: Boolean = this.trackLifecycleEvents,
+        sessionTimeoutMinutes: Int = this.sessionTimeoutMinutes,
+        fireSessionStarted: Boolean = this.fireSessionStarted,
         onConfigError: ((ConfigError) -> Unit)? = this.onConfigError
     ): InitOptions = InitOptions(
         writeKey = writeKey,
@@ -149,6 +165,8 @@ class InitOptions(
         maxQueueEvents = maxQueueEvents,
         maxDiskEvents = maxDiskEvents,
         trackLifecycleEvents = trackLifecycleEvents,
+        sessionTimeoutMinutes = sessionTimeoutMinutes,
+        fireSessionStarted = fireSessionStarted,
         onConfigError = onConfigError
     )
 

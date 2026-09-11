@@ -235,6 +235,16 @@ class AnalyticsProxy(
             )
     }
 
+    override suspend fun getSessionId(): String? {
+        // No await-for-bind, unlike getAnonymousId: sessions are minted by
+        // events, so before a client is bound "null — no session yet" is the
+        // correct, documented answer. Suspending here would turn a prompt
+        // diagnostic read into a process-lifetime hang whenever initialize()
+        // is never called (or a reset() is never followed by one). The same
+        // null also serves the config-disabled session without a sentinel.
+        return realClient.get()?.getSessionId()
+    }
+
     override fun setTracing(enabled: Boolean) {
         val client = realClient.get()
         if (client != null) {

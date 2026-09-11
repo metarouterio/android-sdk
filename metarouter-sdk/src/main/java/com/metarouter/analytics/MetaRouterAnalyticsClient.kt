@@ -21,6 +21,9 @@ import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.network.OkHttpNetworkClient
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.queue.PersistableEventQueue
+import com.metarouter.analytics.session.SessionEventNames
+import com.metarouter.analytics.session.SessionManager
+import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.storage.EventDiskStore
 import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.AppContext
@@ -55,7 +58,9 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedNetworkMonitor: NetworkMonitor? = null,
     private val injectedLifecycleStorage: LifecycleStorage? = null,
     private val injectedLifecycleCoordinator: LifecycleCoordinator? = null,
-    private val injectedAppContext: AppContext? = null
+    private val injectedAppContext: AppContext? = null,
+    private val injectedSessionStorage: SessionStorage? = null,
+    private val injectedSessionManager: SessionManager? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -91,7 +96,9 @@ class MetaRouterAnalyticsClient private constructor(
             networkMonitor: NetworkMonitor? = null,
             lifecycleStorage: LifecycleStorage? = null,
             lifecycleCoordinator: LifecycleCoordinator? = null,
-            appContext: AppContext? = null
+            appContext: AppContext? = null,
+            sessionStorage: SessionStorage? = null,
+            sessionManager: SessionManager? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -107,7 +114,9 @@ class MetaRouterAnalyticsClient private constructor(
                 networkMonitor,
                 lifecycleStorage,
                 lifecycleCoordinator,
-                appContext
+                appContext,
+                sessionStorage,
+                sessionManager
             )
             client.initializeInternal()
             return client
@@ -125,6 +134,7 @@ class MetaRouterAnalyticsClient private constructor(
     // Core components
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
+    private lateinit var sessionManager: SessionManager
     private lateinit var enrichmentService: EventEnrichmentService
     private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
@@ -176,10 +186,30 @@ class MetaRouterAnalyticsClient private constructor(
             // Initialize components (use injected or create new)
             identityManager = injectedIdentityManager ?: IdentityManager(context)
             contextProvider = injectedContextProvider ?: DeviceContextProvider(context, appContext)
+            // The client and the enrichment service must share ONE SessionManager:
+            // enrichment touches it per event, and the client reads it for
+            // diagnostics — a second instance would report a different session
+            // than the one being stamped.
+            sessionManager = injectedSessionManager ?: SessionManager(
+                storage = injectedSessionStorage ?: SessionStorage(context),
+                timeoutMinutes = options.sessionTimeoutMinutes
+            )
+            // Installed before startEventProcessor(): once the processor is
+            // consuming, any event can mint the install's first session, and a
+            // handler installed after that mint silently drops the very first
+            // `Session Started` — which never recurs for that session. The event
+            // rides the normal track path, so it is enriched and stamped with the
+            // session it announces.
+            if (options.fireSessionStarted) {
+                sessionManager.onSessionStart.set {
+                    track(SessionEventNames.SESSION_STARTED)
+                }
+            }
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
-                writeKey = options.writeKey
+                writeKey = options.writeKey,
+                sessionManager = sessionManager
             )
             if (injectedEventQueue != null) {
                 eventQueue = injectedEventQueue
@@ -627,6 +657,17 @@ class MetaRouterAnalyticsClient private constructor(
         return identityManager.getAnonymousId()
     }
 
+    override suspend fun getSessionId(): String? {
+        // peek, not touch: a diagnostic read is not user activity and must not
+        // extend the inactivity window. Null until the first event of the
+        // process has been enriched — sessions are minted by events, not reads.
+        // No READY check-throw: null is this getter's documented "no session"
+        // answer for every not-ready shape, and throwing would fork it from
+        // the iOS contract.
+        if (lifecycleState.get() != LifecycleState.READY) return null
+        return sessionManager.peek()?.sessionId
+    }
+
     // ===== Debug Methods =====
 
     override fun enableDebugLogging() {
@@ -650,6 +691,14 @@ class MetaRouterAnalyticsClient private constructor(
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
                 put("groupId", identityManager.getGroupId()?.let { maskId(it) })
+
+                // Unmasked on purpose: a session id is an epoch-ms timestamp,
+                // not an identifier tied to a person, and the whole point of
+                // surfacing it here is matching it against event payloads.
+                sessionManager.peek()?.let { session ->
+                    put("sessionId", session.sessionId)
+                    put("sessionCount", session.sessionCount)
+                }
 
                 // Dispatcher info
                 val dispatcherInfo = dispatcher.getDebugInfo()

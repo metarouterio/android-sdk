@@ -41,6 +41,7 @@ class LifecycleEventTrackerTest {
         override suspend fun flush() {}
         override suspend fun reset() {}
         override suspend fun getAnonymousId(): String = "anon"
+        override suspend fun getSessionId(): String? = null
         override fun enableDebugLogging() {}
         override suspend fun getDebugInfo(): Map<String, Any?> = emptyMap()
         override fun setTracing(enabled: Boolean) {}
