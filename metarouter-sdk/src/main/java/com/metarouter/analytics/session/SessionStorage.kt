@@ -17,7 +17,7 @@ import android.content.Context
  * reason this value is persisted at all. In-process inactivity is measured
  * monotonically by [SessionManager] and never read back from here.
  */
-class SessionStorage(context: Context) {
+internal class SessionStorage(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -51,7 +51,7 @@ class SessionStorage(context: Context) {
      * must never call this. The dedicated preferences file exists so nothing —
      * not even `reset()` — can end a session as a side effect.
      */
-    internal fun clear() {
+    fun clear() {
         prefs.edit().clear().apply()
     }
 

@@ -189,7 +189,12 @@ class MetaRouterAnalyticsClient private constructor(
             // The client and the enrichment service must share ONE SessionManager:
             // enrichment touches it per event, and the client reads it for
             // diagnostics — a second instance would report a different session
-            // than the one being stamped.
+            // than the one being stamped. An injected service carries its own
+            // manager, so the matching instance must be injected alongside it or
+            // the relay and getSessionId() would watch a manager no event touches.
+            require(injectedEnrichmentService == null || injectedSessionManager != null) {
+                "injecting enrichmentService requires injecting the same sessionManager it was built with"
+            }
             sessionManager = injectedSessionManager ?: SessionManager(
                 storage = injectedSessionStorage ?: SessionStorage(context),
                 timeoutMinutes = options.sessionTimeoutMinutes
@@ -197,12 +202,28 @@ class MetaRouterAnalyticsClient private constructor(
             // Installed before startEventProcessor(): once the processor is
             // consuming, any event can mint the install's first session, and a
             // handler installed after that mint silently drops the very first
-            // `Session Started` — which never recurs for that session. The event
-            // rides the normal track path, so it is enriched and stamped with the
-            // session it announces.
+            // `Session Started` — which never recurs for that session.
+            //
+            // Delivery bypasses enqueueEvent's trySend: regular events tolerate
+            // backpressure drops (they recur), but this signal fires once per
+            // session, and a cold-start replay burst can hold the channel at
+            // capacity at exactly the moment the first session mints. A
+            // suspending send waits for space instead of dropping; it still
+            // rides the normal channel, so the event is enriched and stamped
+            // with the session it announces.
             if (options.fireSessionStarted) {
                 sessionManager.onSessionStart.set {
-                    track(SessionEventNames.SESSION_STARTED)
+                    scope.launch {
+                        try {
+                            eventChannel.send(
+                                BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED)
+                            )
+                        } catch (e: Exception) {
+                            // Channel closed = session torn down mid-mint; the
+                            // announcement has nothing left to announce.
+                            Logger.warn("Session Started dropped — client torn down: ${e.message}")
+                        }
+                    }
                 }
             }
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
@@ -661,10 +682,12 @@ class MetaRouterAnalyticsClient private constructor(
         // peek, not touch: a diagnostic read is not user activity and must not
         // extend the inactivity window. Null until the first event of the
         // process has been enriched — sessions are minted by events, not reads.
-        // No READY check-throw: null is this getter's documented "no session"
-        // answer for every not-ready shape, and throwing would fork it from
-        // the iOS contract.
-        if (lifecycleState.get() != LifecycleState.READY) return null
+        // Deliberately NO lifecycle gate: session state survives reset(), so a
+        // post-reset diagnostic read must still see the surviving session —
+        // gating on READY would report a phantom session boundary that the
+        // event stream (and iOS) does not have. The lateinit check covers the
+        // only truly session-less window, mid-initialization.
+        if (!::sessionManager.isInitialized) return null
         return sessionManager.peek()?.sessionId
     }
 

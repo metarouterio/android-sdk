@@ -109,10 +109,12 @@ class SessionTrackingClientTest {
         client.track("First Event")
         client.track("Second Event")
 
-        // Session Started rides its own track path through the same channel;
-        // wait for all three (2 tracked + 1 session start).
+        // Session Started rides the same FIFO channel; wait for all three
+        // (2 tracked + 1 session start), then push a barrier event through the
+        // full pipeline so any straggler duplicate would already have landed.
         awaitCondition { queue.events.size >= 3 }
-        delay(200) // settle window: a duplicate would arrive on its own task
+        client.track("Barrier")
+        awaitCondition { queue.events.any { it.event == "Barrier" } }
 
         val sessionStarts = queue.events.filter { it.event == "Session Started" }
         assertEquals("one session, one Session Started", 1, sessionStarts.size)
@@ -152,7 +154,10 @@ class SessionTrackingClientTest {
 
         client.track("Only Event")
         awaitCondition { queue.events.size >= 1 }
-        delay(200) // a stray Session Started would arrive on its own task
+        // Barrier through the full pipeline: a stray Session Started minted by
+        // "Only Event" would ride the same channel and land before or with it.
+        client.track("Barrier")
+        awaitCondition { queue.events.any { it.event == "Barrier" } }
 
         assertFalse(
             "default is off — upgrading must not change event volume",
@@ -183,5 +188,27 @@ class SessionTrackingClientTest {
         val debugInfo = client.getDebugInfo()
         assertEquals("1757400000000", debugInfo["sessionId"])
         assertEquals(1, debugInfo["sessionCount"])
+    }
+
+    /**
+     * Session state deliberately survives reset() (its own prefs file, untouched
+     * by identity clearing) — so the getter must keep reporting the surviving
+     * session instead of inventing a boundary the event stream does not have.
+     * Pins parity with iOS, whose getter has no lifecycle gate.
+     */
+    @Test
+    fun `getSessionId survives reset`() = runBlocking {
+        val client = makeClient(fireSessionStarted = false)
+
+        client.track("First Event")
+        awaitCondition { queue.events.size >= 1 }
+        val before = client.getSessionId()
+
+        client.reset()
+
+        assertEquals(
+            "post-reset diagnostics must see the surviving session",
+            before, client.getSessionId()
+        )
     }
 }
