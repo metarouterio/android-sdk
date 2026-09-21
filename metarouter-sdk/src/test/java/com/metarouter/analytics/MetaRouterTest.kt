@@ -4,6 +4,7 @@ import android.content.Context
 import com.metarouter.analytics.utils.Logger
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -474,6 +475,52 @@ class MetaRouterTest {
                 true, debugInfo["bound"]
             )
             assertNull(debugInfo["configError"])
+        }
+    }
+
+    @Test
+    fun `awaited init queued behind a fire-and-forget reset rebinds instead of trusting the dying session`() = runTest {
+        MetaRouter.initializeAndWait(context, options)
+
+        // reset() queues its teardown on the init scope; the awaited init must
+        // queue BEHIND it and rebuild — an off-dispatcher isBound() check here
+        // would see the not-yet-torn-down client and return "initialized" for
+        // a session about to be unbound.
+        MetaRouter.Analytics.reset()
+        val analytics = MetaRouter.initializeAndWait(context, options)
+
+        assertEquals(true, analytics.getDebugInfo()["bound"])
+    }
+
+    @Test
+    fun `concurrent invalid and valid createAnalyticsClient never strand the singleton`() = runTest {
+        // Flag mutation and enqueue are atomic under initLock: whatever order
+        // these two interleave in, the terminal state is either bound or
+        // refused-with-flag — never disabled-with-consumed-flag, so a final
+        // valid call always recovers.
+        repeat(20) { iteration ->
+            MetaRouter.resetForTesting()
+
+            val invalid = async(Dispatchers.Default) {
+                MetaRouter.createAnalyticsClient(context, invalidOptions())
+            }
+            val valid = async(Dispatchers.Default) {
+                MetaRouter.createAnalyticsClient(context, options)
+            }
+            invalid.await()
+            valid.await()
+
+            val analytics = MetaRouter.createAnalyticsClient(context, options)
+            var bound = false
+            withContext(Dispatchers.Default) {
+                repeat(200) {
+                    if (!bound) {
+                        bound = analytics.getDebugInfo()["bound"] == true
+                        if (!bound) delay(25)
+                    }
+                }
+            }
+            assertTrue("iteration $iteration: a valid call must always be able to recover", bound)
         }
     }
 

@@ -330,6 +330,19 @@ class AnalyticsProxy(
      */
     internal suspend fun unbind() {
         mutex.withLock {
+            // Publish the fresh signal FIRST, tear state down, and complete the
+            // outgoing signal LAST. A waiter parked on the outgoing signal then
+            // wakes only after every newer write is visible: it reads
+            // client-null / flag-false, sees boundSignal is a different
+            // instance, and re-awaits the fresh one — resolving against
+            // whatever this session becomes (a refusal's markConfigDisabled,
+            // or the next bind). Abandoning the outgoing signal uncompleted
+            // strands every pre-teardown waiter asleep forever — the exact
+            // hang the resolve-degraded contract exists to prevent — and
+            // completing it before the swap is visible reintroduces the
+            // client-null/flag-false/same-signal throw.
+            val outgoing = boundSignal
+            boundSignal = CompletableDeferred()
             realClient.set(null)
             synchronized(pendingCalls) {
                 pendingCalls.clear()
@@ -339,7 +352,7 @@ class AnalyticsProxy(
             // that was never gated. disableSession() marks it again after this.
             configDisabled = false
             configErrorDescription = null
-            boundSignal = CompletableDeferred()
+            outgoing.complete(Unit)
         }
     }
 
@@ -365,9 +378,17 @@ class AnalyticsProxy(
     internal suspend fun clearConfigDisabled() {
         mutex.withLock {
             if (configDisabled) {
+                // Fresh signal BEFORE clearing the flag: a waiter woken by the
+                // refusal reads the flag and then the signal, lock-free. In
+                // that order of volatile writes, a waiter that observed
+                // flag=false is guaranteed to also observe the swapped signal
+                // and re-await it; cleared-flag-first leaves a window where it
+                // reads flag=false with the awaited signal still current — the
+                // invariant-breach throw, on exactly the refusal→recovery
+                // sequence this method exists to serve.
+                boundSignal = CompletableDeferred()
                 configDisabled = false
                 configErrorDescription = null
-                boundSignal = CompletableDeferred()
             }
         }
     }

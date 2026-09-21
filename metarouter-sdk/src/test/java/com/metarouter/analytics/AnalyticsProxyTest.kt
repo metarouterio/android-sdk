@@ -511,4 +511,35 @@ class AnalyticsProxyTest {
             )
         }
     }
+
+    /**
+     * A waiter parked BEFORE a teardown must not be stranded on the abandoned
+     * signal: unbind() completes the outgoing signal last, waking the waiter
+     * into the re-await loop, which resolves it against whatever the session
+     * becomes — here, the refusal that follows (createAnalyticsClient(invalid)
+     * parks waiters exactly like this: flags set synchronously, disable queued).
+     */
+    @Test
+    fun `waiter parked before unbind resolves against the refusal that follows`() = runTest {
+        val waiter = async { proxy.getAnonymousId() }
+        delay(1) // let the waiter park on the current signal
+
+        proxy.unbind()
+        proxy.markConfigDisabled("bad config")
+
+        assertEquals("", waiter.await())
+    }
+
+    /** Same parked waiter, but the session recovers: it must get the NEW session's id. */
+    @Test
+    fun `waiter parked before unbind resolves against the next bind`() = runTest {
+        val waiter = async { proxy.getAnonymousId() }
+        delay(1)
+
+        proxy.unbind()
+        coEvery { mockClient.getAnonymousId() } returns "anon-after-reset"
+        proxy.bind(mockClient)
+
+        assertEquals("anon-after-reset", waiter.await())
+    }
 }

@@ -9,11 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -39,12 +39,24 @@ object MetaRouter {
     // state no later createAnalyticsClient can recover. Launch-only FIFO is
     // not enough: an awaited entry point running on the caller's coroutine
     // jumps the queue past a disable that is already launched but not yet
-    // running, hitting the same end state — so the suspend paths hop onto this
-    // dispatcher too (withContext), queueing behind anything already enqueued.
-    // Kept separate from `scope` so lifecycle-observer work can't interleave.
+    // running, hitting the same end state — so the suspend paths enqueue onto
+    // this scope too (async + await), queueing behind anything already
+    // enqueued. Kept separate from `scope` so lifecycle-observer work can't
+    // interleave.
     @OptIn(ExperimentalCoroutinesApi::class)
     private val initDispatcher = Dispatchers.IO.limitedParallelism(1)
     private val initScope = CoroutineScope(initDispatcher + SupervisorJob())
+
+    // Guards the pair {flag mutation, enqueue-onto-initScope} as one atomic
+    // step. FIFO alone is not enough when the flags are written on the caller's
+    // thread before the enqueue: a refusal preempted between its flag writes
+    // and its disable enqueue lets a concurrent valid call consume the refusal
+    // flag yet enqueue FIRST — the disable then runs after the recovery init
+    // and tears it down, with the refusal flag already consumed, leaving a
+    // disabled proxy no later createAnalyticsClient can recover. Only
+    // non-suspending work runs under this monitor (flag ops and coroutine
+    // builders — never await).
+    private val initLock = Any()
 
     /** Atomic flag to ensure only one initialization attempt proceeds. */
     private val initializationStarted = AtomicBoolean(false)
@@ -73,32 +85,36 @@ object MetaRouter {
      */
     fun createAnalyticsClient(context: Context, options: InitOptions): AnalyticsInterface {
         if (!passesConfigGate(context, options)) {
-            // Marked started so client() hands back the inert proxy instead of
-            // throwing — the refused session must stay call-safe end to end.
-            initializationStarted.set(true)
-            sessionRefused.set(true)
-            initScope.launch { disableSession(options.configError!!) }
+            synchronized(initLock) {
+                // Marked started so client() hands back the inert proxy instead of
+                // throwing — the refused session must stay call-safe end to end.
+                initializationStarted.set(true)
+                sessionRefused.set(true)
+                initScope.launch { disableSession(options.configError!!) }
+            }
             return proxy
         }
 
-        // Atomic check-and-set prevents race conditions when called from multiple
-        // threads. A refused session is the exception: exactly one valid call may
-        // proceed past the guard to recover it.
-        if (!initializationStarted.compareAndSet(false, true) &&
-            !sessionRefused.compareAndSet(true, false)
-        ) {
-            return proxy
-        }
-        sessionRefused.set(false)
+        synchronized(initLock) {
+            // Atomic check-and-set prevents race conditions when called from multiple
+            // threads. A refused session is the exception: exactly one valid call may
+            // proceed past the guard to recover it.
+            if (!initializationStarted.compareAndSet(false, true) &&
+                !sessionRefused.compareAndSet(true, false)
+            ) {
+                return proxy
+            }
+            sessionRefused.set(false)
 
-        Logger.log("MetaRouter.createAnalyticsClient starting async initialization")
+            Logger.log("MetaRouter.createAnalyticsClient starting async initialization")
 
-        initScope.launch {
-            try {
-                initializeInternal(context, options)
-            } catch (e: Exception) {
-                Logger.error("Background initialization failed: ${e.message}")
-                initializationStarted.set(false)
+            initScope.launch {
+                try {
+                    initializeInternal(context, options)
+                } catch (e: Exception) {
+                    Logger.error("Background initialization failed: ${e.message}")
+                    initializationStarted.set(false)
+                }
             }
         }
 
@@ -117,26 +133,36 @@ object MetaRouter {
      * @throws Exception if initialization fails
      */
     suspend fun initializeAndWait(context: Context, options: InitOptions): AnalyticsInterface {
-        // Both paths hop onto initDispatcher instead of running on the caller's
+        // Both paths enqueue onto initScope instead of running on the caller's
         // coroutine: an awaited call executing in place would jump the FIFO
         // queue past a disable already launched by a refused
         // createAnalyticsClient — binding first and being torn down by it.
+        // async-then-await (not withContext) so the work is a child of
+        // initScope: enqueue order is fixed under initLock, and
+        // resetForTesting's cancelChildren reaches awaited work too.
         if (!passesConfigGate(context, options)) {
-            initializationStarted.set(true)
-            sessionRefused.set(true)
-            withContext(initDispatcher) { disableSession(options.configError!!) }
-            return proxy
-        }
-        sessionRefused.set(false)
-
-        if (proxy.isBound()) {
-            Logger.warn("MetaRouter already initialized - returning existing proxy")
-            initializationStarted.set(true)
+            val disable = synchronized(initLock) {
+                initializationStarted.set(true)
+                sessionRefused.set(true)
+                initScope.async { disableSession(options.configError!!) }
+            }
+            disable.await()
             return proxy
         }
 
-        initializationStarted.set(true)
-        withContext(initDispatcher) { initializeInternal(context, options) }
+        // No caller-side isBound early return: off the dispatcher that check
+        // races a queued teardown — it can report "initialized" for a session
+        // a queued reset is about to unbind, and its initializationStarted
+        // write can land AFTER that reset cleared the flags, stranding the
+        // singleton with no queued init and no refusal flag to recover from.
+        // initializeInternal double-checks bound-ness on the dispatcher, under
+        // initMutex, where the answer cannot rot.
+        val init = synchronized(initLock) {
+            sessionRefused.set(false)
+            initializationStarted.set(true)
+            initScope.async { initializeInternal(context, options) }
+        }
+        init.await()
         return proxy
     }
 
@@ -267,15 +293,17 @@ object MetaRouter {
          * reinitialize before using the SDK.
          */
         fun reset() {
-            if (!initializationStarted.get()) {
-                Logger.warn("Cannot reset - MetaRouter not initialized")
-                return
-            }
+            synchronized(initLock) {
+                if (!initializationStarted.get()) {
+                    Logger.warn("Cannot reset - MetaRouter not initialized")
+                    return
+                }
 
-            // Same FIFO scope as init/disable: a fire-and-forget reset racing a
-            // following initialize has the same ordering hazard as a refusal.
-            initScope.launch {
-                resetInternal()
+                // Same FIFO scope as init/disable: a fire-and-forget reset racing
+                // a following initialize has the same ordering hazard as a refusal.
+                initScope.launch {
+                    resetInternal()
+                }
             }
         }
 
@@ -283,14 +311,17 @@ object MetaRouter {
          * Reset the SDK state and wait for completion.
          */
         suspend fun resetAndWait() {
-            if (!initializationStarted.get()) {
-                Logger.warn("Cannot reset - MetaRouter not initialized")
-                return
-            }
-
             // Same queue-jump hazard as initializeAndWait, against a
             // fire-and-forget reset() already launched on the dispatcher.
-            withContext(initDispatcher) { resetInternal() }
+            val reset = synchronized(initLock) {
+                if (!initializationStarted.get()) {
+                    Logger.warn("Cannot reset - MetaRouter not initialized")
+                    null
+                } else {
+                    initScope.async { resetInternal() }
+                }
+            } ?: return
+            reset.await()
         }
 
         /**
