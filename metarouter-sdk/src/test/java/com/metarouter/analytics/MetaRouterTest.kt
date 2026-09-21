@@ -429,6 +429,62 @@ class MetaRouterTest {
     }
 
     @Test
+    fun `invalid then valid createAnalyticsClient recovers deterministically`() = runTest {
+        // Both calls fire-and-forget onto the init scope: the refusal's
+        // disableSession and the recovery's initializeInternal. On a
+        // multi-threaded pool their initMutex order was scheduling luck — a
+        // disable landing second reset the fresh client and left flags in a
+        // state no later createAnalyticsClient could recover. The serial init
+        // scope makes this loop a guarantee instead of a ~1-in-40 flake.
+        repeat(15) { iteration ->
+            MetaRouter.resetForTesting()
+
+            MetaRouter.createAnalyticsClient(context, invalidOptions())
+            val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+            var bound = false
+            withContext(Dispatchers.Default) {
+                repeat(200) {
+                    if (!bound) {
+                        bound = analytics.getDebugInfo()["bound"] == true
+                        if (!bound) delay(25)
+                    }
+                }
+            }
+            assertTrue("iteration $iteration: valid init after a refusal must bind", bound)
+            assertNull(analytics.getDebugInfo()["configError"])
+        }
+    }
+
+    @Test
+    fun `initialize does not re-log construction warnings when a callback is set`() = runTest {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.d(any(), any<String>()) } returns 0
+        every { android.util.Log.w(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>(), any()) } returns 0
+
+        try {
+            // With a callback set, the gate copies the options to drop the
+            // closure — that copy must go through the raw constructor, not the
+            // validating one, or the cleartext warning logs a second time.
+            val cleartextOptions = InitOptions(
+                writeKey = "test-write-key",
+                ingestionHost = "http://api.example.com",
+                onConfigError = { }
+            )
+
+            MetaRouter.initializeAndWait(context, cleartextOptions)
+
+            verify(exactly = 1) {
+                android.util.Log.w(any(), match<String> { it.contains("cleartext") })
+            }
+        } finally {
+            unmockkStatic(android.util.Log::class)
+        }
+    }
+
+    @Test
     fun `client() returns the inert proxy after a refusal instead of throwing`() = runTest {
         MetaRouter.initializeAndWait(context, invalidOptions())
 

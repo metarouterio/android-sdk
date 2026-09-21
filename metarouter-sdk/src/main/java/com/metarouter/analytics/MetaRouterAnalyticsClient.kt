@@ -69,6 +69,14 @@ class MetaRouterAnalyticsClient private constructor(
          * @return Initialized analytics client
          */
         suspend fun initialize(context: Context, options: InitOptions): MetaRouterAnalyticsClient {
+            // This entry point bypasses MetaRouter's config gate, and a direct
+            // caller has no proxy to degrade into — building from refused
+            // options would produce a live client that fails every request at
+            // network time. Restore the pre-record-don't-throw contract for
+            // this path: invalid config throws here, on every build type.
+            options.configError?.let {
+                throw IllegalArgumentException("Invalid InitOptions: ${it.description}")
+            }
             val client = MetaRouterAnalyticsClient(context.applicationContext, options)
             client.initializeInternal()
             return client

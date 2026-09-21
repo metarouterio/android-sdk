@@ -34,7 +34,9 @@ sealed class ConfigError {
  *
  * Not a `data class` because normalization happens at construction — the stored
  * properties deliberately differ from the raw constructor arguments. [copy] is kept
- * with the data-class signature.
+ * with the data-class signature. The primary constructor is private and takes
+ * already-normalized values, so internal copies (see [discardingConfigCallback]) do
+ * not re-run validation and re-log its warnings.
  *
  * @property writeKey API key for authentication (required, non-empty)
  * @property ingestionHost Backend endpoint URL (required, http(s) with a host)
@@ -51,86 +53,60 @@ sealed class ConfigError {
  *   `Application Backgrounded` events (default: `false` — opt-in). Set to `true`
  *   to enable. Existing customers upgrading the SDK do not begin emitting
  *   lifecycle events without explicitly enabling the flag.
+ * @property configError Non-null when construction received invalid config. The SDK
+ *   never crashes the host over local config in release — `MetaRouter.initialize`
+ *   sees this, logs an always-on error, fires [onConfigError], and leaves the SDK
+ *   inert for the session, mirroring the 401/403/404 graceful-disable. Debuggable
+ *   builds fail fast at the initialize site instead (construction has no `Context`,
+ *   so debuggability cannot be read here).
  * @property onConfigError Fired synchronously by `MetaRouter.initialize` (caller's
  *   thread) when [configError] is non-null — the programmatic complement to the error
  *   log, so a host can surface misconfiguration to its own diagnostics.
  */
-class InitOptions(
-    writeKey: String,
-    ingestionHost: String,
-    flushIntervalSeconds: Int = 10,
-    val debug: Boolean = false,
-    maxQueueEvents: Int = 2000,
-    maxDiskEvents: Int = 10000,
-    val trackLifecycleEvents: Boolean = false,
-    val onConfigError: ((ConfigError) -> Unit)? = null
+class InitOptions private constructor(
+    val writeKey: String,
+    val ingestionHost: String,
+    val flushIntervalSeconds: Int,
+    val debug: Boolean,
+    val maxQueueEvents: Int,
+    val maxDiskEvents: Int,
+    val trackLifecycleEvents: Boolean,
+    val configError: ConfigError?,
+    val onConfigError: ((ConfigError) -> Unit)?
 ) {
-    val writeKey: String
-    val ingestionHost: String
-    val flushIntervalSeconds: Int
-    val maxQueueEvents: Int
-    val maxDiskEvents: Int
 
-    /**
-     * Non-null when construction received invalid config. The SDK never crashes the
-     * host over local config in release — `MetaRouter.initialize` sees this, logs an
-     * always-on error, fires [onConfigError], and leaves the SDK inert for the
-     * session, mirroring the 401/403/404 graceful-disable. Debuggable builds fail
-     * fast at the initialize site instead (construction has no `Context`, so
-     * debuggability cannot be read here).
-     */
-    val configError: ConfigError?
+    constructor(
+        writeKey: String,
+        ingestionHost: String,
+        flushIntervalSeconds: Int = 10,
+        debug: Boolean = false,
+        maxQueueEvents: Int = 2000,
+        maxDiskEvents: Int = 10000,
+        trackLifecycleEvents: Boolean = false,
+        onConfigError: ((ConfigError) -> Unit)? = null
+    ) : this(
+        validate(writeKey, ingestionHost, flushIntervalSeconds, maxQueueEvents, maxDiskEvents),
+        debug,
+        trackLifecycleEvents,
+        onConfigError
+    )
 
-    init {
-        // Single validation funnel. Records the first error (writeKey, then host)
-        // instead of throwing; numeric bounds clamp with a warning — one policy for
-        // all three fields, where previously all were process-killing requires.
-        var error: ConfigError? = null
-
-        val trimmedKey = writeKey.trim()
-        if (trimmedKey.isEmpty()) {
-            error = ConfigError.EmptyWriteKey
-        }
-
-        val normalizedHost = ingestionHost.trim().trimEnd('/')
-        val parsedHost = parseHttpUrl(normalizedHost)
-        if (parsedHost == null) {
-            if (error == null) {
-                error = ConfigError.InvalidIngestionHost(ingestionHost)
-            }
-        } else if (parsedHost.protocol == "http" && !LoopbackHost.isLoopback(parsedHost.host)) {
-            // A cleartext origin is spoofable in transit — legitimate for local
-            // development, worth a warning anywhere else.
-            Logger.warn(
-                "ingestionHost $normalizedHost is cleartext http — use https " +
-                    "outside local development."
-            )
-        }
-
-        if (flushIntervalSeconds < 1) {
-            Logger.warn("flushIntervalSeconds ($flushIntervalSeconds) clamped to 1")
-        }
-        if (maxQueueEvents < 1) {
-            Logger.warn("maxQueueEvents ($maxQueueEvents) clamped to 1")
-        }
-        if (maxDiskEvents < 0) {
-            Logger.warn("maxDiskEvents ($maxDiskEvents) clamped to 0 — use 0 to disable disk persistence")
-        }
-
-        this.writeKey = trimmedKey
-        this.ingestionHost = normalizedHost
-        this.flushIntervalSeconds = maxOf(1, flushIntervalSeconds)
-        this.maxQueueEvents = maxOf(1, maxQueueEvents)
-        this.maxDiskEvents = maxOf(0, maxDiskEvents)
-        this.configError = error
-
-        if (this.maxDiskEvents in 1 until this.maxQueueEvents) {
-            Logger.warn(
-                "maxDiskEvents (${this.maxDiskEvents}) is less than maxQueueEvents (${this.maxQueueEvents}) — " +
-                    "memory can hold more events than disk can preserve; events may be dropped during background flush."
-            )
-        }
-    }
+    private constructor(
+        validated: Validated,
+        debug: Boolean,
+        trackLifecycleEvents: Boolean,
+        onConfigError: ((ConfigError) -> Unit)?
+    ) : this(
+        writeKey = validated.writeKey,
+        ingestionHost = validated.ingestionHost,
+        flushIntervalSeconds = validated.flushIntervalSeconds,
+        debug = debug,
+        maxQueueEvents = validated.maxQueueEvents,
+        maxDiskEvents = validated.maxDiskEvents,
+        trackLifecycleEvents = trackLifecycleEvents,
+        configError = validated.configError,
+        onConfigError = onConfigError
+    )
 
     fun copy(
         writeKey: String = this.writeKey,
@@ -156,8 +132,22 @@ class InitOptions(
      * The callback only ever fires from the config gate, before a client exists —
      * the client's copy of the options must not pin the closure (and whatever host
      * state it captures) for the whole session.
+     *
+     * Copies the already-normalized fields through the raw constructor: routing
+     * through the validating one would re-log the construction-time warnings
+     * (cleartext host, disk-below-queue) a second time at the config gate.
      */
-    internal fun discardingConfigCallback(): InitOptions = copy(onConfigError = null)
+    internal fun discardingConfigCallback(): InitOptions = InitOptions(
+        writeKey = writeKey,
+        ingestionHost = ingestionHost,
+        flushIntervalSeconds = flushIntervalSeconds,
+        debug = debug,
+        maxQueueEvents = maxQueueEvents,
+        maxDiskEvents = maxDiskEvents,
+        trackLifecycleEvents = trackLifecycleEvents,
+        configError = configError,
+        onConfigError = null
+    )
 
     /**
      * Get the ingestion host with trailing slash removed (if present).
@@ -170,20 +160,97 @@ class InitOptions(
      */
     fun getFlushIntervalMillis(): Long = flushIntervalSeconds * 1000L
 
-    private fun parseHttpUrl(value: String): URL? {
-        // The scheme is matched case-insensitively (RFC 3986), and the host must be
-        // non-empty: "https:/" (what a bare "https://" becomes after the slash trim)
-        // parses as a scheme with no host, which would build a live client that
-        // fails every request at network time.
-        val colon = value.indexOf(':')
-        if (colon <= 0) return null
-        val scheme = value.substring(0, colon).lowercase()
-        if (scheme != "http" && scheme != "https") return null
-        return try {
-            val url = URL(scheme + value.substring(colon))
-            if (url.host.isNullOrEmpty()) null else url
-        } catch (e: Exception) {
-            null
+    /** Normalized construction inputs plus the validation verdict. */
+    private class Validated(
+        val writeKey: String,
+        val ingestionHost: String,
+        val flushIntervalSeconds: Int,
+        val maxQueueEvents: Int,
+        val maxDiskEvents: Int,
+        val configError: ConfigError?
+    )
+
+    private companion object {
+
+        /**
+         * Single validation funnel, run exactly once per user-supplied construction.
+         * Records the first error (writeKey, then host) instead of throwing; numeric
+         * bounds clamp with a warning — one policy for all three fields, where
+         * previously all were process-killing requires.
+         */
+        fun validate(
+            writeKey: String,
+            ingestionHost: String,
+            flushIntervalSeconds: Int,
+            maxQueueEvents: Int,
+            maxDiskEvents: Int
+        ): Validated {
+            var error: ConfigError? = null
+
+            val trimmedKey = writeKey.trim()
+            if (trimmedKey.isEmpty()) {
+                error = ConfigError.EmptyWriteKey
+            }
+
+            val normalizedHost = ingestionHost.trim().trimEnd('/')
+            val parsedHost = parseHttpUrl(normalizedHost)
+            if (parsedHost == null) {
+                if (error == null) {
+                    error = ConfigError.InvalidIngestionHost(ingestionHost)
+                }
+            } else if (parsedHost.protocol == "http" && !LoopbackHost.isLoopback(parsedHost.host)) {
+                // A cleartext origin is spoofable in transit — legitimate for local
+                // development, worth a warning anywhere else.
+                Logger.warn(
+                    "ingestionHost $normalizedHost is cleartext http — use https " +
+                        "outside local development."
+                )
+            }
+
+            if (flushIntervalSeconds < 1) {
+                Logger.warn("flushIntervalSeconds ($flushIntervalSeconds) clamped to 1")
+            }
+            if (maxQueueEvents < 1) {
+                Logger.warn("maxQueueEvents ($maxQueueEvents) clamped to 1")
+            }
+            if (maxDiskEvents < 0) {
+                Logger.warn("maxDiskEvents ($maxDiskEvents) clamped to 0 — use 0 to disable disk persistence")
+            }
+
+            val clampedQueue = maxOf(1, maxQueueEvents)
+            val clampedDisk = maxOf(0, maxDiskEvents)
+            if (clampedDisk in 1 until clampedQueue) {
+                Logger.warn(
+                    "maxDiskEvents ($clampedDisk) is less than maxQueueEvents ($clampedQueue) — " +
+                        "memory can hold more events than disk can preserve; events may be dropped during background flush."
+                )
+            }
+
+            return Validated(
+                writeKey = trimmedKey,
+                ingestionHost = normalizedHost,
+                flushIntervalSeconds = maxOf(1, flushIntervalSeconds),
+                maxQueueEvents = clampedQueue,
+                maxDiskEvents = clampedDisk,
+                configError = error
+            )
+        }
+
+        fun parseHttpUrl(value: String): URL? {
+            // The scheme is matched case-insensitively (RFC 3986), and the host must be
+            // non-empty: "https:/" (what a bare "https://" becomes after the slash trim)
+            // parses as a scheme with no host, which would build a live client that
+            // fails every request at network time.
+            val colon = value.indexOf(':')
+            if (colon <= 0) return null
+            val scheme = value.substring(0, colon).lowercase()
+            if (scheme != "http" && scheme != "https") return null
+            return try {
+                val url = URL(scheme + value.substring(colon))
+                if (url.host.isNullOrEmpty()) null else url
+            } catch (e: Exception) {
+                null
+            }
         }
     }
 }

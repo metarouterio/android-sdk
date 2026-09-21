@@ -221,18 +221,27 @@ class AnalyticsProxy(
     }
 
     override suspend fun getAnonymousId(): String {
-        val signal = boundSignal
-        signal.await()
-        val client = realClient.get()
-        if (client == null && configDisabled) {
-            // Empty only on a config-disabled session — the degraded-but-resolved
-            // answer; normal operation still awaits binding and never returns empty.
-            return ""
+        while (true) {
+            val signal = boundSignal
+            signal.await()
+            realClient.get()?.let { return it.getAnonymousId() }
+            if (configDisabled) {
+                // Empty only on a config-disabled session — the degraded-but-resolved
+                // answer; normal operation still awaits binding and never returns empty.
+                return ""
+            }
+            // Woke with no client and no refusal: a concurrent clearConfigDisabled()
+            // (or unbind()) replaced the signal between our wake-up and these reads —
+            // the completed verdict belonged to the previous session and a new bind is
+            // incoming on the fresh signal. Await that one instead of throwing; only a
+            // wake-up from the CURRENT signal in this state is a genuine invariant
+            // breach.
+            if (boundSignal === signal) {
+                throw IllegalStateException(
+                    "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
+                )
+            }
         }
-        return client?.getAnonymousId()
-            ?: throw IllegalStateException(
-                "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
-            )
     }
 
     override fun setTracing(enabled: Boolean) {

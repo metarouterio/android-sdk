@@ -6,6 +6,7 @@ import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
@@ -27,6 +28,18 @@ object MetaRouter {
     private val store = RealClientStore()
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Init, disable, and reset launches run FIFO on a single-threaded scope.
+    // On a multi-threaded pool they only contend for initMutex, and the order
+    // they win it is scheduling luck: a refusal's async disableSession losing
+    // to a following valid initialize runs AFTER it — resetting the fresh
+    // client and leaving initializationStarted=true, sessionRefused=false,
+    // proxy disabled, a state no later createAnalyticsClient can recover.
+    // FIFO makes refusal-then-recovery ordering a guarantee, not luck. Kept
+    // separate from `scope` so lifecycle-observer work can't interleave.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val initScope =
+        CoroutineScope(Dispatchers.IO.limitedParallelism(1) + SupervisorJob())
 
     /** Atomic flag to ensure only one initialization attempt proceeds. */
     private val initializationStarted = AtomicBoolean(false)
@@ -59,7 +72,7 @@ object MetaRouter {
             // throwing — the refused session must stay call-safe end to end.
             initializationStarted.set(true)
             sessionRefused.set(true)
-            scope.launch { disableSession(options.configError!!) }
+            initScope.launch { disableSession(options.configError!!) }
             return proxy
         }
 
@@ -75,7 +88,7 @@ object MetaRouter {
 
         Logger.log("MetaRouter.createAnalyticsClient starting async initialization")
 
-        scope.launch {
+        initScope.launch {
             try {
                 initializeInternal(context, options)
             } catch (e: Exception) {
@@ -178,9 +191,7 @@ object MetaRouter {
             proxy.clearConfigDisabled()
 
             // The config-error callback only ever fires from the gate; the client's
-            // copy of the options must not pin the closure for the session. Dropping
-            // it goes through copy(), which re-runs the validation warnings — only
-            // pay that (duplicate log lines) when there is a callback to drop.
+            // copy of the options must not pin the closure for the session.
             val gatedOptions =
                 if (options.onConfigError != null) options.discardingConfigCallback() else options
             val client = MetaRouterAnalyticsClient.initialize(context, gatedOptions)
@@ -252,7 +263,9 @@ object MetaRouter {
                 return
             }
 
-            scope.launch {
+            // Same FIFO scope as init/disable: a fire-and-forget reset racing a
+            // following initialize has the same ordering hazard as a refusal.
+            initScope.launch {
                 resetInternal()
             }
         }
@@ -315,6 +328,7 @@ object MetaRouter {
     internal suspend fun resetForTesting() {
         // Cancel any pending async initializations (e.g., lingering createAnalyticsClient launches)
         scope.coroutineContext[Job]?.cancelChildren()
+        initScope.coroutineContext[Job]?.cancelChildren()
 
         initMutex.withLock {
             lifecycleObserver?.unregister()

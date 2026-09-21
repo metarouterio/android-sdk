@@ -481,4 +481,34 @@ class AnalyticsProxyTest {
 
         assertEquals("anon-second", result.await())
     }
+
+    /**
+     * markConfigDisabled completes the bound signal; before the waiter reads
+     * the flag, a following valid init's clearConfigDisabled swaps flag and
+     * signal. The waiter used to wake into client-null / flag-false and throw
+     * IllegalStateException — it must recognize the swapped signal as "a new
+     * bind is incoming" and await it instead.
+     */
+    @Test
+    fun `waiter woken by a refusal that is immediately cleared awaits the incoming bind`() = runTest {
+        repeat(50) { iteration ->
+            val freshProxy = AnalyticsProxy()
+            val waiter = async { freshProxy.getAnonymousId() }
+
+            freshProxy.markConfigDisabled("bad config")
+            freshProxy.clearConfigDisabled()
+
+            val recovered = mockk<AnalyticsInterface>(relaxed = true)
+            coEvery { recovered.getAnonymousId() } returns "anon-recovered"
+            freshProxy.bind(recovered)
+
+            // "" is legal only if the waiter read the flag before the clear;
+            // an IllegalStateException is the regression this test pins.
+            val result = waiter.await()
+            assertTrue(
+                "iteration $iteration got: $result",
+                result == "" || result == "anon-recovered"
+            )
+        }
+    }
 }
