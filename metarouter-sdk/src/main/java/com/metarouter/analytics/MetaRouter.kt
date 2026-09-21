@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -113,7 +114,10 @@ object MetaRouter {
                     initializeInternal(context, options)
                 } catch (e: Exception) {
                     Logger.error("Background initialization failed: ${e.message}")
-                    initializationStarted.set(false)
+                    // Under initLock like every other flag write, so a
+                    // concurrent caller's check-then-enqueue can't interleave
+                    // into the middle of this rollback.
+                    synchronized(initLock) { initializationStarted.set(false) }
                 }
             }
         }
@@ -160,7 +164,19 @@ object MetaRouter {
         val init = synchronized(initLock) {
             sessionRefused.set(false)
             initializationStarted.set(true)
-            initScope.async { initializeInternal(context, options) }
+            initScope.async {
+                try {
+                    initializeInternal(context, options)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Logged inside the async: a caller cancelled before
+                    // await() never observes the Deferred's failure, and the
+                    // SupervisorJob would otherwise swallow it traceless.
+                    Logger.error("initializeAndWait initialization failed: ${e.message}")
+                    throw e
+                }
+            }
         }
         init.await()
         return proxy
@@ -217,6 +233,7 @@ object MetaRouter {
             // Double-check after acquiring lock
             if (proxy.isBound()) {
                 Logger.log("Client already bound, skipping initialization")
+                initializationStarted.set(true)
                 return
             }
 
@@ -245,6 +262,15 @@ object MetaRouter {
             lifecycleObserver?.register()
 
             proxy.bind(client)
+
+            // Re-assert the flag AT EXECUTION TIME: the caller-side set at
+            // enqueue time gives client() immediate visibility, but a reset
+            // queued ahead of this init would otherwise clear the flag with
+            // nothing setting it back — leaving a bound session whose client()
+            // throws "not initialized" and whose reset() refuses. Flags follow
+            // FIFO work order; the enqueue-time writes are only an advance.
+            initializationStarted.set(true)
+            sessionRefused.set(false)
         }
     }
 
@@ -299,6 +325,16 @@ object MetaRouter {
                     return
                 }
 
+                // Flags flip at ENQUEUE time, symmetric with the initialize
+                // entry points setting them true at enqueue time: a following
+                // createAnalyticsClient's CAS then sees the reset and enqueues
+                // its init behind the teardown, instead of reading the stale
+                // "started" of a session already condemned and silently
+                // returning with nothing queued — an SDK dead until the host
+                // happens to initialize again.
+                initializationStarted.set(false)
+                sessionRefused.set(false)
+
                 // Same FIFO scope as init/disable: a fire-and-forget reset racing
                 // a following initialize has the same ordering hazard as a refusal.
                 initScope.launch {
@@ -318,7 +354,19 @@ object MetaRouter {
                     Logger.warn("Cannot reset - MetaRouter not initialized")
                     null
                 } else {
-                    initScope.async { resetInternal() }
+                    // Enqueue-time flag flip — see reset() for why.
+                    initializationStarted.set(false)
+                    sessionRefused.set(false)
+                    initScope.async {
+                        try {
+                            resetInternal()
+                        } catch (e: Exception) {
+                            // Logged here because a caller cancelled before
+                            // await() never observes the Deferred's failure.
+                            Logger.error("resetAndWait teardown failed: ${e.message}")
+                            throw e
+                        }
+                    }
                 }
             } ?: return
             reset.await()
@@ -354,9 +402,11 @@ object MetaRouter {
                 // Reset the proxy so it can be bound to a new client
                 proxy.unbind()
 
-                // Reset initialization flag
-                initializationStarted.set(false)
-                sessionRefused.set(false)
+                // No flag writes here: reset()/resetAndWait() flipped them at
+                // enqueue time under initLock. Clearing them again at execution
+                // time would race a later-enqueued init's caller-side set(true)
+                // and could zero the flag of a session that init is about to
+                // bind — the bound-but-"not initialized" state.
 
                 Logger.log("MetaRouter reset complete - re-initialization required")
             }

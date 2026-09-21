@@ -530,6 +530,26 @@ class AnalyticsProxyTest {
         assertEquals("", waiter.await())
     }
 
+    /**
+     * clearConfigDisabled must leave a fresh, INCOMPLETE signal behind: a new
+     * waiter after the clear belongs to the incoming session and must suspend
+     * for its bind — resolving degraded ("") against the cleared refusal, or
+     * throwing, would answer with the previous session's verdict.
+     */
+    @Test
+    fun `waiter arriving after a cleared refusal suspends for the incoming bind`() = runTest {
+        proxy.markConfigDisabled("bad config")
+        proxy.clearConfigDisabled()
+
+        val waiter = async { proxy.getAnonymousId() }
+        delay(1)
+        assertFalse("waiter must suspend for the incoming session", waiter.isCompleted)
+
+        coEvery { mockClient.getAnonymousId() } returns "anon-recovered"
+        proxy.bind(mockClient)
+        assertEquals("anon-recovered", waiter.await())
+    }
+
     /** Same parked waiter, but the session recovers: it must get the NEW session's id. */
     @Test
     fun `waiter parked before unbind resolves against the next bind`() = runTest {

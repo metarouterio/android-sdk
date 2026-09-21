@@ -490,6 +490,34 @@ class MetaRouterTest {
         val analytics = MetaRouter.initializeAndWait(context, options)
 
         assertEquals(true, analytics.getDebugInfo()["bound"])
+        // Bound is not enough: the queued reset's flag-clear must not outlive
+        // the rebind, or this live session is unreachable via client() and
+        // un-resettable via reset() — "initialized" has to mean initialized.
+        assertNotNull(MetaRouter.Analytics.client())
+        assertEquals("ready", MetaRouter.Analytics.client().getDebugInfo()["lifecycle"])
+    }
+
+    @Test
+    fun `createAnalyticsClient immediately after reset enqueues a real init`() = runTest {
+        MetaRouter.initializeAndWait(context, options)
+
+        // reset() flips the flags at enqueue time, so this CAS must see the
+        // condemned session as "not started" and queue an init behind the
+        // teardown — reading the stale flag here silently returned a proxy
+        // with nothing queued: an SDK dead until the host retried on its own.
+        MetaRouter.Analytics.reset()
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("init after reset must actually initialize", bound)
     }
 
     @Test
