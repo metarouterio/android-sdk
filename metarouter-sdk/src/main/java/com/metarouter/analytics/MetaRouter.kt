@@ -13,6 +13,7 @@ import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -29,17 +30,21 @@ object MetaRouter {
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Init, disable, and reset launches run FIFO on a single-threaded scope.
-    // On a multi-threaded pool they only contend for initMutex, and the order
-    // they win it is scheduling luck: a refusal's async disableSession losing
-    // to a following valid initialize runs AFTER it — resetting the fresh
-    // client and leaving initializationStarted=true, sessionRefused=false,
-    // proxy disabled, a state no later createAnalyticsClient can recover.
-    // FIFO makes refusal-then-recovery ordering a guarantee, not luck. Kept
-    // separate from `scope` so lifecycle-observer work can't interleave.
+    // ALL init, disable, and reset work — fire-and-forget launches AND the
+    // suspend entry points — runs FIFO on this single-threaded dispatcher. The
+    // pieces only contend for initMutex, and the order they win it is
+    // scheduling luck: a refusal's async disableSession losing to a following
+    // valid initialize runs AFTER it — resetting the fresh client and leaving
+    // initializationStarted=true, sessionRefused=false, proxy disabled, a
+    // state no later createAnalyticsClient can recover. Launch-only FIFO is
+    // not enough: an awaited entry point running on the caller's coroutine
+    // jumps the queue past a disable that is already launched but not yet
+    // running, hitting the same end state — so the suspend paths hop onto this
+    // dispatcher too (withContext), queueing behind anything already enqueued.
+    // Kept separate from `scope` so lifecycle-observer work can't interleave.
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val initScope =
-        CoroutineScope(Dispatchers.IO.limitedParallelism(1) + SupervisorJob())
+    private val initDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val initScope = CoroutineScope(initDispatcher + SupervisorJob())
 
     /** Atomic flag to ensure only one initialization attempt proceeds. */
     private val initializationStarted = AtomicBoolean(false)
@@ -112,10 +117,14 @@ object MetaRouter {
      * @throws Exception if initialization fails
      */
     suspend fun initializeAndWait(context: Context, options: InitOptions): AnalyticsInterface {
+        // Both paths hop onto initDispatcher instead of running on the caller's
+        // coroutine: an awaited call executing in place would jump the FIFO
+        // queue past a disable already launched by a refused
+        // createAnalyticsClient — binding first and being torn down by it.
         if (!passesConfigGate(context, options)) {
             initializationStarted.set(true)
             sessionRefused.set(true)
-            disableSession(options.configError!!)
+            withContext(initDispatcher) { disableSession(options.configError!!) }
             return proxy
         }
         sessionRefused.set(false)
@@ -127,7 +136,7 @@ object MetaRouter {
         }
 
         initializationStarted.set(true)
-        initializeInternal(context, options)
+        withContext(initDispatcher) { initializeInternal(context, options) }
         return proxy
     }
 
@@ -279,7 +288,9 @@ object MetaRouter {
                 return
             }
 
-            resetInternal()
+            // Same queue-jump hazard as initializeAndWait, against a
+            // fire-and-forget reset() already launched on the dispatcher.
+            withContext(initDispatcher) { resetInternal() }
         }
 
         /**

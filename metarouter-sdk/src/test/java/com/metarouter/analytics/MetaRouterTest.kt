@@ -457,6 +457,27 @@ class MetaRouterTest {
     }
 
     @Test
+    fun `refused createAnalyticsClient then awaited valid init recovers deterministically`() = runTest {
+        // The awaited entry point used to run on the caller's coroutine and
+        // could jump the FIFO queue past the refusal's already-launched
+        // disable — binding first and being torn down by it (7/40 pre-fix).
+        // Routed through initDispatcher, the disable always runs first.
+        repeat(15) { iteration ->
+            MetaRouter.resetForTesting()
+
+            MetaRouter.createAnalyticsClient(context, invalidOptions())
+            val analytics = MetaRouter.initializeAndWait(context, options)
+
+            val debugInfo = analytics.getDebugInfo()
+            assertEquals(
+                "iteration $iteration: awaited valid init after a refusal must bind",
+                true, debugInfo["bound"]
+            )
+            assertNull(debugInfo["configError"])
+        }
+    }
+
+    @Test
     fun `initialize does not re-log construction warnings when a callback is set`() = runTest {
         mockkStatic(android.util.Log::class)
         every { android.util.Log.d(any(), any<String>()) } returns 0
