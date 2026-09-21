@@ -497,6 +497,55 @@ class MetaRouterTest {
         assertEquals("ready", MetaRouter.Analytics.client().getDebugInfo()["lifecycle"])
     }
 
+    /**
+     * Execution never writes flags: an init dequeued ahead of a refusal must
+     * not clear the refusal's enqueue-time sessionRefused=true — the disable
+     * that follows would leave a disabled proxy whose refusal flag was already
+     * consumed, and no later createAnalyticsClient could recover.
+     */
+    @Test
+    fun `valid then invalid createAnalyticsClient stays recoverable`() = runTest {
+        MetaRouter.createAnalyticsClient(context, options)
+        MetaRouter.createAnalyticsClient(context, invalidOptions())
+
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("a valid call after an invalid re-init must recover", bound)
+    }
+
+    /**
+     * The mirror image: an init dequeued ahead of a reset must not re-assert
+     * started=true — the reset that follows unbinds without flag writes,
+     * and started-but-unbound blocks every later createAnalyticsClient.
+     */
+    @Test
+    fun `valid createAnalyticsClient then reset stays recoverable`() = runTest {
+        MetaRouter.createAnalyticsClient(context, options)
+        MetaRouter.Analytics.reset()
+
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("a valid call after a reset must recover", bound)
+    }
+
     @Test
     fun `createAnalyticsClient immediately after reset enqueues a real init`() = runTest {
         MetaRouter.initializeAndWait(context, options)

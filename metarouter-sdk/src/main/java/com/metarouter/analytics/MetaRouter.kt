@@ -44,6 +44,20 @@ object MetaRouter {
     // this scope too (async + await), queueing behind anything already
     // enqueued. Kept separate from `scope` so lifecycle-observer work can't
     // interleave.
+    //
+    // THE FLAG RULE — every regression in this file's history broke it in one
+    // direction or the other: initializationStarted/sessionRefused are written
+    // at ENQUEUE time only, under initLock, describing the state the queue
+    // will produce once drained; state changes (bind, unbind, disable) happen
+    // at EXECUTION time only, on this dispatcher; execution NEVER writes
+    // flags. An execution-time flag write belongs to work enqueued earlier
+    // and overwrites the enqueue-time flags of work queued behind it — in
+    // either direction that manufactures a terminal state (disabled-but-not-
+    // refused, or unbound-but-started) that the entry-point guards can't
+    // recover. Single deliberate exception: the background-init failure
+    // rollback in createAnalyticsClient, which restores retryability after an
+    // exceptional failure; any same-window enqueue would have hit the same
+    // failure, so the inversion it risks is between two equally dead inits.
     @OptIn(ExperimentalCoroutinesApi::class)
     private val initDispatcher = Dispatchers.IO.limitedParallelism(1)
     private val initScope = CoroutineScope(initDispatcher + SupervisorJob())
@@ -233,7 +247,6 @@ object MetaRouter {
             // Double-check after acquiring lock
             if (proxy.isBound()) {
                 Logger.log("Client already bound, skipping initialization")
-                initializationStarted.set(true)
                 return
             }
 
@@ -263,14 +276,13 @@ object MetaRouter {
 
             proxy.bind(client)
 
-            // Re-assert the flag AT EXECUTION TIME: the caller-side set at
-            // enqueue time gives client() immediate visibility, but a reset
-            // queued ahead of this init would otherwise clear the flag with
-            // nothing setting it back — leaving a bound session whose client()
-            // throws "not initialized" and whose reset() refuses. Flags follow
-            // FIFO work order; the enqueue-time writes are only an advance.
-            initializationStarted.set(true)
-            sessionRefused.set(false)
+            // Deliberately NO flag writes here (see the flag rule on
+            // initDispatcher): an execution-time write from this init would
+            // overwrite the enqueue-time flags of anything queued behind it —
+            // a reset or refusal enqueued while this init waited its turn has
+            // already flipped the flags for the state IT will produce, and
+            // re-asserting "started" here hands out a session that queued
+            // teardown is about to unbind, with flags that block recovery.
         }
     }
 
