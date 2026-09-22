@@ -225,6 +225,48 @@ class InitOptionsTest {
         verify { Log.w(any(), match<String> { it.contains("maxDiskEvents") && it.contains("clamped") }) }
     }
 
+    @Test
+    fun `zero sessionTimeoutMinutes clamps to 1 with a warning`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            sessionTimeoutMinutes = 0
+        )
+
+        assertNull(options.configError)
+        assertEquals(1, options.sessionTimeoutMinutes)
+        verify { Log.w(any(), match<String> { it.contains("sessionTimeoutMinutes") && it.contains("clamped") }) }
+    }
+
+    @Test
+    fun `session defaults match web parity`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com"
+        )
+
+        assertEquals("web session default is 30 minutes", 30, options.sessionTimeoutMinutes)
+        assertEquals(
+            "off by default so upgrading never changes a customer's event volume",
+            false, options.fireSessionStarted
+        )
+    }
+
+    @Test
+    fun `copy preserves session fields`() {
+        val options = InitOptions(
+            writeKey = "test-key",
+            ingestionHost = "https://example.com",
+            sessionTimeoutMinutes = 45,
+            fireSessionStarted = true
+        )
+
+        val copied = options.copy(debug = true)
+
+        assertEquals(45, copied.sessionTimeoutMinutes)
+        assertEquals(true, copied.fireSessionStarted)
+    }
+
     // ===== Cleartext http policy =====
 
     @Test

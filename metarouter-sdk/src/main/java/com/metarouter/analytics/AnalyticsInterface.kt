@@ -127,6 +127,17 @@ interface AnalyticsInterface {
     suspend fun getAnonymousId(): String
 
     /**
+     * The id of the current analytics session, or null before the first event
+     * of the process has been enriched. Sessions are minted by events —
+     * reading the id is not activity and never extends or starts one, so a
+     * diagnostics poller cannot keep a session alive. Unlike [getAnonymousId],
+     * this never suspends for initialization: null is the documented answer
+     * whenever no session can exist yet. The same value is stamped on every
+     * outbound event at `context.providers.metarouter.sessionID`.
+     */
+    suspend fun getSessionId(): String?
+
+    /**
      * Enable debug logging for troubleshooting.
      *
      * When enabled, the SDK will log detailed information about initialization, event
