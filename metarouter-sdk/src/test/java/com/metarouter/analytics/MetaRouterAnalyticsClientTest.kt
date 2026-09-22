@@ -72,6 +72,23 @@ class MetaRouterAnalyticsClientTest {
     }
 
     @Test
+    fun `initialize throws on config-refused options instead of building a live client`() = runBlocking {
+        // This public entry point bypasses MetaRouter's config gate and has no
+        // proxy to degrade into — a client built from refused options would
+        // fail every request at network time. Pre-record-don't-throw, this
+        // path could never see bad config (construction threw); the throw here
+        // restores that contract on every build type.
+        val invalid = InitOptions(writeKey = "", ingestionHost = "https://events.example.com")
+
+        try {
+            MetaRouterAnalyticsClient.initialize(context, invalid)
+            fail("expected IllegalArgumentException for config-refused options")
+        } catch (e: IllegalArgumentException) {
+            assertTrue("message names the error: ${e.message}", e.message!!.contains("writeKey"))
+        }
+    }
+
+    @Test
     fun `initialize with debug enabled`() = runBlocking {
         val debugOptions = options.copy(debug = true)
 

@@ -3,8 +3,11 @@ package com.metarouter.analytics
 import android.content.Context
 import com.metarouter.analytics.utils.Logger
 import io.mockk.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -281,5 +284,360 @@ class MetaRouterTest {
         val debugInfo = client.getDebugInfo()
         assertEquals("ready", debugInfo["lifecycle"])
         assertTrue(debugInfo["dispatcherRunning"] as Boolean)
+    }
+
+    // ===== Invalid-config contract: assert in debug, degrade in release =====
+    // The relaxed Context mock reports applicationInfo.flags == 0 (no
+    // FLAG_DEBUGGABLE), so these run the release-degrade path unless a test
+    // flips the flag explicitly.
+
+    private fun invalidOptions(onConfigError: ((ConfigError) -> Unit)? = null) =
+        InitOptions(
+            writeKey = "",
+            ingestionHost = "https://events.example.com",
+            onConfigError = onConfigError
+        )
+
+    @Test
+    fun `invalid config in release leaves the SDK inert and signals`() = runTest {
+        val received = mutableListOf<ConfigError>()
+
+        val analytics = MetaRouter.initializeAndWait(context, invalidOptions { received.add(it) })
+        // The one behavior this contract exists for: calls on a misconfigured SDK
+        // are inert, never fatal.
+        analytics.track("must_not_crash")
+
+        assertEquals(listOf<ConfigError>(ConfigError.EmptyWriteKey), received)
+
+        // No client was created: debug info stays in proxy form and carries the
+        // config error for the session.
+        val debugInfo = analytics.getDebugInfo()
+        assertEquals(false, debugInfo["bound"])
+        assertEquals("disabled", debugInfo["lifecycle"])
+        assertEquals(ConfigError.EmptyWriteKey.description, debugInfo["configError"])
+
+        // Awaiting APIs resolve degraded instead of suspending on a bind that will
+        // never come — a permanent hang would be worse than the crash this replaces.
+        assertEquals("", analytics.getAnonymousId())
+    }
+
+    @Test
+    fun `invalid config in a debuggable build fails fast at initialize`() = runTest {
+        // flags is a plain field, not a getter — stub the whole ApplicationInfo.
+        val debuggableInfo = android.content.pm.ApplicationInfo().apply {
+            flags = android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE
+        }
+        every { context.applicationInfo } returns debuggableInfo
+
+        val thrown = try {
+            MetaRouter.initializeAndWait(context, invalidOptions())
+            null
+        } catch (e: IllegalArgumentException) {
+            e
+        }
+
+        assertNotNull(thrown)
+        assertTrue(thrown!!.message!!.contains("writeKey"))
+    }
+
+    @Test
+    fun `invalid re-init disables the previous session instead of masking the error`() = runTest {
+        val analytics = MetaRouter.initializeAndWait(context, options)
+        assertEquals("ready", analytics.getDebugInfo()["lifecycle"])
+
+        MetaRouter.initializeAndWait(context, invalidOptions())
+
+        // The stale valid client must not keep running past an explicit re-init
+        // with bad config — that would silently mask the config error.
+        val debugInfo = analytics.getDebugInfo()
+        assertEquals(false, debugInfo["bound"])
+        assertEquals("disabled", debugInfo["lifecycle"])
+        assertEquals(ConfigError.EmptyWriteKey.description, debugInfo["configError"])
+    }
+
+    @Test
+    fun `valid re-init recovers a config-refused session`() = runTest {
+        MetaRouter.initializeAndWait(context, invalidOptions())
+
+        val analytics = MetaRouter.initializeAndWait(context, options)
+
+        val debugInfo = analytics.getDebugInfo()
+        assertEquals("ready", debugInfo["lifecycle"])
+        assertNull(debugInfo["configError"])
+    }
+
+    @Test
+    fun `reset clears the config refusal so the next session can bind`() = runTest {
+        MetaRouter.initializeAndWait(context, invalidOptions())
+
+        // reset() ends the refused session; the refusal must not survive it.
+        MetaRouter.Analytics.resetAndWait()
+
+        val analytics = MetaRouter.initializeAndWait(context, options)
+
+        val debugInfo = analytics.getDebugInfo()
+        assertEquals("ready", debugInfo["lifecycle"])
+        assertNull(debugInfo["configError"])
+    }
+
+    @Test
+    fun `valid createAnalyticsClient after a refusal recovers the session`() = runTest {
+        MetaRouter.initializeAndWait(context, invalidOptions())
+
+        // The refusal marked initializationStarted (client() safety) — a host that
+        // fixes its config and re-initializes must not bounce off that guard and
+        // stay inert. iOS recovers here; Android must too.
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        // The recovery init runs on the SDK's real IO scope — poll on real time.
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("valid createAnalyticsClient must rebind a refused session", bound)
+        assertNull(analytics.getDebugInfo()["configError"])
+    }
+
+    @Test
+    fun `initialize does not re-log construction-time warnings`() = runTest {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.d(any(), any<String>()) } returns 0
+        every { android.util.Log.w(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>(), any()) } returns 0
+
+        try {
+            // Construction warns once (cleartext http). The gate's options handling
+            // must not re-run validation and log the same warning a second time.
+            val cleartextOptions = InitOptions(
+                writeKey = "test-write-key",
+                ingestionHost = "http://api.example.com"
+            )
+
+            MetaRouter.initializeAndWait(context, cleartextOptions)
+
+            verify(exactly = 1) {
+                android.util.Log.w(any(), match<String> { it.contains("cleartext") })
+            }
+        } finally {
+            unmockkStatic(android.util.Log::class)
+        }
+    }
+
+    @Test
+    fun `invalid then valid createAnalyticsClient recovers deterministically`() = runTest {
+        // Both calls fire-and-forget onto the init scope: the refusal's
+        // disableSession and the recovery's initializeInternal. On a
+        // multi-threaded pool their initMutex order was scheduling luck — a
+        // disable landing second reset the fresh client and left flags in a
+        // state no later createAnalyticsClient could recover. The serial init
+        // scope makes this loop a guarantee instead of a ~1-in-40 flake.
+        repeat(15) { iteration ->
+            MetaRouter.resetForTesting()
+
+            MetaRouter.createAnalyticsClient(context, invalidOptions())
+            val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+            var bound = false
+            withContext(Dispatchers.Default) {
+                repeat(200) {
+                    if (!bound) {
+                        bound = analytics.getDebugInfo()["bound"] == true
+                        if (!bound) delay(25)
+                    }
+                }
+            }
+            assertTrue("iteration $iteration: valid init after a refusal must bind", bound)
+            assertNull(analytics.getDebugInfo()["configError"])
+        }
+    }
+
+    @Test
+    fun `refused createAnalyticsClient then awaited valid init recovers deterministically`() = runTest {
+        // The awaited entry point used to run on the caller's coroutine and
+        // could jump the FIFO queue past the refusal's already-launched
+        // disable — binding first and being torn down by it (7/40 pre-fix).
+        // Routed through initDispatcher, the disable always runs first.
+        repeat(15) { iteration ->
+            MetaRouter.resetForTesting()
+
+            MetaRouter.createAnalyticsClient(context, invalidOptions())
+            val analytics = MetaRouter.initializeAndWait(context, options)
+
+            val debugInfo = analytics.getDebugInfo()
+            assertEquals(
+                "iteration $iteration: awaited valid init after a refusal must bind",
+                true, debugInfo["bound"]
+            )
+            assertNull(debugInfo["configError"])
+        }
+    }
+
+    @Test
+    fun `awaited init queued behind a fire-and-forget reset rebinds instead of trusting the dying session`() = runTest {
+        MetaRouter.initializeAndWait(context, options)
+
+        // reset() queues its teardown on the init scope; the awaited init must
+        // queue BEHIND it and rebuild — an off-dispatcher isBound() check here
+        // would see the not-yet-torn-down client and return "initialized" for
+        // a session about to be unbound.
+        MetaRouter.Analytics.reset()
+        val analytics = MetaRouter.initializeAndWait(context, options)
+
+        assertEquals(true, analytics.getDebugInfo()["bound"])
+        // Bound is not enough: the queued reset's flag-clear must not outlive
+        // the rebind, or this live session is unreachable via client() and
+        // un-resettable via reset() — "initialized" has to mean initialized.
+        assertNotNull(MetaRouter.Analytics.client())
+        assertEquals("ready", MetaRouter.Analytics.client().getDebugInfo()["lifecycle"])
+    }
+
+    /**
+     * Execution never writes flags: an init dequeued ahead of a refusal must
+     * not clear the refusal's enqueue-time sessionRefused=true — the disable
+     * that follows would leave a disabled proxy whose refusal flag was already
+     * consumed, and no later createAnalyticsClient could recover.
+     */
+    @Test
+    fun `valid then invalid createAnalyticsClient stays recoverable`() = runTest {
+        MetaRouter.createAnalyticsClient(context, options)
+        MetaRouter.createAnalyticsClient(context, invalidOptions())
+
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("a valid call after an invalid re-init must recover", bound)
+    }
+
+    /**
+     * The mirror image: an init dequeued ahead of a reset must not re-assert
+     * started=true — the reset that follows unbinds without flag writes,
+     * and started-but-unbound blocks every later createAnalyticsClient.
+     */
+    @Test
+    fun `valid createAnalyticsClient then reset stays recoverable`() = runTest {
+        MetaRouter.createAnalyticsClient(context, options)
+        MetaRouter.Analytics.reset()
+
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("a valid call after a reset must recover", bound)
+    }
+
+    @Test
+    fun `createAnalyticsClient immediately after reset enqueues a real init`() = runTest {
+        MetaRouter.initializeAndWait(context, options)
+
+        // reset() flips the flags at enqueue time, so this CAS must see the
+        // condemned session as "not started" and queue an init behind the
+        // teardown — reading the stale flag here silently returned a proxy
+        // with nothing queued: an SDK dead until the host retried on its own.
+        MetaRouter.Analytics.reset()
+        val analytics = MetaRouter.createAnalyticsClient(context, options)
+
+        var bound = false
+        withContext(Dispatchers.Default) {
+            repeat(200) {
+                if (!bound) {
+                    bound = analytics.getDebugInfo()["bound"] == true
+                    if (!bound) delay(25)
+                }
+            }
+        }
+        assertTrue("init after reset must actually initialize", bound)
+    }
+
+    @Test
+    fun `concurrent invalid and valid createAnalyticsClient never strand the singleton`() = runTest {
+        // Flag mutation and enqueue are atomic under initLock: whatever order
+        // these two interleave in, the terminal state is either bound or
+        // refused-with-flag — never disabled-with-consumed-flag, so a final
+        // valid call always recovers.
+        repeat(20) { iteration ->
+            MetaRouter.resetForTesting()
+
+            val invalid = async(Dispatchers.Default) {
+                MetaRouter.createAnalyticsClient(context, invalidOptions())
+            }
+            val valid = async(Dispatchers.Default) {
+                MetaRouter.createAnalyticsClient(context, options)
+            }
+            invalid.await()
+            valid.await()
+
+            val analytics = MetaRouter.createAnalyticsClient(context, options)
+            var bound = false
+            withContext(Dispatchers.Default) {
+                repeat(200) {
+                    if (!bound) {
+                        bound = analytics.getDebugInfo()["bound"] == true
+                        if (!bound) delay(25)
+                    }
+                }
+            }
+            assertTrue("iteration $iteration: a valid call must always be able to recover", bound)
+        }
+    }
+
+    @Test
+    fun `initialize does not re-log construction warnings when a callback is set`() = runTest {
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.d(any(), any<String>()) } returns 0
+        every { android.util.Log.w(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>()) } returns 0
+        every { android.util.Log.e(any(), any<String>(), any()) } returns 0
+
+        try {
+            // With a callback set, the gate copies the options to drop the
+            // closure — that copy must go through the raw constructor, not the
+            // validating one, or the cleartext warning logs a second time.
+            val cleartextOptions = InitOptions(
+                writeKey = "test-write-key",
+                ingestionHost = "http://api.example.com",
+                onConfigError = { }
+            )
+
+            MetaRouter.initializeAndWait(context, cleartextOptions)
+
+            verify(exactly = 1) {
+                android.util.Log.w(any(), match<String> { it.contains("cleartext") })
+            }
+        } finally {
+            unmockkStatic(android.util.Log::class)
+        }
+    }
+
+    @Test
+    fun `client() returns the inert proxy after a refusal instead of throwing`() = runTest {
+        MetaRouter.initializeAndWait(context, invalidOptions())
+
+        // A host that stored nothing and asks for the client later must get the
+        // inert proxy, not an IllegalStateException — the refused session stays
+        // call-safe end to end.
+        val analytics = MetaRouter.Analytics.client()
+        analytics.track("still_must_not_crash")
+        assertEquals(false, analytics.getDebugInfo()["bound"])
     }
 }

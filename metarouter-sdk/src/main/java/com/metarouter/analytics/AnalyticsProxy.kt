@@ -30,6 +30,15 @@ class AnalyticsProxy(
     @Volatile
     private var boundSignal = CompletableDeferred<Unit>()
 
+    // Set when initialize was refused over invalid config: no bind is coming this
+    // session, so awaiting APIs must resolve (degraded) instead of suspending forever
+    // — a permanent hang would be a worse outcome than the crash this replaces.
+    @Volatile
+    private var configDisabled = false
+
+    @Volatile
+    private var configErrorDescription: String? = null
+
     /**
      * Bind a real client and replay all pending calls.
      * This is idempotent - calling bind() again after binding is a no-op.
@@ -52,6 +61,9 @@ class AnalyticsProxy(
                 pendingCalls.clear()
                 calls
             }
+            // A successful (re)initialize supersedes an earlier config refusal.
+            configDisabled = false
+            configErrorDescription = null
             boundSignal.complete(Unit)
 
             // Each replay is guarded individually: one throwing call (bad input,
@@ -196,23 +208,40 @@ class AnalyticsProxy(
             if (client != null) {
                 client.getDebugInfo() + ("bound" to true)
             } else {
-                mapOf(
-                    "lifecycle" to "initializing",
-                    "pendingCalls" to pendingCallCount(),
-                    "bound" to false
-                )
+                buildMap {
+                    put("lifecycle", if (configDisabled) "disabled" else "initializing")
+                    put("pendingCalls", pendingCallCount())
+                    put("bound", false)
+                    // The refused session has no client to report the error — the
+                    // proxy carries it so getDebugInfo stays the one diagnostic API.
+                    configErrorDescription?.let { put("configError", it) }
+                }
             }
         }
     }
 
     override suspend fun getAnonymousId(): String {
-        val signal = boundSignal
-        signal.await()
-        val client = realClient.get()
-            ?: throw IllegalStateException(
-                "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
-            )
-        return client.getAnonymousId()
+        while (true) {
+            val signal = boundSignal
+            signal.await()
+            realClient.get()?.let { return it.getAnonymousId() }
+            if (configDisabled) {
+                // Empty only on a config-disabled session — the degraded-but-resolved
+                // answer; normal operation still awaits binding and never returns empty.
+                return ""
+            }
+            // Woke with no client and no refusal: a concurrent clearConfigDisabled()
+            // (or unbind()) replaced the signal between our wake-up and these reads —
+            // the completed verdict belonged to the previous session and a new bind is
+            // incoming on the fresh signal. Await that one instead of throwing; only a
+            // wake-up from the CURRENT signal in this state is a genuine invariant
+            // breach.
+            if (boundSignal === signal) {
+                throw IllegalStateException(
+                    "AnalyticsProxy bound signal completed but client is null (likely unbound during getAnonymousId)"
+                )
+            }
+        }
     }
 
     override fun setTracing(enabled: Boolean) {
@@ -301,11 +330,66 @@ class AnalyticsProxy(
      */
     internal suspend fun unbind() {
         mutex.withLock {
+            // Publish the fresh signal FIRST, tear state down, and complete the
+            // outgoing signal LAST. A waiter parked on the outgoing signal then
+            // wakes only after every newer write is visible: it reads
+            // client-null / flag-false, sees boundSignal is a different
+            // instance, and re-awaits the fresh one — resolving against
+            // whatever this session becomes (a refusal's markConfigDisabled,
+            // or the next bind). Abandoning the outgoing signal uncompleted
+            // strands every pre-teardown waiter asleep forever — the exact
+            // hang the resolve-degraded contract exists to prevent — and
+            // completing it before the swap is visible reintroduces the
+            // client-null/flag-false/same-signal throw.
+            val outgoing = boundSignal
+            boundSignal = CompletableDeferred()
             realClient.set(null)
             synchronized(pendingCalls) {
                 pendingCalls.clear()
             }
-            boundSignal = CompletableDeferred()
+            // reset() tears down a session without refusing one. Leaving the flag set
+            // would make every later awaiting call resolve degraded for a session
+            // that was never gated. disableSession() marks it again after this.
+            configDisabled = false
+            configErrorDescription = null
+            outgoing.complete(Unit)
+        }
+    }
+
+    /**
+     * Invalid-config refusal: no bind is coming this session, so waiters must
+     * resolve degraded rather than suspend forever. Completing the (fresh, post-
+     * unbind) bound signal is what wakes them; they see no client, flag set.
+     */
+    internal suspend fun markConfigDisabled(errorDescription: String) {
+        mutex.withLock {
+            configDisabled = true
+            configErrorDescription = errorDescription
+            boundSignal.complete(Unit)
+        }
+    }
+
+    /**
+     * Clears the refusal ahead of a bind that is still being built, so callers
+     * awaiting in the pre-bind window suspend for the incoming client instead of
+     * resolving degraded against the previous session's verdict. The refused
+     * session's bound signal is already completed, so a fresh one is required.
+     */
+    internal suspend fun clearConfigDisabled() {
+        mutex.withLock {
+            if (configDisabled) {
+                // Fresh signal BEFORE clearing the flag: a waiter woken by the
+                // refusal reads the flag and then the signal, lock-free. In
+                // that order of volatile writes, a waiter that observed
+                // flag=false is guaranteed to also observe the swapped signal
+                // and re-await it; cleared-flag-first leaves a window where it
+                // reads flag=false with the awaited signal still current — the
+                // invariant-breach throw, on exactly the refusal→recovery
+                // sequence this method exists to serve.
+                boundSignal = CompletableDeferred()
+                configDisabled = false
+                configErrorDescription = null
+            }
         }
     }
 

@@ -197,7 +197,17 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `debug` (Boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (Int, optional): Interval in seconds to flush events (default: 10)
 - `maxQueueEvents` (Int, optional): Max events stored in memory (default: 2000)
-- `maxDiskEvents` (Int, optional): Max events persisted to disk during extended offline periods (default: 10000). Set to `0` to disable disk persistence entirely — the queue then operates as a pure in-memory ring buffer (oldest event dropped at capacity). Negative values are rejected.
+- `maxDiskEvents` (Int, optional): Max events persisted to disk during extended offline periods (default: 10000). Set to `0` to disable disk persistence entirely — the queue then operates as a pure in-memory ring buffer (oldest event dropped at capacity). Negative values clamp to 0 with a warning.
+- `onConfigError` ((ConfigError) -> Unit, optional): Fired synchronously by `initialize` when the options were constructed from invalid config — the programmatic complement to the error log (see [Invalid configuration](#invalid-configuration) below)
+
+**Invalid configuration:**
+
+Constructing `InitOptions` never throws. Invalid input (empty write key, non-http(s) or host-less ingestion host) is recorded on the options, and `MetaRouter.Analytics.initialize` reads the verdict:
+
+- **Debuggable builds** fail fast: `initialize` throws `IllegalArgumentException` so typos surface immediately during development.
+- **Release builds** never crash the host app: `initialize` logs an always-on error, fires `onConfigError` (if set), and returns the proxy with **no client created** — the SDK is inert for the session, mirroring the `401/403/404` graceful-disable. A later `initialize` with valid options recovers the session.
+- Numeric bounds (`flushIntervalSeconds`, `maxQueueEvents`, `maxDiskEvents`) clamp with a warning instead of failing.
+- `getDebugInfo()["configError"]` carries the error description for a refused session, so misconfiguration is diagnosable from the same API as every other SDK state.
 
 **Proxy behavior (quick notes):**
 
@@ -221,6 +231,7 @@ The analytics client provides the following methods:
 - `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
+- `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
 - `flush()`: Flush events immediately (suspending)
 - `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging

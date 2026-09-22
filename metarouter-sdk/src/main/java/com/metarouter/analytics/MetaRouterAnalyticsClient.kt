@@ -63,11 +63,20 @@ class MetaRouterAnalyticsClient private constructor(
          * Initialize the MetaRouter Analytics SDK.
          *
          * @param context Android application context
-         * @param options Configuration options (writeKey, ingestionHost, etc.)
+         * @param options Configuration options (writeKey, ingestionHost, etc.) —
+         *   already vetted by MetaRouter's config gate; a client is never built
+         *   from options carrying a configError
          * @return Initialized analytics client
-         * @throws IllegalArgumentException if options validation fails
          */
         suspend fun initialize(context: Context, options: InitOptions): MetaRouterAnalyticsClient {
+            // This entry point bypasses MetaRouter's config gate, and a direct
+            // caller has no proxy to degrade into — building from refused
+            // options would produce a live client that fails every request at
+            // network time. Restore the pre-record-don't-throw contract for
+            // this path: invalid config throws here, on every build type.
+            options.configError?.let {
+                throw IllegalArgumentException("Invalid InitOptions: ${it.description}")
+            }
             val client = MetaRouterAnalyticsClient(context.applicationContext, options)
             client.initializeInternal()
             return client
