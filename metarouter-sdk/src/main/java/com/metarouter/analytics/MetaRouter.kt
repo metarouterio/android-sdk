@@ -248,6 +248,7 @@ object MetaRouter {
      * pre-bind calls replay after the bind.
      */
     private fun attachConsentStorage(context: Context) {
+        if (consentManager.hasStorage) return
         consentManager.attachStorage(ConsentStorage(context.applicationContext))
     }
 

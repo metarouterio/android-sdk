@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
 import android.webkit.WebView
+import androidx.annotation.CheckResult
 import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentManager
@@ -632,6 +633,7 @@ class MetaRouterAnalyticsClient private constructor(
         consentManager.clearConsent()
     }
 
+    @CheckResult
     override fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription =
         ConsentSubscription(consentManager.subscribe(handler))
 

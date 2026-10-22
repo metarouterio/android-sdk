@@ -826,6 +826,7 @@ Before the first `setConsent`, `getConsent()` and every outbound event carry the
 **Startup initializer.** Consent needs a `Context` to reach disk before `initialize`, so the SDK registers `MetaRouterInitializer` with AndroidX App Startup, which runs it before `Application.onCreate` through the `InitializationProvider` AndroidX libraries already share. It only opens the SDK's storage. To opt out, remove it in your manifest:
 
 ```xml
+<!-- needs xmlns:tools="http://schemas.android.com/tools" on your <manifest> -->
 <provider
     android:name="androidx.startup.InitializationProvider"
     android:authorities="${applicationId}.androidx-startup"
@@ -837,6 +838,8 @@ Before the first `setConsent`, `getConsent()` and every outbound event carry the
 ```
 
 The SDK then opens storage at `initialize` instead, and consent calls made earlier are held in memory and applied then. Events are unaffected either way, but until `initialize` the previous launch's consent is not readable, a timestamped `setConsent` older than it returns `true` and is ignored when it loads, a registration problem throws at `initialize` rather than at the call, and nothing set before `initialize` is saved if the process never reaches it.
+
+The initializer runs on the main thread before `Application.onCreate` in every process start: it reads the SDK's small preferences file and initializes the `MetaRouter` object. A host that enables StrictMode with `penaltyDeath` for disk reads in `attachBaseContext` (before providers run) will see that read; remove the initializer as above if that matters to you. App Startup only runs in your app's default process, so in a secondary process (`android:process=…`) the SDK opens storage at `initialize`, as when the initializer is removed.
 
 ### OneTrust
 

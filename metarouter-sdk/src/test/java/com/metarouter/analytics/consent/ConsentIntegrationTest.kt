@@ -227,9 +227,10 @@ class ConsentIntegrationTest {
     }
 
     /**
-     * The Android-only step: storage attaches at initialize. A previous launch's
-     * consent loads then, and a pre-initialize CMP replay older than it loses there —
-     * the same outcome as iOS, where storage exists from process start.
+     * The fallback path, when a host removed the startup initializer: storage attaches
+     * at initialize. A previous launch's consent loads then, and a pre-initialize CMP
+     * replay older than it loses there — the same outcome as iOS, where storage exists
+     * from process start.
      */
     @Test
     fun `initialize loads persisted consent and replays pre-initialize writes over it`() = runBlocking {

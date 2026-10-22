@@ -337,6 +337,10 @@ internal class ConsentManager(
      * timestamp loses here as it would have at the call. Subscribers hear the result
      * if it differs from what they last saw.
      */
+    /** Whether [attachStorage] has run, so callers can skip building a storage. */
+    val hasStorage: Boolean
+        get() = storage != null
+
     fun attachStorage(newStorage: ConsentStorage) {
         if (storage != null) return
         val loaded = newStorage.get()

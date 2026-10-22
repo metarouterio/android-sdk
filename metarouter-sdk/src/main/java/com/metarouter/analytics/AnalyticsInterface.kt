@@ -2,6 +2,7 @@ package com.metarouter.analytics
 
 import android.net.Uri
 import android.webkit.WebView
+import androidx.annotation.CheckResult
 import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentSubscription
@@ -310,6 +311,9 @@ interface AnalyticsInterface {
      *   the reference is dropped. After `close()` returns on the main thread, the
      *   handler is not invoked again, even for a delivery already queued.
      */
+    // @CheckResult: Kotlin does not warn on an ignored return, and a subscription
+    // dropped on the floor delivers for the life of the process. Lint flags it.
+    @CheckResult
     fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription {
         InterfaceDefaults.warnNotImplemented(this, "subscribeToConsent")
         return ConsentSubscription {}
