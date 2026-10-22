@@ -5,6 +5,7 @@ import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.types.BaseEvent
@@ -64,7 +65,8 @@ class BridgeEventPlumbingTest {
         consentManager = ConsentManager(
             mockk<ConsentStorage>(relaxUnitFun = true) { every { get() } returns null },
             dispatch = { }
-        )
+        ),
+        providerContextManager = ProviderContextManager()
     )
 
     @Test

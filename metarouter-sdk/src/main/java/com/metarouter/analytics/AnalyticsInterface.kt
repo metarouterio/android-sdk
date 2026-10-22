@@ -7,6 +7,7 @@ import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentSubscription
 import com.metarouter.analytics.utils.Logger
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Public API for the MetaRouter Analytics SDK.
@@ -317,6 +318,68 @@ interface AnalyticsInterface {
     fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription {
         InterfaceDefaults.warnNotImplemented(this, "subscribeToConsent")
         return ConsentSubscription {}
+    }
+
+    // ===== Provider context =====
+
+    /**
+     * Set one value the SDK stamps onto **every** outbound event at
+     * `context.providers.<provider>.<key>` — native calls, lifecycle events, and
+     * WebView-bridge events alike. The mobile stand-in for what the web SDK's sync
+     * injectors write into `context.providers`: vendor metadata the app knows and the
+     * page does not, such as an id a destination requires on every event.
+     *
+     * Provider and key names are wire paths, stamped **verbatim** apart from trimming
+     * surrounding whitespace — no casing or separator normalisation — because pipeline
+     * mappings match them exactly. Values must be JSON-representable: strings, numbers,
+     * booleans, and lists or string-keyed maps of those.
+     *
+     * Usable before `initialize` and immediately effective: an event tracked on the next
+     * line carries the value. Values persist across launches and survive `reset()` —
+     * they are install-scoped vendor metadata, not user state. Before `initialize`, the
+     * previous launch's values are not loaded yet, so [getProviderContext] does not
+     * reflect them; events are unaffected, since none is enriched before `initialize`.
+     *
+     * Set each value as early as it exists. `initialize` emits `Application Opened` and
+     * can mint the first session in its background setup, so a value that first
+     * resolves after that misses those events on the install launch; from the next
+     * launch the persisted value covers them.
+     *
+     * Bounded, because this rides on every event: at most 10 providers, 10 keys each,
+     * 256 bytes per encoded value, 64 bytes per name, and `metarouter` is reserved (in
+     * any casing or spelling with separators). A write that breaks a rule is ignored
+     * with a warning, leaving prior state untouched.
+     *
+     * @param provider Provider namespace, e.g. `"googleFirebase"`.
+     * @param key Key within that provider, e.g. `"appInstanceId"`.
+     * @param value JSON-representable value. `null` removes the key.
+     * @return `false` when the write was rejected; prior state stands.
+     */
+    fun setProviderContext(provider: String, key: String, value: Any?): Boolean {
+        InterfaceDefaults.warnNotImplemented(this, "setProviderContext")
+        return false
+    }
+
+    /**
+     * Everything the host has set, as it will be stamped. Does not include the SDK's own
+     * `metarouter` session block, which is added per event at enrichment.
+     */
+    fun getProviderContext(): Map<String, JsonObject> {
+        InterfaceDefaults.warnNotImplemented(this, "getProviderContext")
+        return emptyMap()
+    }
+
+    /**
+     * Remove one provider's whole block. Removing the last key of a provider via
+     * `setProviderContext(provider, key, null)` does the same thing for that provider.
+     */
+    fun clearProviderContext(provider: String) {
+        InterfaceDefaults.warnNotImplemented(this, "clearProviderContext")
+    }
+
+    /** Remove every value the host has set. */
+    fun clearAllProviderContext() {
+        InterfaceDefaults.warnNotImplemented(this, "clearAllProviderContext")
     }
 }
 

@@ -7,6 +7,7 @@ import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.consent.ConsentSubscription
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.webview.BridgeMessageProcessor
 import com.metarouter.analytics.webview.WebViewBridge
@@ -14,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -31,14 +33,25 @@ class AnalyticsProxy internal constructor(
      * modes: every call acts on the manager immediately, bound or not, and the client
      * bound later stamps from that same manager.
      */
-    private val consentManager: ConsentManager
+    private val consentManager: ConsentManager,
+    /**
+     * Bypasses the pending-call queue for the same reasons as consent, plus one of its
+     * own: the queue drops its OLDEST entry at capacity, so a host that sets a vendor id
+     * and then tracks a burst of pre-initialize events would have the id evicted — the
+     * one call that cannot be lost.
+     */
+    private val providerContextManager: ProviderContextManager = ProviderContextManager()
 ) : AnalyticsInterface {
 
-    /** A standalone proxy holds consent in memory only; MetaRouter's attaches storage. */
+    /**
+     * A standalone proxy holds consent and provider context in memory only;
+     * MetaRouter's attaches storage.
+     */
     // @JvmOverloads: only a primary constructor gets Java's no-arg overload for free,
     // and `new AnalyticsProxy()` compiled against the previous release.
     @JvmOverloads
-    constructor(maxPendingCalls: Int = DEFAULT_MAX_PENDING_CALLS) : this(maxPendingCalls, ConsentManager())
+    constructor(maxPendingCalls: Int = DEFAULT_MAX_PENDING_CALLS) :
+        this(maxPendingCalls, ConsentManager(), ProviderContextManager())
 
     companion object {
         const val DEFAULT_MAX_PENDING_CALLS = 2000
@@ -241,6 +254,7 @@ class AnalyticsProxy internal constructor(
                     // init" is exactly what someone debugging a CMP-first launch
                     // wants to see.
                     put("consent", consentManager.getConsent().toDebugInfo())
+                    put("providerContext", providerContextManager.toDebugInfo())
                 }
             }
         }
@@ -334,6 +348,21 @@ class AnalyticsProxy internal constructor(
     @CheckResult
     override fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription =
         ConsentSubscription(consentManager.subscribe(handler))
+
+    // ===== Provider context (direct, never queued — see providerContextManager) =====
+
+    override fun setProviderContext(provider: String, key: String, value: Any?): Boolean =
+        providerContextManager.setValue(provider, key, value)
+
+    override fun getProviderContext(): Map<String, JsonObject> = providerContextManager.getAll()
+
+    override fun clearProviderContext(provider: String) {
+        providerContextManager.clear(provider)
+    }
+
+    override fun clearAllProviderContext() {
+        providerContextManager.clearAll()
+    }
 
 
     /**

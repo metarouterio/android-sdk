@@ -9,6 +9,7 @@ import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.InterfaceDefaults
 import com.metarouter.analytics.MetaRouterAnalyticsClient
+import com.metarouter.analytics.providers.ProviderContextManager
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
@@ -80,6 +81,10 @@ class InterfaceDefaultsTest {
         host.attachWebView(WebView(ApplicationProvider.getApplicationContext()), listOf("https://example.com"))
 
         assertEquals(Consent(explicit = false, optOut = emptyMap()), host.getConsent())
+        assertFalse("nothing was applied", host.setProviderContext("googleFirebase", "appInstanceId", "abc123"))
+        assertEquals(emptyMap<String, Any>(), host.getProviderContext())
+        host.clearProviderContext("googleFirebase")
+        host.clearAllProviderContext()
     }
 
     /** Every defaulted member, called through the interface — how a host holding it dispatches. */
@@ -90,6 +95,10 @@ class InterfaceDefaultsTest {
         target.getConsent()
         target.subscribeToConsent { }.close()
         target.clearConsent()
+        target.setProviderContext("googleFirebase", "appInstanceId", "abc123")
+        target.getProviderContext()
+        target.clearProviderContext("googleFirebase")
+        target.clearAllProviderContext()
     }
 
     /**
@@ -102,12 +111,14 @@ class InterfaceDefaultsTest {
         val manager = ConsentManager(storage, dispatch = { })
         val context = mockk<Context>(relaxed = true)
         every { context.applicationContext } returns context
+        val providerContext = ProviderContextManager()
         val client = MetaRouterAnalyticsClient.initialize(
             context,
             InitOptions(writeKey = "wk", ingestionHost = "https://events.example.com", trackLifecycleEvents = false),
-            consentManager = manager
+            consentManager = manager,
+            providerContextManager = providerContext
         )
-        val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager)
+        val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager, providerContext)
         InterfaceDefaults.reset()
 
         driveEveryDefaultedMember(client)
@@ -121,7 +132,7 @@ class InterfaceDefaultsTest {
     fun `probe records a host implementation falling through`() {
         driveEveryDefaultedMember(LegacyHostFake())
 
-        assertEquals(6, InterfaceDefaults.hits.size)
+        assertEquals(10, InterfaceDefaults.hits.size)
     }
 
     /** A wrapper that forwards `track` but not `getConsent` must not log per event. */

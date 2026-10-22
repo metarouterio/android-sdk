@@ -3,6 +3,7 @@ package com.metarouter.analytics.enrichment
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.ConsentContext
@@ -23,14 +24,16 @@ import java.util.TimeZone
  * double-incremented sessionCount, and events inside one real session stamped
  * with different sessionIDs. [consentManager] likewise: a second instance never
  * hears the host's `setConsent` / `clearConsent`, and would stamp a consent the
- * user has since withdrawn.
+ * user has since withdrawn. [providerContextManager] too: a second instance never
+ * hears `setProviderContext`.
  */
 internal class EventEnrichmentService(
     private val identityManager: IdentityManager,
     private val contextProvider: DeviceContextProvider,
     private val writeKey: String,
     private val sessionManager: SessionManager,
-    private val consentManager: ConsentManager
+    private val consentManager: ConsentManager,
+    private val providerContextManager: ProviderContextManager
 ) {
 
     /**
@@ -90,9 +93,15 @@ internal class EventEnrichmentService(
         // today's consent onto them would misattribute it.) The path and shape are
         // the web SDK's `context.consent`; moving or renaming it forks every
         // per-integration consent rule downstream.
+        //
+        // Host provider values first, the SDK's block last, so the session stamp wins
+        // any collision. The API already refuses `metarouter`; this ordering is what
+        // still holds for a value that reached the map another way. Flipping it — one
+        // merge with the host map last — hands a customer sessionID, and nothing
+        // downstream would flag it.
         val context = contextWithPage.copy(
             consent = ConsentContext(consentManager.getConsent()),
-            providers = mapOf(
+            providers = providerContextManager.getAll() + (
                 "metarouter" to buildJsonObject {
                     put("sessionID", session.sessionId)
                     put("sessionCount", session.sessionCount)

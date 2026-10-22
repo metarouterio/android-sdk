@@ -5,6 +5,8 @@ import android.content.pm.ApplicationInfo
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
+import com.metarouter.analytics.providers.ProviderContextManager
+import com.metarouter.analytics.providers.ProviderContextStorage
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -37,7 +39,12 @@ object MetaRouter {
     // start through MetaRouterInitializer, or at the first initialize when a host
     // removed it (see ConsentManager.attachStorage).
     private val consentManager = ConsentManager()
-    private val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager)
+
+    // One per process, for the same reasons as consent. Its storage attaches with
+    // consent's, before the client exists, so last launch's vendor ids are already on
+    // the cold-launch events initialize() goes on to emit.
+    private val providerContextManager = ProviderContextManager()
+    private val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager, providerContextManager)
     private val store = RealClientStore()
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -241,15 +248,24 @@ object MetaRouter {
     }
 
     /**
-     * Loads the previous launch's consent and replays any earlier writes over it. Runs
-     * at process start from [MetaRouterInitializer]; the call at initialize is the
-     * fallback for a host that removed the provider from its manifest, and a no-op
+     * Loads the previous launch's consent and provider context and replays any earlier
+     * writes over them. Runs at process start from [MetaRouterInitializer]; the call at
+     * initialize is the fallback for a host that removed the initializer, and a no-op
      * otherwise. Every event is enriched after this — the client is built after it, and
      * pre-bind calls replay after the bind.
      */
+    private fun attachStorage(context: Context) {
+        attachConsentStorage(context)
+        attachProviderContextStorage(context)
+    }
+
     private fun attachConsentStorage(context: Context) {
         if (consentManager.hasStorage) return
         consentManager.attachStorage(ConsentStorage(context.applicationContext))
+    }
+
+    private fun attachProviderContextStorage(context: Context) {
+        providerContextManager.attachStorage(ProviderContextStorage(context.applicationContext))
     }
 
     /**
@@ -261,6 +277,7 @@ object MetaRouter {
         // Each step guarded on its own: one failing (a storage read in an unexpected
         // boot state) must not skip the others.
         runStartupStep("consent storage") { attachConsentStorage(context) }
+        runStartupStep("provider context storage") { attachProviderContextStorage(context) }
         runStartupStep("registration check") { checkConsentRegistration(context) }
     }
 
@@ -283,6 +300,12 @@ object MetaRouter {
         return consentManager
     }
 
+    /** The process-wide provider-context manager, storage attached; see [processConsentManager]. */
+    internal fun processProviderContextManager(context: Context): ProviderContextManager {
+        attachProviderContextStorage(context)
+        return providerContextManager
+    }
+
     private fun isDebuggableBuild(context: Context): Boolean =
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
@@ -296,8 +319,8 @@ object MetaRouter {
      */
     private suspend fun disableSession(context: Context, error: ConfigError) {
         initMutex.withLock {
-            // A refused session sends nothing, but the host's consent still persists.
-            attachConsentStorage(context)
+            // A refused session sends nothing, but the host's writes still persist.
+            attachStorage(context)
             lifecycleObserver?.unregister()
             lifecycleObserver = null
             store.get()?.reset()
@@ -323,13 +346,18 @@ object MetaRouter {
             // degraded against the previous session's verdict.
             proxy.clearConfigDisabled()
 
-            attachConsentStorage(context)
+            attachStorage(context)
 
             // The config-error callback only ever fires from the gate; the client's
             // copy of the options must not pin the closure for the session.
             val gatedOptions =
                 if (options.onConfigError != null) options.discardingConfigCallback() else options
-            val client = MetaRouterAnalyticsClient.initialize(context, gatedOptions, consentManager = consentManager)
+            val client = MetaRouterAnalyticsClient.initialize(
+                context,
+                gatedOptions,
+                consentManager = consentManager,
+                providerContextManager = providerContextManager
+            )
 
             val stored = store.set(client)
             if (!stored) {
@@ -507,6 +535,10 @@ object MetaRouter {
     /** Test seam for the process-wide manager; see `ConsentManager.replaceStorageForTesting`. */
     internal val consentManagerForTesting: ConsentManager
         get() = consentManager
+
+    /** Test seam for the process-wide manager; see `ProviderContextManager.replaceStorageForTesting`. */
+    internal val providerContextManagerForTesting: ProviderContextManager
+        get() = providerContextManager
 
     /**
      * Reset internal state for testing.

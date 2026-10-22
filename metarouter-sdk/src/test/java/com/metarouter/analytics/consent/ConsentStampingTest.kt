@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.types.BaseEvent
@@ -82,7 +83,8 @@ class ConsentStampingTest {
             contextProvider = contextProvider,
             writeKey = "test-key",
             sessionManager = SessionManager(sessionStorage, wallClockMillis = { 1_757_400_000_000L }, monotonicClockMillis = { 50_000L }),
-            consentManager = consentManager
+            consentManager = consentManager,
+            providerContextManager = ProviderContextManager()
         )
     }
 
