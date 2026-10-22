@@ -1,9 +1,11 @@
 package com.metarouter.analytics.enrichment
 
+import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.types.BaseEvent
+import com.metarouter.analytics.types.ConsentContext
 import com.metarouter.analytics.types.EnrichedEventPayload
 import com.metarouter.analytics.utils.MessageIdGenerator
 import kotlinx.serialization.json.buildJsonObject
@@ -19,13 +21,16 @@ import java.util.TimeZone
  * [sessionManager] must be the client's shared instance — a second manager
  * would race the same persisted session keys: independent mints, a
  * double-incremented sessionCount, and events inside one real session stamped
- * with different sessionIDs.
+ * with different sessionIDs. [consentManager] likewise: a second instance never
+ * hears the host's `setConsent` / `clearConsent`, and would stamp a consent the
+ * user has since withdrawn.
  */
 internal class EventEnrichmentService(
     private val identityManager: IdentityManager,
     private val contextProvider: DeviceContextProvider,
     private val writeKey: String,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val consentManager: ConsentManager
 ) {
 
     /**
@@ -69,7 +74,22 @@ internal class EventEnrichmentService(
         // (`context.providers.metarouter`), so pipeline mappings read one shape
         // from every platform — renaming any side forks them.
         val session = sessionManager.touch()
+        // Consent is read here, per event, for the same reason: this funnel is
+        // shared by every source. The stamp is the state at ENRICHMENT time — not
+        // atomically with identity and session, but never as early as the track()
+        // call: track() only schedules enrichment, so `track(); setConsent()` on
+        // adjacent lines can stamp the new state, and a pre-initialize call replayed
+        // at bind is stamped with whatever consent holds at replay. Once enriched, a
+        // payload is immutable; a later setConsent never rewrites it. Before the
+        // host's first setConsent this is the implicit default (`explicit: false`,
+        // registered categories at their defaults) — a complete block the server
+        // gates like implicit-consent web traffic, never an absent field. (Events a
+        // pre-consent build enriched and left on disk drain without one; stamping
+        // today's consent onto them would misattribute it.) The path and shape are
+        // the web SDK's `context.consent`; moving or renaming it forks every
+        // per-integration consent rule downstream.
         val context = contextWithPage.copy(
+            consent = ConsentContext(consentManager.getConsent()),
             providers = mapOf(
                 "metarouter" to buildJsonObject {
                     put("sessionID", session.sessionId)

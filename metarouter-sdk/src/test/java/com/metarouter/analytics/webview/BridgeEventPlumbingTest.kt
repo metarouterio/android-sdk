@@ -1,5 +1,6 @@
 package com.metarouter.analytics.webview
 
+import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
@@ -57,7 +58,8 @@ class BridgeEventPlumbingTest {
             storage = sessionStorage,
             wallClockMillis = { 1_757_400_000_000L },
             monotonicClockMillis = { 50_000L }
-        )
+        ),
+        consentManager = ConsentManager(mockk(relaxed = true), dispatch = { })
     )
 
     @Test
