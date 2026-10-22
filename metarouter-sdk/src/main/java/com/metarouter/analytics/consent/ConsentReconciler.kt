@@ -1,5 +1,7 @@
 package com.metarouter.analytics.consent
 
+import java.util.Collections
+
 /**
  * Reconciles an incoming consent snapshot against the registered category set.
  *
@@ -25,12 +27,12 @@ internal object ConsentReconciler {
     fun reconcile(incoming: Consent, registry: List<ConsentCategory>): Consent {
         val optOut = ConsentKey.canonicalize(incoming.optOut)
         if (registry.isEmpty()) {
-            return incoming.copy(optOut = optOut)
+            return incoming.copy(optOut = readOnly(optOut))
         }
         val completed = registry.associate { category ->
             category.key to (optOut[category.key] ?: category.defaultOptOut)
         }
-        return incoming.copy(optOut = completed)
+        return incoming.copy(optOut = readOnly(completed))
     }
 
     /**
@@ -40,6 +42,15 @@ internal object ConsentReconciler {
      */
     fun implicitDefault(registry: List<ConsentCategory>): Consent = Consent(
         explicit = false,
-        optOut = registry.associate { it.key to it.defaultOptOut }
+        optOut = readOnly(registry.associate { it.key to it.defaultOptOut })
     )
+
+    /**
+     * Every Consent the manager hands out is built here, and the same instance is what
+     * enrichment stamps. Kotlin's Map is read-only only at compile time: a Java host
+     * calling `getConsent().getOptOut().put(…)` would otherwise rewrite the state every
+     * later event carries.
+     */
+    private fun readOnly(optOut: Map<String, Boolean>): Map<String, Boolean> =
+        Collections.unmodifiableMap(optOut)
 }

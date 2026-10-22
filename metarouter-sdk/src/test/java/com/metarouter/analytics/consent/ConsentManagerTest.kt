@@ -337,6 +337,24 @@ class ConsentManagerTest {
         assertTrue("a clean registration clears them", manager.registrationProblems().isEmpty())
     }
 
+    /** A Java host can call put() on any Map; the one handed out must refuse it. */
+    @Test
+    fun `consent handed out is read-only`() {
+        val manager = makeManager()
+        manager.registerConsentCategories(registry)
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("c0002" to false)))
+
+        for (consent in listOf(manager.getConsent(), makeManager().apply { clearConsent() }.getConsent())) {
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (consent.optOut as MutableMap<String, Boolean>)["c0004"] = false
+                fail("optOut must not be writable")
+            } catch (expected: UnsupportedOperationException) {
+            }
+        }
+        assertEquals(true, manager.getConsent().optOut["c0004"])
+    }
+
     // ===== Persistence across relaunch =====
 
     @Test
