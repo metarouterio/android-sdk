@@ -63,7 +63,6 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedAppContext: AppContext? = null,
     private val injectedSessionStorage: SessionStorage? = null,
     private val injectedSessionManager: SessionManager? = null,
-    private val injectedConsentStorage: ConsentStorage? = null,
     private val injectedConsentManager: ConsentManager? = null
 ) : AnalyticsInterface {
 
@@ -111,7 +110,6 @@ class MetaRouterAnalyticsClient private constructor(
             appContext: AppContext? = null,
             sessionStorage: SessionStorage? = null,
             sessionManager: SessionManager? = null,
-            consentStorage: ConsentStorage? = null,
             consentManager: ConsentManager? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
@@ -131,7 +129,6 @@ class MetaRouterAnalyticsClient private constructor(
                 appContext,
                 sessionStorage,
                 sessionManager,
-                consentStorage,
                 consentManager
             )
             client.initializeInternal()
@@ -250,7 +247,7 @@ class MetaRouterAnalyticsClient private constructor(
                 "injecting enrichmentService requires injecting the same consentManager it was built with"
             }
             consentManager = injectedConsentManager ?: ConsentManager(
-                storage = injectedConsentStorage ?: ConsentStorage(context)
+                storage = ConsentStorage(context)
             )
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
