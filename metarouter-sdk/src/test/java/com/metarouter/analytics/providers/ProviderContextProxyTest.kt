@@ -6,6 +6,7 @@ import com.metarouter.analytics.AnalyticsInterface
 import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.MetaRouter
+import com.metarouter.analytics.MetaRouterAnalyticsClient
 import com.metarouter.analytics.MetaRouterInitializer
 import com.metarouter.analytics.consent.ConsentManager
 import io.mockk.every
@@ -130,6 +131,20 @@ class ProviderContextProxyTest {
         assertEquals("previous launch readable before initialize", setOf("adjust"), shared.getProviderContext().keys)
         shared.setProviderContext("googleFirebase", "appInstanceId", "abc123")
         assertEquals("written through without initialize", setOf("adjust", "googleFirebase"), storage.get()?.keys)
+    }
+
+    /** A client built directly shares the process-wide manager, like consent's. */
+    @Test
+    fun `a directly built client shares the process-wide provider context manager`() = runBlocking {
+        MetaRouter.providerContextManagerForTesting.replaceStorageForTesting(storage)
+
+        val client = MetaRouterAnalyticsClient.initialize(
+            mockContext(),
+            InitOptions(writeKey = "wk", ingestionHost = "https://events.example.com", trackLifecycleEvents = false)
+        )
+        MetaRouter.Analytics.shared.setProviderContext("googleFirebase", "appInstanceId", "abc123")
+
+        assertEquals(expected, client.getProviderContext())
     }
 
     // ===== Before any bind =====

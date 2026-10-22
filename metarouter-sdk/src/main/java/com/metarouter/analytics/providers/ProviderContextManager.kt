@@ -346,9 +346,24 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
          * whole write. Null inside a container is JSON null; null at the top level is
          * removal and never reaches here.
          */
+        /**
+         * A JsonElement is not automatically valid JSON: `JsonPrimitive(Double.NaN)`
+         * encodes as `NaN`, and `JsonUnquotedLiteral` writes its content raw. Either
+         * would make every batch body unparseable, so it gets the same checks as
+         * converted values: finite numbers, real literals, all the way down.
+         */
+        private fun isWireSafe(element: JsonElement): Boolean = when (element) {
+            is JsonNull -> true
+            is JsonPrimitive -> element.isString ||
+                element.content == "true" || element.content == "false" ||
+                element.content.toDoubleOrNull()?.isFinite() == true
+            is JsonArray -> element.all(::isWireSafe)
+            is JsonObject -> element.values.all(::isWireSafe)
+        }
+
         private fun strictlyConverted(value: Any?): JsonElement? = when (value) {
             null -> JsonNull
-            is JsonElement -> value
+            is JsonElement -> value.takeIf(::isWireSafe)
             is String -> JsonPrimitive(value)
             is Boolean -> JsonPrimitive(value)
             is Double -> value.takeIf { it.isFinite() }?.let(::JsonPrimitive)

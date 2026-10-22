@@ -6,6 +6,7 @@ import com.metarouter.analytics.storage.IdentityStorage
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonUnquotedLiteral
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
@@ -386,6 +387,18 @@ class ProviderContextManagerTest {
         } catch (expected: UnsupportedOperationException) {
         }
         assertEquals(mapOf("p" to block("a" to "1")), manager.getAll())
+    }
+
+    /** A JsonElement is checked like anything else: NaN or a raw literal would break every batch. */
+    @Test
+    fun `json elements that are not valid JSON are rejected`() {
+        val manager = makeManager()
+        assertFalse(manager.setValue("p", "a", JsonPrimitive(Double.NaN)))
+        assertFalse(manager.setValue("p", "b", JsonUnquotedLiteral("{bad")))
+        assertFalse(manager.setValue("p", "c", buildJsonObject { put("n", Double.POSITIVE_INFINITY) }))
+        assertTrue(manager.setValue("p", "d", buildJsonObject { put("id", "x"); put("n", 2); put("ok", true) }))
+
+        assertEquals(setOf("d"), manager.getAll()["p"]?.keys)
     }
 
     // ===== Persistence =====

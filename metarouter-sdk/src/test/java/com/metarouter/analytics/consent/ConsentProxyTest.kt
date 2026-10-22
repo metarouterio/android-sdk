@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.metarouter.analytics.AnalyticsInterface
 import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.consent.adapters.OneTrustAdapter
+import com.metarouter.analytics.providers.ProviderContextManager
 import io.mockk.mockk
 import io.mockk.unmockkAll
 import io.mockk.verify
@@ -42,7 +43,7 @@ class ConsentProxyTest {
         storage = ConsentStorage(context).apply { clear() }
         pending = ArrayDeque()
         manager = ConsentManager(storage, dispatch = { pending.addLast(it) })
-        proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager)
+        proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager, ProviderContextManager())
         mockClient = mockk(relaxed = true)
     }
 
@@ -197,7 +198,7 @@ class ConsentProxyTest {
     /** Unlike the queued calls, consent does not have to fit in the pending-call cap. */
     @Test
     fun `consent is not subject to the pending queue cap`() {
-        val small = AnalyticsProxy(maxPendingCalls = 5, consentManager = manager)
+        val small = AnalyticsProxy(maxPendingCalls = 5, consentManager = manager, providerContextManager = ProviderContextManager())
         repeat(40) { small.track("filler $it") }
 
         small.setConsent(Consent(explicit = true, optOut = mapOf("a" to true)))

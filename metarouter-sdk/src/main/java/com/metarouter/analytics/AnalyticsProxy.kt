@@ -40,7 +40,9 @@ class AnalyticsProxy internal constructor(
      * and then tracks a burst of pre-initialize events would have the id evicted — the
      * one call that cannot be lost.
      */
-    private val providerContextManager: ProviderContextManager = ProviderContextManager()
+    // No default: a caller passing only a shared consent manager would otherwise get a
+    // fresh provider-context manager no client stamps from.
+    private val providerContextManager: ProviderContextManager
 ) : AnalyticsInterface {
 
     /**
