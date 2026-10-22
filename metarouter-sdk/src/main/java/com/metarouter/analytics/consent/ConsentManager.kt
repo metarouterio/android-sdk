@@ -30,6 +30,17 @@ import com.metarouter.analytics.utils.Logger
  * main thread, and one that reads consent back must not run inside a commit. A commit
  * sequence number keeps disk writes in commit order.
  *
+ * Storage can arrive after construction. The process-wide manager is built with the
+ * proxy, before any `Context` exists; [attachStorage] hands it the persisted state —
+ * at process start through `MetaRouterInitializer`, or at `initialize` when a host
+ * removed the provider. Until then the manager runs in memory and records every write,
+ * and attaching replays those writes over the persisted state through the same
+ * staleness rule — the outcome had storage been there from the start. No event is
+ * affected either way: none is enriched before the client exists, and the client is
+ * built after the attach.
+ *
+ * @param storage null until [attachStorage]; tests and the client's own fallback pass
+ *   one up front.
  * @param clockMillis stamps a `setConsent` that arrives without a timestamp.
  * @param dispatch where subscriber callbacks run. Null (production) posts to the main
  *   looper, like every UI-adjacent listener API on the platform. Tests inject a
@@ -37,7 +48,7 @@ import com.metarouter.analytics.utils.Logger
  *   returning, on the enqueuing thread, throws.
  */
 internal class ConsentManager(
-    storage: ConsentStorage,
+    storage: ConsentStorage? = null,
     private val clockMillis: () -> Long = System::currentTimeMillis,
     dispatch: ((Runnable) -> Unit)? = null
 ) {
@@ -84,8 +95,23 @@ internal class ConsentManager(
         }
     }
 
+    /**
+     * One host write, as recorded before storage is attached. [consent] already carries
+     * the device-clock stamp of an untimestamped call; [hostTimestamp] is what the
+     * staleness rule compares. A null write is a clear.
+     */
+    private class Write(val consent: Consent, val hostTimestamp: Long?)
+
     private val lock = Any()
-    private var storage: ConsentStorage = storage
+
+    @Volatile
+    private var storage: ConsentStorage? = storage
+
+    /** Writes made before [attachStorage], replayed over the persisted state there. */
+    private val preAttachWrites = mutableListOf<Write?>()
+
+    /** Set by [failFastOnRegistrationProblems]; read and written under [lock]. */
+    private var failFastOnRegistrationProblems = false
     private val dispatch: (Runnable) -> Unit = dispatch?.let { injected -> checkedDispatch(injected) }
         ?: mainLooperDispatch()
 
@@ -96,10 +122,10 @@ internal class ConsentManager(
     private var implicitDefault: Consent = ConsentReconciler.implicitDefault(emptyList())
 
     /** Null = the host has never set consent (or cleared it). */
-    // Loaded eagerly: the manager is built alongside the identity read from the same
-    // process start, and a consent persisted by a prior launch must be visible to the
-    // very first read.
-    private var stored: StoredConsent? = storage.get()
+    // Loaded at construction when storage is passed in (tests, and the attach does the
+    // same for the process-wide manager), so a consent persisted by a prior launch is
+    // visible to the very first read.
+    private var stored: StoredConsent? = storage?.get()
 
     /** [stored] projected onto [registry]; recomputed on every set and registration. */
     private var reconciled: Consent? = stored?.let { ConsentReconciler.reconcile(it.consent, emptyList()) }
@@ -145,6 +171,12 @@ internal class ConsentManager(
         problems.forEach(Logger::warn)
 
         synchronized(lock) {
+            // Checked under the lock that failFastOnRegistrationProblems takes: a
+            // registration racing it must either throw here or leave its problems for
+            // that call to see, never slip between the two.
+            if (failFastOnRegistrationProblems && problems.isNotEmpty()) {
+                throw IllegalArgumentException(problems.joinToString("; "))
+            }
             val before = visibleLocked()
             registry = normalized
             registrationProblems = problems
@@ -224,22 +256,17 @@ internal class ConsentManager(
             incomingConsent = consent.copy(timestamp = null)
         }
 
+        val incomingTimestamp = incomingConsent.timestamp
+        val write = if (incomingTimestamp != null) {
+            Write(incomingConsent, hostTimestamp = incomingTimestamp)
+        } else {
+            Write(incomingConsent.copy(timestamp = clockMillis()), hostTimestamp = null)
+        }
+
         var warnEmptyRegistry = false
         val pending = synchronized(lock) {
-            val watermark = stored?.lastHostTimestamp
-            val incomingTimestamp = incomingConsent.timestamp
-            val incoming = if (incomingTimestamp != null) {
-                if (watermark != null && incomingTimestamp < watermark) {
-                    Logger.warn(
-                        "setConsent ignored: snapshot ($incomingTimestamp) is older than the newest " +
-                            "host-timestamped state ($watermark)"
-                    )
-                    return false
-                }
-                StoredConsent(incomingConsent, lastHostTimestamp = incomingTimestamp)
-            } else {
-                StoredConsent(incomingConsent.copy(timestamp = clockMillis()), lastHostTimestamp = watermark)
-            }
+            val incoming = applied(write, stored) ?: return false
+            if (storage == null) preAttachWrites += write
 
             if (registry.isEmpty() && !warnedEmptyRegistry) {
                 // Once per process: the story asks for a warning on this path, and a
@@ -271,8 +298,84 @@ internal class ConsentManager(
      * clear gets that snapshot applied.
      */
     fun clearConsent() {
-        val pending = synchronized(lock) { commitLocked(null) }
+        val pending = synchronized(lock) {
+            if (storage == null) {
+                // Everything before a clear is moot to the replay.
+                preAttachWrites.clear()
+                preAttachWrites += null
+            }
+            commitLocked(null)
+        }
         persist(pending)
+    }
+
+    /**
+     * [write] applied over [current], or null when it is stale: its host timestamp is
+     * older than the host watermark. An untimestamped write carries the watermark
+     * forward.
+     */
+    private fun applied(write: Write, current: StoredConsent?): StoredConsent? {
+        val watermark = current?.lastHostTimestamp
+        val hostTimestamp = write.hostTimestamp ?: return StoredConsent(write.consent, lastHostTimestamp = watermark)
+        if (watermark != null && hostTimestamp < watermark) {
+            Logger.warn(
+                "setConsent ignored: snapshot ($hostTimestamp) is older than the newest " +
+                    "host-timestamped state ($watermark)"
+            )
+            return null
+        }
+        return StoredConsent(write.consent, lastHostTimestamp = hostTimestamp)
+    }
+
+    // ===== Storage attach =====
+
+    /**
+     * Hands the manager its storage, once: later calls (a re-initialize after
+     * `reset()`) are ignored, the manager outlives clients. Loads the persisted state
+     * and replays the writes made before this over it, in order and through the same
+     * staleness rule, so a pre-initialize `setConsent` older than the persisted host
+     * timestamp loses here as it would have at the call. Subscribers hear the result
+     * if it differs from what they last saw.
+     */
+    /** Whether [attachStorage] has run, so callers can skip building a storage. */
+    val hasStorage: Boolean
+        get() = storage != null
+
+    fun attachStorage(newStorage: ConsentStorage) {
+        if (storage != null) return
+        val loaded = newStorage.get()
+        val pending = synchronized(lock) {
+            if (storage != null) return@synchronized null
+            storage = newStorage
+            if (preAttachWrites.isEmpty()) {
+                val before = visibleLocked()
+                stored = loaded
+                reconciled = loaded?.let { ConsentReconciler.reconcile(it.consent, registry) }
+                notifyIfChangedLocked(before)
+                return@synchronized null
+            }
+            var replayed = loaded
+            for (write in preAttachWrites) {
+                replayed = if (write == null) null else applied(write, replayed) ?: replayed
+            }
+            preAttachWrites.clear()
+            commitLocked(replayed)
+        }
+        pending?.let(::persist)
+    }
+
+    /**
+     * Called once a debuggable build is known (at process start, or at `initialize`
+     * when the startup initializer was removed): throws if the latest registration
+     * degraded past a problem, and makes every later one throw at the call — the
+     * debug-build fail-fast iOS gets from an assertion at registration.
+     */
+    fun failFastOnRegistrationProblems() {
+        val problems = synchronized(lock) {
+            failFastOnRegistrationProblems = true
+            registrationProblems
+        }
+        require(problems.isEmpty()) { problems.joinToString("; ") }
     }
 
     private class PendingPersist(val sequence: Long, val value: StoredConsent?)
@@ -299,8 +402,10 @@ internal class ConsentManager(
         synchronized(persistLock) {
             if (pending.sequence <= persistedSequence) return
             persistedSequence = pending.sequence
+            // Pre-attach commits have nowhere to go; attachStorage persists their result.
+            val target = storage ?: return
             val value = pending.value
-            if (value != null) storage.set(value) else storage.clear()
+            if (value != null) target.set(value) else target.clear()
         }
     }
 
@@ -361,15 +466,18 @@ internal class ConsentManager(
     /**
      * Swaps the backing storage and rebuilds state from it, dropping registry and
      * subscribers. For tests that must exercise the process-wide manager without
-     * touching the production preferences file.
+     * touching the production preferences file; null returns it to the pre-initialize,
+     * unattached state.
      */
-    fun replaceStorageForTesting(newStorage: ConsentStorage) {
-        val loaded = newStorage.get()
+    fun replaceStorageForTesting(newStorage: ConsentStorage?) {
+        val loaded = newStorage?.get()
         synchronized(persistLock) {
             synchronized(lock) {
                 subscribers.forEach(Subscription::cancel)
                 subscribers.clear()
                 storage = newStorage
+                preAttachWrites.clear()
+                failFastOnRegistrationProblems = false
                 registry = emptyList()
                 registrationProblems = emptyList()
                 implicitDefault = ConsentReconciler.implicitDefault(emptyList())
@@ -384,7 +492,9 @@ internal class ConsentManager(
 
     companion object {
         private fun mainLooperDispatch(): (Runnable) -> Unit {
-            val mainHandler = Handler(Looper.getMainLooper())
+            // Lazy: the process-wide manager is built with the MetaRouter object, which
+            // must not touch the platform before anything is delivered.
+            val mainHandler by lazy { Handler(Looper.getMainLooper()) }
             return { work -> mainHandler.post(work) }
         }
 

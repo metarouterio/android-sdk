@@ -2,6 +2,11 @@ package com.metarouter.analytics
 
 import android.net.Uri
 import android.webkit.WebView
+import androidx.annotation.CheckResult
+import com.metarouter.analytics.consent.Consent
+import com.metarouter.analytics.consent.ConsentCategory
+import com.metarouter.analytics.consent.ConsentManager
+import com.metarouter.analytics.consent.ConsentSubscription
 import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.webview.BridgeMessageProcessor
 import com.metarouter.analytics.webview.WebViewBridge
@@ -15,9 +20,25 @@ import java.util.concurrent.atomic.AtomicReference
  * Proxy implementation of [AnalyticsInterface] that queues calls before
  * the real client is bound, then replays them upon binding.
  */
-class AnalyticsProxy(
-    private val maxPendingCalls: Int = DEFAULT_MAX_PENDING_CALLS
+class AnalyticsProxy internal constructor(
+    private val maxPendingCalls: Int,
+    /**
+     * Consent bypasses the pending-call queue entirely. The manager needs nothing from
+     * an initialized client, so MetaRouter builds one per process and hands the same
+     * instance to the proxy and to every client it binds. Queueing consent would lose
+     * writes to the bind race and to queue eviction, and a pre-bind read would have to
+     * lie — ignoring a queued setConsent. Compliance state gets none of those failure
+     * modes: every call acts on the manager immediately, bound or not, and the client
+     * bound later stamps from that same manager.
+     */
+    private val consentManager: ConsentManager
 ) : AnalyticsInterface {
+
+    /** A standalone proxy holds consent in memory only; MetaRouter's attaches storage. */
+    // @JvmOverloads: only a primary constructor gets Java's no-arg overload for free,
+    // and `new AnalyticsProxy()` compiled against the previous release.
+    @JvmOverloads
+    constructor(maxPendingCalls: Int = DEFAULT_MAX_PENDING_CALLS) : this(maxPendingCalls, ConsentManager())
 
     companion object {
         const val DEFAULT_MAX_PENDING_CALLS = 2000
@@ -215,6 +236,11 @@ class AnalyticsProxy(
                     // The refused session has no client to report the error — the
                     // proxy carries it so getDebugInfo stays the one diagnostic API.
                     configErrorDescription?.let { put("configError", it) }
+                    // Pre-bind there is no client to report consent; the manager
+                    // exists regardless, and "what consent is the SDK holding before
+                    // init" is exactly what someone debugging a CMP-first launch
+                    // wants to see.
+                    put("consent", consentManager.getConsent().toDebugInfo())
                 }
             }
         }
@@ -290,6 +316,24 @@ class AnalyticsProxy(
         // would lose the wrapper on the host's first loadUrl.
         WebViewBridge.attach(webView, allowedOrigins, bridgeProcessor)
     }
+
+    // ===== Consent (direct, never queued — see consentManager) =====
+
+    override fun registerConsentCategories(categories: List<ConsentCategory>) {
+        consentManager.registerConsentCategories(categories)
+    }
+
+    override fun setConsent(consent: Consent): Boolean = consentManager.setConsent(consent)
+
+    override fun getConsent(): Consent = consentManager.getConsent()
+
+    override fun clearConsent() {
+        consentManager.clearConsent()
+    }
+
+    @CheckResult
+    override fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription =
+        ConsentSubscription(consentManager.subscribe(handler))
 
 
     /**
