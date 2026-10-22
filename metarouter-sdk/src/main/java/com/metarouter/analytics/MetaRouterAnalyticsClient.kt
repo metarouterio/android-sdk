@@ -6,8 +6,11 @@ import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
 import android.webkit.WebView
+import com.metarouter.analytics.consent.Consent
+import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.consent.ConsentStorage
+import com.metarouter.analytics.consent.ConsentSubscription
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
@@ -612,6 +615,28 @@ class MetaRouterAnalyticsClient private constructor(
         WebViewBridge.attach(webView, allowedOrigins, bridgeProcessor)
     }
 
+    // ===== Consent =====
+    // Thin delegation: the state machine lives in ConsentManager. No lifecycle gate on
+    // reads or writes — consent must be settable during init (CMP callbacks fire
+    // early) and the manager exists before any event can be enriched. reset()
+    // deliberately does not touch it: consent is a device-scoped compliance record,
+    // not identity.
+
+    override fun registerConsentCategories(categories: List<ConsentCategory>) {
+        consentManager.registerConsentCategories(categories)
+    }
+
+    override fun setConsent(consent: Consent): Boolean = consentManager.setConsent(consent)
+
+    override fun getConsent(): Consent = consentManager.getConsent()
+
+    override fun clearConsent() {
+        consentManager.clearConsent()
+    }
+
+    override fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription =
+        ConsentSubscription(consentManager.subscribe(handler))
+
     /**
      * Bridge sink: a validated, deduplicated webview envelope enters the normal event
      * path here. The native messageId, timestamp, identity, and device context are all
@@ -756,6 +781,7 @@ class MetaRouterAnalyticsClient private constructor(
                 // Circuit breaker info
                 put("circuitState", circuitBreaker.getState()::class.simpleName)
                 put("circuitCooldownMs", circuitBreaker.getRemainingCooldownMs())
+                put("consent", consentManager.getConsent().toDebugInfo())
             } else {
                 put("anonymousId", null)
                 put("userId", null)

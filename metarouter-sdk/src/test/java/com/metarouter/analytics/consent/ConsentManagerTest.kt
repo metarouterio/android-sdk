@@ -665,6 +665,163 @@ class ConsentManagerTest {
         }
     }
 
+    // ===== Storage attached at initialize =====
+
+    private fun unattachedManager() = ConsentManager(clockMillis = { now }, dispatch = dispatcher::enqueue)
+
+    private fun persist(consent: Consent, lastHostTimestamp: Long?) =
+        storage.set(StoredConsent(consent, lastHostTimestamp))
+
+    @Test
+    fun `attach with no earlier writes loads the persisted state and notifies`() {
+        persist(Consent(explicit = true, optOut = mapOf("c0002" to false), timestamp = 5), lastHostTimestamp = 5)
+        val manager = unattachedManager()
+        manager.registerConsentCategories(registry)
+        val (received, _) = subscribeRecording(manager)
+        dispatcher.drain()
+        assertFalse("nothing persisted is visible before the attach", manager.getConsent().explicit)
+
+        manager.attachStorage(storage)
+        dispatcher.drain()
+
+        val expected = Consent(explicit = true, optOut = mapOf("c0001" to false, "c0002" to false, "c0004" to true), timestamp = 5)
+        assertEquals(expected, manager.getConsent())
+        assertEquals("subscriber hears the persisted state", expected, received.last())
+    }
+
+    /** A pre-initialize choice is the newest one: it wins over the persisted state, and lands on disk. */
+    @Test
+    fun `untimestamped write before attach wins over persisted state and is persisted`() {
+        persist(Consent(explicit = true, optOut = mapOf("a" to true), timestamp = 5), lastHostTimestamp = 5)
+        val manager = unattachedManager()
+        now = 7_000
+        assertTrue(manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to false))))
+
+        manager.attachStorage(storage)
+
+        assertEquals(mapOf("a" to false), manager.getConsent().optOut)
+        assertEquals(StoredConsent(Consent(explicit = true, optOut = mapOf("a" to false), timestamp = 7_000), 5), storage.get())
+    }
+
+    /**
+     * The staleness rule reaches across the attach: a CMP replaying a cached snapshot
+     * before initialize loses to the newer persisted one, exactly as it would have with
+     * storage present at the call.
+     */
+    @Test
+    fun `timestamped write before attach older than the persisted watermark loses at attach`() {
+        persist(Consent(explicit = true, optOut = mapOf("a" to true), timestamp = 2_000), lastHostTimestamp = 2_000)
+        val manager = unattachedManager()
+        assertTrue(
+            "the watermark is not known yet",
+            manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to false), timestamp = 1_000))
+        )
+
+        manager.attachStorage(storage)
+
+        assertEquals(mapOf("a" to true), manager.getConsent().optOut)
+        assertEquals(2_000L, storage.get()?.lastHostTimestamp)
+    }
+
+    @Test
+    fun `writes before attach replay in order over the persisted state`() {
+        persist(Consent(explicit = true, optOut = mapOf("a" to true), timestamp = 2_000), lastHostTimestamp = 2_000)
+        val manager = unattachedManager()
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to false), timestamp = 1_000)) // stale at attach
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("b" to true), timestamp = 3_000)) // newer
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("b" to false), timestamp = 2_500)) // stale vs 3_000
+
+        manager.attachStorage(storage)
+
+        assertEquals(mapOf("b" to true), manager.getConsent().optOut)
+        assertEquals(3_000L, storage.get()?.lastHostTimestamp)
+    }
+
+    @Test
+    fun `clear before attach wipes the persisted state`() {
+        persist(Consent(explicit = true, optOut = mapOf("a" to true), timestamp = 2_000), lastHostTimestamp = 2_000)
+        val manager = unattachedManager()
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to false)))
+        manager.clearConsent()
+
+        manager.attachStorage(storage)
+
+        assertEquals(Consent(explicit = false, optOut = emptyMap()), manager.getConsent())
+        assertNull(storage.get())
+    }
+
+    @Test
+    fun `clear then set before attach applies the set over a wiped watermark`() {
+        persist(Consent(explicit = true, optOut = mapOf("a" to true), timestamp = 2_000), lastHostTimestamp = 2_000)
+        val manager = unattachedManager()
+        manager.clearConsent()
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to false), timestamp = 1_000))
+
+        manager.attachStorage(storage)
+
+        assertEquals(mapOf("a" to false), manager.getConsent().optOut)
+        assertEquals(1_000L, storage.get()?.lastHostTimestamp)
+    }
+
+    /** The manager outlives clients: a re-initialize after reset must not swap or reload storage. */
+    @Test
+    fun `second attach is ignored`() {
+        val manager = unattachedManager()
+        manager.attachStorage(storage)
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to true)))
+        val other = ConsentStorage(context, prefsName = "com.metarouter.analytics.consent.test-other")
+        other.set(StoredConsent(Consent(explicit = false, optOut = mapOf("z" to true))))
+        try {
+            manager.attachStorage(other)
+
+            assertEquals(mapOf("a" to true), manager.getConsent().optOut)
+            manager.clearConsent()
+            assertNull(storage.get())
+            assertNotNull("the second storage is never written", other.get())
+        } finally {
+            other.clear()
+        }
+    }
+
+    @Test
+    fun `nothing is persisted before attach`() {
+        val manager = unattachedManager()
+
+        manager.setConsent(Consent(explicit = true, optOut = mapOf("a" to true)))
+
+        assertNull(storage.get())
+        assertEquals(mapOf("a" to true), manager.getConsent().optOut)
+    }
+
+    // ===== Debuggable-build fail-fast =====
+
+    @Test
+    fun `fail-fast throws for a registration that already degraded`() {
+        val manager = makeManager()
+        manager.registerConsentCategories(listOf(ConsentCategory("C0001")))
+
+        try {
+            manager.failFastOnRegistrationProblems()
+            fail("a degraded registration must throw on a debuggable build")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("C0001"))
+        }
+    }
+
+    @Test
+    fun `after fail-fast a bad registration throws at the call and a clean one does not`() {
+        val manager = makeManager()
+        manager.failFastOnRegistrationProblems()
+
+        manager.registerConsentCategories(registry)
+        try {
+            manager.registerConsentCategories(listOf(ConsentCategory("c0001"), ConsentCategory("c0001")))
+            fail("duplicate key must throw")
+        } catch (expected: IllegalArgumentException) {
+        }
+        assertEquals("the bad registration was not applied", registry.map { it.key }.toSet(), manager.getConsent().optOut.keys)
+    }
+
     // ===== Review follow-ups =====
 
     /**

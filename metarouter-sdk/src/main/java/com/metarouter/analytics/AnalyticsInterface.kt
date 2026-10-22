@@ -2,6 +2,10 @@ package com.metarouter.analytics
 
 import android.net.Uri
 import android.webkit.WebView
+import com.metarouter.analytics.consent.Consent
+import com.metarouter.analytics.consent.ConsentCategory
+import com.metarouter.analytics.consent.ConsentSubscription
+import com.metarouter.analytics.utils.Logger
 
 /**
  * Public API for the MetaRouter Analytics SDK.
@@ -223,5 +227,137 @@ interface AnalyticsInterface {
      * @param webView The host-owned WebView to bridge
      * @param allowedOrigins Explicit page origins allowed to produce events
      */
-    fun attachWebView(webView: WebView, allowedOrigins: List<String>)
+    fun attachWebView(webView: WebView, allowedOrigins: List<String>) {
+        InterfaceDefaults.warnNotImplemented(this, "attachWebView")
+    }
+
+    // ===== Consent =====
+
+    /**
+     * Register the consent category set and each category's default posture.
+     *
+     * Call on [MetaRouter.Analytics.shared] BEFORE `initialize`. The registry is not
+     * persisted, and until it is registered the implicit default is an empty `optOut` —
+     * which the server reads as nothing blocked. `initialize` can emit lifecycle events
+     * (`Application Opened`, `Session Started`) from its background setup, so a
+     * registration that runs after it races those events on every launch without stored
+     * consent. Registration works before `initialize` because consent never waits for a
+     * client.
+     *
+     * A CMP payload is sparse, and the registry is what lets the SDK complete it into a
+     * full block (keep known keys, drop unknown ones, fill missing ones with the
+     * registered default). Default posture is opt-OUT. Re-registration replaces the set
+     * and recomputes the view of any stored consent against it; it does not merge. A
+     * `setConsent` that arrives first is stored as-is and completed on registration.
+     * Keys are trimmed and lowercased; on a debuggable build a key that needed it, a
+     * blank key, or a duplicate throws at `initialize` (or at the call, after it).
+     */
+    fun registerConsentCategories(categories: List<ConsentCategory>) {
+        InterfaceDefaults.warnNotImplemented(this, "registerConsentCategories")
+    }
+
+    /**
+     * Push the current consent state into the SDK.
+     *
+     * The host owns consent acquisition (CMP SDK callback, WebView cookie, …) — feed the
+     * raw payload through an adapter (e.g. `OneTrustAdapter.normalize`) and hand the
+     * canonical result here. The SDK reconciles it against the registered categories,
+     * persists it across launches, and stamps it on every subsequent outbound event as
+     * `context.consent`. Keys are matched case-insensitively and sent lowercase. Fully
+     * replaces prior state, with one exception: a snapshot whose `timestamp` is older
+     * than the newest host-supplied `timestamp` since the last `clearConsent` is ignored
+     * as a stale CMP replay. Untimestamped calls are never rejected and are not compared
+     * with any timestamp.
+     *
+     * Usable before `initialize` and immediately effective: an event tracked on the next
+     * line carries the new state. Consent never gates delivery — events always send, and
+     * the server gates per integration on the stamped block. Before `initialize` the
+     * previous launch's persisted consent is not loaded yet, so a timestamped snapshot
+     * older than it returns `true` here and is ignored, with the same warning, when
+     * `initialize` loads it.
+     *
+     * @return `false` when the snapshot was ignored as stale; the previous state stands.
+     */
+    fun setConsent(consent: Consent): Boolean {
+        InterfaceDefaults.warnNotImplemented(this, "setConsent")
+        return false
+    }
+
+    /**
+     * The current reconciled consent state. Never null: before the first `setConsent`
+     * (and after `clearConsent`) this is the implicit default — `explicit: false` with
+     * every registered category at its default posture. Before `initialize`, consent
+     * persisted by a previous launch is not loaded yet and is not reflected here.
+     */
+    fun getConsent(): Consent {
+        InterfaceDefaults.warnNotImplemented(this, "getConsent")
+        return Consent(explicit = false, optOut = emptyMap())
+    }
+
+    /**
+     * Wipe the stored consent state, timestamp history included, and return to the
+     * implicit default. Any `setConsent` after it applies, so do not re-push a CMP
+     * snapshot from before the clear. Unlike `reset()`, which clears identity but leaves
+     * consent untouched.
+     */
+    fun clearConsent() {
+        InterfaceDefaults.warnNotImplemented(this, "clearConsent")
+    }
+
+    /**
+     * Subscribe to consent changes. The handler runs on the main thread, once with the
+     * current value right after subscribing (posted, never inline), then on every real
+     * change (value-identical `setConsent` calls do not fire). A subscriber attached
+     * before `initialize` hears the previous launch's persisted consent when
+     * `initialize` loads it, if it differs.
+     *
+     * @return the subscription. Keep it: delivery continues until `close()`, even if
+     *   the reference is dropped. After `close()` returns on the main thread, the
+     *   handler is not invoked again, even for a delivery already queued.
+     */
+    fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription {
+        InterfaceDefaults.warnNotImplemented(this, "subscribeToConsent")
+        return ConsentSubscription {}
+    }
+}
+
+/**
+ * Defaults for every member added after the interface first shipped, so a host class
+ * implementing [AnalyticsInterface] (a test fake, a wrapper) keeps compiling across a
+ * minor SDK upgrade. The SDK's own classes implement all of them; the defaults only
+ * ever run on a host implementation.
+ *
+ * Each one warns and does nothing, rather than throwing: a wrapper that forgets to
+ * forward a new call loses that call — visible in the log — instead of either breaking
+ * the host's build or crashing in production. Any member added from here on gets a
+ * default for the same reason.
+ *
+ * The defaults also removed the compiler's check that the SDK's own classes implement
+ * each member: a signature that drifts silently stops being the override, and the call
+ * becomes a logged no-op. [hits] records every `Class.method` that fell through — a
+ * set, bounded by the number of implementing classes — and tests drive every member on
+ * the SDK's classes and assert it stays empty.
+ */
+internal object InterfaceDefaults {
+    private val hitsLock = Any()
+    private val recorded = HashSet<String>()
+
+    val hits: Set<String>
+        get() = synchronized(hitsLock) { recorded.toSet() }
+
+    fun reset() = synchronized(hitsLock) { recorded.clear() }
+
+    /**
+     * Warns once per class and method: a wrapper that forwards `track` but not
+     * `getConsent` would otherwise log on every event.
+     */
+    fun warnNotImplemented(receiver: Any, method: String) {
+        val type = receiver::class.java.simpleName
+        val first = synchronized(hitsLock) { recorded.add("$type.$method") }
+        if (!first) return
+        Logger.warn(
+            "$method is not implemented by $type — the call was ignored. A class wrapping the SDK must " +
+                "forward it to MetaRouter.Analytics. Logged once."
+        )
+    }
 }

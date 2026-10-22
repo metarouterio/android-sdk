@@ -2,6 +2,8 @@ package com.metarouter.analytics
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import com.metarouter.analytics.consent.ConsentManager
+import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CancellationException
@@ -26,7 +28,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  */
 object MetaRouter {
-    private val proxy = AnalyticsProxy()
+    // One consent manager per process, built with the proxy rather than at
+    // initialize: it needs nothing from a client, so consent is usable before
+    // initialize() (a CMP callback can fire first), during async init, and across
+    // reset()/re-initialize — every client this object binds stamps from this same
+    // instance. Consent is a device-scoped compliance record, not identity, which is
+    // why reset() leaves it alone. Storage needs a Context, so it attaches at the
+    // first initialize (see ConsentManager.attachStorage).
+    private val consentManager = ConsentManager()
+    private val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager)
     private val store = RealClientStore()
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -99,13 +109,14 @@ object MetaRouter {
      * @return AnalyticsInterface proxy that can be used immediately
      */
     fun createAnalyticsClient(context: Context, options: InitOptions): AnalyticsInterface {
+        checkConsentRegistration(context)
         if (!passesConfigGate(context, options)) {
             synchronized(initLock) {
                 // Marked started so client() hands back the inert proxy instead of
                 // throwing — the refused session must stay call-safe end to end.
                 initializationStarted.set(true)
                 sessionRefused.set(true)
-                initScope.launch { disableSession(options.configError!!) }
+                initScope.launch { disableSession(context, options.configError!!) }
             }
             return proxy
         }
@@ -158,11 +169,12 @@ object MetaRouter {
         // async-then-await (not withContext) so the work is a child of
         // initScope: enqueue order is fixed under initLock, and
         // resetForTesting's cancelChildren reaches awaited work too.
+        checkConsentRegistration(context)
         if (!passesConfigGate(context, options)) {
             val disable = synchronized(initLock) {
                 initializationStarted.set(true)
                 sessionRefused.set(true)
-                initScope.async { disableSession(options.configError!!) }
+                initScope.async { disableSession(context, options.configError!!) }
             }
             disable.await()
             return proxy
@@ -217,6 +229,26 @@ object MetaRouter {
         return false
     }
 
+    /**
+     * The debug half of registration's degrade-don't-throw contract: a registration
+     * typo already warned, and on a debuggable build it fails fast here (and at any
+     * later registration) — the first point where debuggability is knowable, the
+     * same reason the config gate forks here.
+     */
+    private fun checkConsentRegistration(context: Context) {
+        if (isDebuggableBuild(context)) consentManager.failFastOnRegistrationProblems()
+    }
+
+    /**
+     * Loads the previous launch's consent and replays pre-initialize writes over it.
+     * On the init dispatcher, not the caller's thread: the first SharedPreferences read
+     * blocks on disk. Every event is enriched after this — the client is built after
+     * it, and pre-bind calls replay after the bind.
+     */
+    private fun attachConsentStorage(context: Context) {
+        consentManager.attachStorage(ConsentStorage(context.applicationContext))
+    }
+
     private fun isDebuggableBuild(context: Context): Boolean =
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
@@ -228,8 +260,10 @@ object MetaRouter {
      * flushing, and a "disabled" session must not keep sending events. Marking the
      * proxy disabled also resolves suspended awaiters — no bind is coming.
      */
-    private suspend fun disableSession(error: ConfigError) {
+    private suspend fun disableSession(context: Context, error: ConfigError) {
         initMutex.withLock {
+            // A refused session sends nothing, but the host's consent still persists.
+            attachConsentStorage(context)
             lifecycleObserver?.unregister()
             lifecycleObserver = null
             store.get()?.reset()
@@ -255,11 +289,13 @@ object MetaRouter {
             // degraded against the previous session's verdict.
             proxy.clearConfigDisabled()
 
+            attachConsentStorage(context)
+
             // The config-error callback only ever fires from the gate; the client's
             // copy of the options must not pin the closure for the session.
             val gatedOptions =
                 if (options.onConfigError != null) options.discardingConfigCallback() else options
-            val client = MetaRouterAnalyticsClient.initialize(context, gatedOptions)
+            val client = MetaRouterAnalyticsClient.initialize(context, gatedOptions, consentManager = consentManager)
 
             val stored = store.set(client)
             if (!stored) {
@@ -287,6 +323,15 @@ object MetaRouter {
     }
 
     object Analytics {
+        /**
+         * The analytics client, usable at any time — before `initialize` (calls are
+         * queued and replayed at bind; consent acts immediately), during async init,
+         * and after `reset()`. Never throws, unlike [client].
+         */
+        @JvmStatic
+        val shared: AnalyticsInterface
+            get() = proxy
+
         /**
          * Initialize the analytics client (fire-and-forget).
          *
@@ -424,6 +469,10 @@ object MetaRouter {
             }
         }
     }
+
+    /** Test seam for the process-wide manager; see `ConsentManager.replaceStorageForTesting`. */
+    internal val consentManagerForTesting: ConsentManager
+        get() = consentManager
 
     /**
      * Reset internal state for testing.

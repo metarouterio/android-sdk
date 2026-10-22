@@ -19,6 +19,7 @@ A lightweight Android analytics SDK that transmits events to your MetaRouter clu
 - [Identity Persistence](#identity-persistence)
 - [Lifecycle Events](#lifecycle-events)
 - [Session Tracking](#session-tracking)
+- [Consent](#consent)
 - [WebView Bridge](#webview-bridge)
 - [Advertising ID (GAID)](#advertising-id-gaid)
 - [Using the alias() Method](#using-the-alias-method)
@@ -217,6 +218,14 @@ Constructing `InitOptions` never throws. Invalid input (empty write key, non-htt
 - On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
 - `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
 
+### MetaRouter.Analytics.shared
+
+The analytics client, available at any time — before `initialize`, during initialization, and after `reset()`. It is the same proxy `initialize` returns, and it never throws. Calls made before `initialize` follow the proxy rules above; consent calls act immediately (see [Consent](#consent)). `MetaRouter.Analytics.client()` keeps working and still throws until `initialize` has been called.
+
+```kotlin
+MetaRouter.Analytics.shared.track("Button Tapped")
+```
+
 ### Analytics Interface
 
 The analytics client provides the following methods:
@@ -235,9 +244,14 @@ The analytics client provides the following methods:
 - `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
 - `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
 - `flush()`: Flush events immediately (suspending)
-- `reset()`: Reset analytics state and clear all stored data (suspending). Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
+- `reset()`: Reset analytics state: clears identity (user, anonymous and group ids, advertising ID) and the event queue (suspending). Consent is **not** cleared; see `clearConsent()`. Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
 - `enableDebugLogging()`: Enable debug logging
 - `getDebugInfo()`: Get current debug information (suspending)
+- `registerConsentCategories(categories: List<ConsentCategory>)`: Register the consent categories the pipeline gates on and each one's default posture. Call on `MetaRouter.Analytics.shared` before `initialize`. See [Consent](#consent)
+- `setConsent(consent: Consent): Boolean`: Push the user's consent into the SDK. Reconciled against the registered categories, persisted across launches, stamped on every subsequent event as `context.consent`. Usable before `initialize`. Returns `false` when the snapshot was ignored as stale
+- `getConsent(): Consent`: The current reconciled consent. Never null: the implicit default (`explicit: false`, registered defaults) until the first `setConsent`
+- `clearConsent()`: Consent withdrawal — back to the implicit default, persisted state (timestamp history included) wiped. `reset()` does **not** do this
+- `subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription`: Observe consent changes on the main thread; the first delivery is the current value, on the next main-looper turn. Keep the returned subscription and call `close()` to stop; it implements `Closeable`
 
 ### Kotlin Extension Methods
 
@@ -473,6 +487,7 @@ The `advertisingId` is used for ad tracking and attribution (GAID on Android). S
 | **anonymousId**   | Auto-generated (UUID v4) | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
 | **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
 | **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
+| **consent**       | `setConsent(consent)`    | `metarouter:consent:state`  | All events (`context.consent`) | `clearConsent()` only (survives `reset()`) |
 
 ### Event Enrichment Flow
 
@@ -749,6 +764,106 @@ val options = InitOptions(
 
 `fireSessionStarted` is off by default so upgrading the SDK never changes an app's event volume. Turn it on when a downstream destination needs an explicit session-start signal (GA4's `session_start`, for example).
 
+## Consent
+
+The host app owns consent acquisition — a CMP SDK callback, a cookie read out of a WebView, your own preference screen. The SDK owns storage, reconciliation, observation, and putting consent on the wire. Every event carries the current consent at `context.consent`, in the same shape the web SDK emits, so the cluster enforces one set of per-integration rules for web and mobile:
+
+```json
+"context": {
+  "consent": {
+    "explicit": true,
+    "optOut": {
+      "c0001": false,
+      "c0002": false,
+      "c0004": true
+    }
+  }
+}
+```
+
+- `explicit` — `true` when the user made an explicit choice, `false` for an implicit or regional default. You set it; the SDK cannot infer it.
+- `optOut` — a flat map with **opt-out** semantics: `true` means blocked. Keys are lowercase and pass through from your CMP (`c0001`…, `analytics`, `advertising`, …). `setConsent` canonicalizes the keys you pass (`C0004` → `c0004`); when two keys collapse to one, opted-out wins.
+
+Consent never gates delivery. Events send immediately and the server gates per integration, so there is no buffering, no init flag, and nothing to wait for.
+
+### 1. Register categories — before `initialize`
+
+Register the category set your pipeline gates on, with each category's default posture. Default is opt-out (`defaultOptOut = true`): a category is opted *in* deliberately, and the absence of a signal never opts a user in.
+
+```kotlin
+// Consent calls never wait for a client, so register first…
+MetaRouter.Analytics.shared.registerConsentCategories(listOf(
+    ConsentCategory("c0001", defaultOptOut = false), // strictly necessary — always on
+    ConsentCategory("c0002"),                        // performance
+    ConsentCategory("c0004"),                        // targeting
+))
+
+// …then initialize.
+val analytics = MetaRouter.Analytics.initialize(applicationContext, options)
+```
+
+Order matters. The registry is not persisted, and until it is registered the implicit default has an empty `optOut`, which the cluster reads as nothing blocked. `initialize` can emit `Application Opened` / `Session Started` during its background setup, so registering afterwards races those events on every launch where the user has not yet set consent.
+
+Keys are trimmed and lowercased, blank keys dropped, and duplicates keep their first occurrence, each with a warning. On a **debuggable build** any of those throws `IllegalArgumentException` at `initialize` (or at the registration itself, once initialized), like invalid `InitOptions`; release builds degrade with the warning.
+
+Registration is what lets the SDK complete a sparse CMP payload into a full block: known keys keep their value, unknown keys are dropped, missing categories take their registered default. Re-registering replaces the set and recomputes the view of any stored consent against it — the stored snapshot itself is kept whole, so a category one build drops and the next re-adds comes back with the user's original choice.
+
+### 2. Push consent whenever it changes
+
+```kotlin
+analytics.setConsent(Consent(
+    explicit = true,
+    optOut = mapOf("c0002" to false, "c0004" to true)
+))
+```
+
+`setConsent` fully replaces the previous state, persists it across launches, and takes effect immediately. Events are stamped when they are enriched, which happens in the background right after `track()` returns, so set consent *before* tracking the events it should cover; `track(); setConsent()` on adjacent lines can stamp the new state on that event. Before the client is ready, calls are queued and enriched when it binds, so every queued event carries the consent current at bind, not at its call. It is safe to call before `initialize` (CMP callbacks often fire first), and the state survives both `analytics.reset()` and `MetaRouter.Analytics.reset()` + re-initialize: consent is a compliance record scoped to the device and person, not to the analytics identity, so a logout must not resurrect tracking the user opted out of. Only `clearConsent()` removes it.
+
+Each `Consent` carries an optional epoch-millisecond `timestamp`. If you supply timestamps (for example from the CMP's own record), a snapshot older than the newest timestamp you have supplied is ignored, so a CMP replaying a cached choice cannot overwrite a fresher one; `setConsent` returns `false` when that happens. `clearConsent()` resets that history, so after a clear any snapshot applies — do not re-push one from before the clear. Use one unit: a single millisecond timestamp followed by seconds rejects every seconds call until the next clear. A call without a timestamp is always applied as the user's current choice; the SDK stamps the device clock for information only and never compares it with yours. The timestamp never goes on the wire.
+
+Before the first `setConsent`, `getConsent()` and every outbound event carry the **implicit default** — `explicit: false` with every registered category at its default — which the cluster gates exactly like an implicit-consent web visitor. There is no "unknown" state.
+
+**Before `initialize` on Android.** Reading the previous launch's persisted consent needs a `Context`, which the SDK first gets at `initialize`. Until then consent calls work on an in-memory state, and `initialize` loads the persisted state and replays them over it, so the end state — and every event, none of which is enriched before `initialize` — is the same as if storage had been there all along. Only reads before `initialize` differ:
+
+- `getConsent()` does not reflect the previous launch's consent yet.
+- A subscriber attached before `initialize` hears the persisted consent when it loads, if it differs.
+- A timestamped `setConsent` older than the persisted consent returns `true` before `initialize` and is ignored, with the usual warning, when the persisted state loads.
+
+### OneTrust
+
+`OneTrustAdapter` translates OneTrust's opt-in statuses into the canonical shape: category IDs lowercased (`C0004` → `c0004`), values inverted to opt-out semantics. It is a pure function with no dependency on the OneTrust SDK — read OneTrust however you already do and hand the raw result over. Reconciliation against your registered categories happens in `setConsent`, so you can pass everything OneTrust reports.
+
+```kotlin
+import com.metarouter.analytics.consent.adapters.OneTrustAdapter
+
+// From the OneTrust SDK's category statuses
+val statuses = mapOf("C0001" to 1, "C0002" to 1, "C0004" to 0)
+analytics.setConsent(OneTrustAdapter.normalize(statuses, explicit = true))
+
+// From the OptanonConsent cookie's `groups` parameter (e.g. read out of a WebView).
+// Percent-encoded values and the whole cookie value are both accepted.
+analytics.setConsent(OneTrustAdapter.normalize(groups = "C0001%3A1%2CC0002%3A1%2CC0004%3A0", explicit = true))
+```
+
+Pass `explicit = true` from the banner-interaction callback and `explicit = false` when applying a regional default — the payload does not say which it was; your code does. Re-run the two lines on every OneTrust consent-changed callback. If the cookie is absent, do not call `setConsent`: `normalize(groups = "", explicit = true)` reads as "explicitly opted out of everything", which records a rejection the user never made. Any other CMP (or your own preference screen) can build a `Consent` directly: adapters are a convenience, not a requirement.
+
+### Observing and withdrawing
+
+```kotlin
+val subscription = analytics.subscribeToConsent { consent ->
+    // Runs on the main thread: UI is safe to touch directly. It fires once with the
+    // current value (posted to the next main-looper turn), then on every real change.
+    thirdPartySdk.setEnabled(consent.optOut["c0004"] == false)
+}
+// Keep `subscription`: dropping it does not stop delivery. Later, on the main thread —
+// nothing is delivered after this returns, even if already queued:
+subscription.close()
+
+analytics.clearConsent() // back to the implicit default; persisted state wiped
+```
+
+A `setConsent` whose values equal the current state does not notify subscribers, even with a fresher timestamp — handlers react to decisions, not clocks.
+
 ## WebView Bridge
 
 Hybrid apps render some screens as web content inside a WebView. Without extra work that activity is invisible to MetaRouter — or worse, double-tracked by an in-page analytics setup on a separate identity. The webview bridge captures events fired by page JavaScript and delivers them through the native SDK, so webview and native activity arrive at your cluster as **one user, one pipeline**: native identity, device context, and the page's own facts on every event.
@@ -795,7 +910,7 @@ Bridged events go through the same enrichment as native events. The page contrib
 | From the page (stamped at call time) | From the SDK (merged at receipt) |
 |---|---|
 | event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context |
-| `context.page` — url, path, search, title, referrer | `messageId`, `timestamp` |
+| `context.page` — url, path, search, title, referrer | `messageId`, `timestamp`, `context.consent`, session (`context.providers.metarouter`) |
 
 Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message on the underlying channel — malformed input is rejected, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
 
