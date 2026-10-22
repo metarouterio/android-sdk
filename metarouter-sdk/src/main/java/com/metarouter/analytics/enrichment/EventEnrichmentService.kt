@@ -60,7 +60,9 @@ internal class EventEnrichmentService(
         }
 
         // Bridge-sourced events carry their page facts on the BaseEvent; native events
-        // leave it null and context.page stays absent, matching web SDK output.
+        // leave it null. The Dispatcher encodes nulls, so the wire carries `"page": null`
+        // (and `"consent": null` on a pre-consent event drained from disk) where iOS and
+        // web omit the key; downstream mappings and consent filters treat the two alike.
         val contextWithPage = if (baseEvent.page != null) {
             contextWithAdId.copy(page = baseEvent.page)
         } else {

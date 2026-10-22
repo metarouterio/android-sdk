@@ -1,6 +1,7 @@
 package com.metarouter.analytics.webview
 
 import com.metarouter.analytics.consent.ConsentManager
+import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
@@ -59,7 +60,11 @@ class BridgeEventPlumbingTest {
             wallClockMillis = { 1_757_400_000_000L },
             monotonicClockMillis = { 50_000L }
         ),
-        consentManager = ConsentManager(mockk(relaxed = true), dispatch = { })
+        // A stub that reads as never-set, not a relaxed mock that happens to.
+        consentManager = ConsentManager(
+            mockk<ConsentStorage>(relaxUnitFun = true) { every { get() } returns null },
+            dispatch = { }
+        )
     )
 
     @Test
