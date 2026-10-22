@@ -67,6 +67,9 @@ class ConsentIntegrationTest {
         storage = ConsentStorage(appContext).apply { clear() }
         queue = RecordingEventQueue()
         MetaRouter.resetForTesting()
+        // The process-wide manager outlives tests: another test's initialize may have
+        // attached storage already.
+        MetaRouter.consentManagerForTesting.replaceStorageForTesting(null)
     }
 
     @After
