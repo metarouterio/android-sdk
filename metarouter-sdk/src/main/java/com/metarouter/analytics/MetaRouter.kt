@@ -265,6 +265,7 @@ object MetaRouter {
     }
 
     private fun attachProviderContextStorage(context: Context) {
+        if (providerContextManager.hasStorage) return
         providerContextManager.attachStorage(ProviderContextStorage(context.applicationContext))
     }
 

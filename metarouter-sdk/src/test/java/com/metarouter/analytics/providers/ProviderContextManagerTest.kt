@@ -396,9 +396,13 @@ class ProviderContextManagerTest {
         assertFalse(manager.setValue("p", "a", JsonPrimitive(Double.NaN)))
         assertFalse(manager.setValue("p", "b", JsonUnquotedLiteral("{bad")))
         assertFalse(manager.setValue("p", "c", buildJsonObject { put("n", Double.POSITIVE_INFINITY) }))
+        for (literal in listOf("1f", "0x1p3", ".5", "+1", "01")) {
+            assertFalse("Java float syntax is not JSON: $literal", manager.setValue("p", "e", JsonUnquotedLiteral(literal)))
+        }
+        assertTrue(manager.setValue("p", "f", JsonUnquotedLiteral("-1.5e3")))
         assertTrue(manager.setValue("p", "d", buildJsonObject { put("id", "x"); put("n", 2); put("ok", true) }))
 
-        assertEquals(setOf("d"), manager.getAll()["p"]?.keys)
+        assertEquals(setOf("d", "f"), manager.getAll()["p"]?.keys)
     }
 
     // ===== Persistence =====

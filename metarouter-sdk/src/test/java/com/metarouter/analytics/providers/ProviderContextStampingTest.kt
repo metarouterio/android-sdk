@@ -44,7 +44,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Payload-attach for host-set provider context: every enriched event — whichever type
  * or source produced it, native or bridge-sourced — carries
  * `context.providers.<provider>.<key>` alongside the SDK's own `metarouter` session
- * block, read at enrichment time.
+ * block, read at enrichment time. The bridge-driven POST-body check lives in
+ * `consent/ConsentClientPayloadTest`, next to the FakeNetworkClient harness.
  */
 @RunWith(RobolectricTestRunner::class)
 class ProviderContextStampingTest {

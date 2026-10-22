@@ -100,8 +100,9 @@ class ProviderContextProxyTest {
     }
 
     /**
-     * The Android-only step: storage attaches at initialize. A previous launch's values
-     * load then, and a pre-initialize write lands on top of them.
+     * The fallback path, when a host removed the startup initializer: storage attaches at
+     * initialize. A previous launch's values load then, and a pre-initialize write lands
+     * on top of them.
      */
     @Test
     fun `initialize loads persisted values and keeps pre-initialize writes on top`() = runBlocking {

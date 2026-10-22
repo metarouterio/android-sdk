@@ -194,6 +194,10 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
      * replays the writes made before this over it, in order and through the same
      * bounds, so the result is what storage present from the start would have held.
      */
+    /** Whether [attachStorage] has run, so callers can skip building a storage. */
+    val hasStorage: Boolean
+        get() = storage != null
+
     fun attachStorage(newStorage: ProviderContextStorage) {
         if (storage != null) return
         val loaded = newStorage.get()
@@ -352,11 +356,16 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
          * would make every batch body unparseable, so it gets the same checks as
          * converted values: finite numbers, real literals, all the way down.
          */
+        // RFC 8259 number grammar. toDoubleOrNull would also accept Java float syntax
+        // (`1f`, `0x1p3`, `.5`, `+1`), which is not JSON. The grammar has no NaN or
+        // Infinity, so finiteness comes with it.
+        private val JSON_NUMBER = Regex("""-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?""")
+
         private fun isWireSafe(element: JsonElement): Boolean = when (element) {
             is JsonNull -> true
             is JsonPrimitive -> element.isString ||
                 element.content == "true" || element.content == "false" ||
-                element.content.toDoubleOrNull()?.isFinite() == true
+                JSON_NUMBER.matches(element.content)
             is JsonArray -> element.all(::isWireSafe)
             is JsonObject -> element.values.all(::isWireSafe)
         }

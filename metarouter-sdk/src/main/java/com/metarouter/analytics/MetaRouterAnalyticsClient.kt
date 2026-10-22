@@ -18,7 +18,6 @@ import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.providers.ProviderContextManager
-import com.metarouter.analytics.providers.ProviderContextStorage
 import com.metarouter.analytics.lifecycle.LifecycleCoordinator
 import com.metarouter.analytics.lifecycle.LifecycleEventTracker
 import com.metarouter.analytics.network.AndroidNetworkMonitor
