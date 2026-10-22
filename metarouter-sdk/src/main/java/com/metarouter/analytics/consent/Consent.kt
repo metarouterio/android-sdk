@@ -26,8 +26,10 @@ import kotlinx.serialization.Serializable
  *   applied. A value too large to be epoch milliseconds (micro- or nanoseconds) is
  *   treated as null, with a warning. Never part of the outbound payload.
  */
+// @JvmOverloads here and on ConsentCategory: the consent surface is where Java hosts
+// meet CMP SDKs, so it gets the Java niceties the rest of the SDK does not promise.
 @Serializable
-data class Consent(
+data class Consent @JvmOverloads constructor(
     val explicit: Boolean,
     val optOut: Map<String, Boolean>,
     val timestamp: Long? = null
@@ -87,7 +89,7 @@ internal object ConsentKey {
  *   this category. Defaults to `true` (blocked): a category is opted *in*
  *   deliberately, and the absence of a signal never opts a user in.
  */
-data class ConsentCategory(
+data class ConsentCategory @JvmOverloads constructor(
     val key: String,
     val defaultOptOut: Boolean = true
 )

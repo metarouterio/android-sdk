@@ -355,6 +355,28 @@ class ConsentManagerTest {
         assertEquals(true, manager.getConsent().optOut["c0004"])
     }
 
+    /** The host's map is copied: mutating it afterwards changes nothing the SDK holds. */
+    @Test
+    fun `host mutating the map it passed does not change stored consent`() {
+        val manager = makeManager()
+        val hostMap = mutableMapOf("c0002" to false)
+        manager.setConsent(Consent(explicit = true, optOut = hostMap))
+
+        hostMap["c0002"] = true
+        hostMap["c0004"] = false
+        manager.registerConsentCategories(registry)
+
+        assertEquals(mapOf("c0001" to false, "c0002" to false, "c0004" to true), manager.getConsent().optOut)
+        assertEquals(mapOf("c0002" to false), storage.get()?.consent?.optOut)
+    }
+
+    /** Java hosts get the defaulted constructors. */
+    @Test
+    fun `consent types expose Java overloads`() {
+        Consent::class.java.getConstructor(Boolean::class.javaPrimitiveType, Map::class.java)
+        ConsentCategory::class.java.getConstructor(String::class.java)
+    }
+
     // ===== Persistence across relaunch =====
 
     @Test

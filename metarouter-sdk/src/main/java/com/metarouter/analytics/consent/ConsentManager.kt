@@ -213,7 +213,11 @@ internal class ConsentManager(
      * starts arbitration over.
      */
     fun setConsent(consent: Consent): Boolean {
-        var incomingConsent = consent
+        // A copy: the raw snapshot is kept and re-reconciled on every registration, and
+        // a host that later mutates the map it passed (a Java HashMap, a mutableMapOf)
+        // must not change what the next registration computes. Swift's value
+        // semantics gave iOS this for free.
+        var incomingConsent = consent.copy(optOut = consent.optOut.toMap())
         val hostTimestamp = consent.timestamp
         if (hostTimestamp != null && hostTimestamp > MAX_PLAUSIBLE_HOST_TIMESTAMP) {
             Logger.warn("setConsent: timestamp $hostTimestamp is not epoch milliseconds — applied as untimestamped")
