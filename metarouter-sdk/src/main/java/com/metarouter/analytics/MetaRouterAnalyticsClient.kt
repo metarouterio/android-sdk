@@ -17,6 +17,7 @@ import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.lifecycle.LifecycleCoordinator
 import com.metarouter.analytics.lifecycle.LifecycleEventTracker
 import com.metarouter.analytics.network.AndroidNetworkMonitor
@@ -48,6 +49,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicReference
 
 class MetaRouterAnalyticsClient private constructor(
@@ -67,7 +69,8 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedAppContext: AppContext? = null,
     private val injectedSessionStorage: SessionStorage? = null,
     private val injectedSessionManager: SessionManager? = null,
-    private val injectedConsentManager: ConsentManager? = null
+    private val injectedConsentManager: ConsentManager? = null,
+    private val injectedProviderContextManager: ProviderContextManager? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -114,7 +117,8 @@ class MetaRouterAnalyticsClient private constructor(
             appContext: AppContext? = null,
             sessionStorage: SessionStorage? = null,
             sessionManager: SessionManager? = null,
-            consentManager: ConsentManager? = null
+            consentManager: ConsentManager? = null,
+            providerContextManager: ProviderContextManager? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -133,7 +137,8 @@ class MetaRouterAnalyticsClient private constructor(
                 appContext,
                 sessionStorage,
                 sessionManager,
-                consentManager
+                consentManager,
+                providerContextManager
             )
             client.initializeInternal()
             return client
@@ -153,6 +158,7 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var contextProvider: DeviceContextProvider
     private lateinit var sessionManager: SessionManager
     private lateinit var consentManager: ConsentManager
+    private lateinit var providerContextManager: ProviderContextManager
     private lateinit var enrichmentService: EventEnrichmentService
     private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
@@ -251,12 +257,20 @@ class MetaRouterAnalyticsClient private constructor(
                 "injecting enrichmentService requires injecting the same consentManager it was built with"
             }
             consentManager = injectedConsentManager ?: MetaRouter.processConsentManager(context)
+            // Same single-instance rule: enrichment stamps what this manager holds, so
+            // the host's setProviderContext must land on this very instance.
+            require(injectedEnrichmentService == null || injectedProviderContextManager != null) {
+                "injecting enrichmentService requires injecting the same providerContextManager it was built with"
+            }
+            providerContextManager = injectedProviderContextManager
+                ?: MetaRouter.processProviderContextManager(context)
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
                 writeKey = options.writeKey,
                 sessionManager = sessionManager,
-                consentManager = consentManager
+                consentManager = consentManager,
+                providerContextManager = providerContextManager
             )
             if (injectedEventQueue != null) {
                 eventQueue = injectedEventQueue
@@ -637,6 +651,21 @@ class MetaRouterAnalyticsClient private constructor(
     override fun subscribeToConsent(handler: (Consent) -> Unit): ConsentSubscription =
         ConsentSubscription(consentManager.subscribe(handler))
 
+    // ===== Provider context (direct, never lifecycle-gated — see the proxy) =====
+
+    override fun setProviderContext(provider: String, key: String, value: Any?): Boolean =
+        providerContextManager.setValue(provider, key, value)
+
+    override fun getProviderContext(): Map<String, JsonObject> = providerContextManager.getAll()
+
+    override fun clearProviderContext(provider: String) {
+        providerContextManager.clear(provider)
+    }
+
+    override fun clearAllProviderContext() {
+        providerContextManager.clearAll()
+    }
+
     /**
      * Bridge sink: a validated, deduplicated webview envelope enters the normal event
      * path here. The native messageId, timestamp, identity, and device context are all
@@ -792,6 +821,9 @@ class MetaRouterAnalyticsClient private constructor(
             // needs it.
             if (::consentManager.isInitialized) {
                 put("consent", consentManager.getConsent().toDebugInfo())
+            }
+            if (::providerContextManager.isInitialized) {
+                put("providerContext", providerContextManager.toDebugInfo())
             }
         }
     }

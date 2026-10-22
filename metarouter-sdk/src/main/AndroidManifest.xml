@@ -7,9 +7,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application>
-        <!-- Gives the SDK a Context at process start so consent is persisted and
-             readable before initialize, as on iOS. Rides AndroidX App Startup's
-             shared provider rather than adding one. See MetaRouterInitializer. -->
+        <!-- Gives the SDK a Context at process start so consent and provider context
+             are persisted and readable before initialize, as on iOS. Rides AndroidX
+             App Startup's shared provider rather than adding one.
+             See MetaRouterInitializer. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"

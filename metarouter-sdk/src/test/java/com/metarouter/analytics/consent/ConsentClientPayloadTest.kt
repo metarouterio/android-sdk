@@ -7,6 +7,7 @@ import com.metarouter.analytics.MetaRouterAnalyticsClient
 import com.metarouter.analytics.network.FakeNetworkClient
 import com.metarouter.analytics.network.FakeNetworkMonitor
 import com.metarouter.analytics.network.NetworkResponse
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.queue.EventQueue
 import com.metarouter.analytics.types.EventType
 import com.metarouter.analytics.types.PageContext
@@ -58,7 +59,9 @@ class ConsentClientPayloadTest {
         unmockkAll()
     }
 
-    private suspend fun makeClient(): MetaRouterAnalyticsClient {
+    private suspend fun makeClient(
+        providerContextManager: ProviderContextManager = ProviderContextManager()
+    ): MetaRouterAnalyticsClient {
         val consentManager = ConsentManager(storage, dispatch = { })
         consentManager.registerConsentCategories(
             listOf(ConsentCategory("c0001", defaultOptOut = false), ConsentCategory("c0004"))
@@ -78,7 +81,8 @@ class ConsentClientPayloadTest {
             eventQueue = EventQueue(),
             networkClient = network,
             networkMonitor = FakeNetworkMonitor(),
-            consentManager = consentManager
+            consentManager = consentManager,
+            providerContextManager = providerContextManager
         )
     }
 
@@ -150,5 +154,28 @@ class ConsentClientPayloadTest {
             JsonPrimitive("https://shop.example.com/cart"),
             event.getValue("context").jsonObject["page"]?.jsonObject?.get("url")
         )
+    }
+
+    /**
+     * The bridge leg of provider context: a WebView page cannot know the app's vendor
+     * ids, so they must land on bridge events from the native side.
+     */
+    @Test
+    fun `bridge event posts body with provider context`() = runBlocking {
+        val providers = ProviderContextManager().apply { setValue("googleFirebase", "appInstanceId", "abc123") }
+        val client = makeClient(providers)
+
+        assertTrue(
+            client.enqueueBridgeEvent(
+                BridgeEnvelope(
+                    version = 1, messageId = "bridge-2", type = EventType.PAGE, name = "Cart", properties = emptyMap(),
+                    sentAt = null, page = PageContext(url = "https://shop.example.com/cart", title = "Cart"), source = null
+                )
+            )
+        )
+
+        val block = firstPostedEvent(client).getValue("context").jsonObject.getValue("providers").jsonObject
+        assertEquals(JsonPrimitive("abc123"), block["googleFirebase"]?.jsonObject?.get("appInstanceId"))
+        assertTrue("session block alongside", block.containsKey("metarouter"))
     }
 }

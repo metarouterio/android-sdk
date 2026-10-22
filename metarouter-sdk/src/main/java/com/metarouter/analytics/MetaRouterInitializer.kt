@@ -14,8 +14,8 @@ import com.metarouter.analytics.utils.Logger
  * Registered with AndroidX App Startup's shared `InitializationProvider` (the library
  * manifest's meta-data, merged into the host's), not as a provider of its own: one
  * provider for every AndroidX-style initializer, and the standard per-initializer
- * opt-out. It does nothing but attach storage (a small SharedPreferences file) and
- * record whether the build is debuggable. A host that removes it falls back to the
+ * opt-out. It does nothing but attach storage (two small SharedPreferences files)
+ * and record whether the build is debuggable. A host that removes it falls back to the
  * attach at `initialize`.
  */
 class MetaRouterInitializer : Initializer<Unit> {

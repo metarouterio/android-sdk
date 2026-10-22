@@ -9,6 +9,7 @@ import com.metarouter.analytics.MetaRouter
 import com.metarouter.analytics.MetaRouterAnalyticsClient
 import com.metarouter.analytics.MetaRouterInitializer
 import com.metarouter.analytics.consent.adapters.OneTrustAdapter
+import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.types.ConsentContext
 import com.metarouter.analytics.types.EnrichedEventPayload
@@ -128,7 +129,7 @@ class ConsentIntegrationTest {
     fun `pre-bind event is stamped with the consent current at bind`() = runBlocking {
         val manager = ConsentManager(storage, dispatch = { })
         val client = makeClient(manager)
-        val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager)
+        val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, manager, ProviderContextManager())
         proxy.registerConsentCategories(registry)
         proxy.setConsent(Consent(explicit = true, optOut = mapOf("c0004" to false)))
 
