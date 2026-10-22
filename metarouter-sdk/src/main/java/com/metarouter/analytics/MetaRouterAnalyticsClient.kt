@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
 import android.webkit.WebView
+import com.metarouter.analytics.consent.ConsentManager
+import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
@@ -60,7 +62,8 @@ class MetaRouterAnalyticsClient private constructor(
     private val injectedLifecycleCoordinator: LifecycleCoordinator? = null,
     private val injectedAppContext: AppContext? = null,
     private val injectedSessionStorage: SessionStorage? = null,
-    private val injectedSessionManager: SessionManager? = null
+    private val injectedSessionManager: SessionManager? = null,
+    private val injectedConsentManager: ConsentManager? = null
 ) : AnalyticsInterface {
 
     companion object {
@@ -106,7 +109,8 @@ class MetaRouterAnalyticsClient private constructor(
             lifecycleCoordinator: LifecycleCoordinator? = null,
             appContext: AppContext? = null,
             sessionStorage: SessionStorage? = null,
-            sessionManager: SessionManager? = null
+            sessionManager: SessionManager? = null,
+            consentManager: ConsentManager? = null
         ): MetaRouterAnalyticsClient {
             val client = MetaRouterAnalyticsClient(
                 context.applicationContext,
@@ -124,7 +128,8 @@ class MetaRouterAnalyticsClient private constructor(
                 lifecycleCoordinator,
                 appContext,
                 sessionStorage,
-                sessionManager
+                sessionManager,
+                consentManager
             )
             client.initializeInternal()
             return client
@@ -143,6 +148,7 @@ class MetaRouterAnalyticsClient private constructor(
     private lateinit var identityManager: IdentityManager
     private lateinit var contextProvider: DeviceContextProvider
     private lateinit var sessionManager: SessionManager
+    private lateinit var consentManager: ConsentManager
     private lateinit var enrichmentService: EventEnrichmentService
     private lateinit var eventQueue: EventQueueInterface
     private lateinit var networkClient: NetworkClient
@@ -234,11 +240,21 @@ class MetaRouterAnalyticsClient private constructor(
                     }
                 }
             }
+            // Same single-instance rule for consent: enrichment stamps what this
+            // manager holds, so the one the host's setConsent lands on must be this
+            // one — a second instance would stamp stale state on every event.
+            require(injectedEnrichmentService == null || injectedConsentManager != null) {
+                "injecting enrichmentService requires injecting the same consentManager it was built with"
+            }
+            consentManager = injectedConsentManager ?: ConsentManager(
+                storage = ConsentStorage(context)
+            )
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
                 writeKey = options.writeKey,
-                sessionManager = sessionManager
+                sessionManager = sessionManager,
+                consentManager = consentManager
             )
             if (injectedEventQueue != null) {
                 eventQueue = injectedEventQueue

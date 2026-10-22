@@ -1,6 +1,8 @@
 package com.metarouter.analytics.enrichment
 
 import android.content.Context
+import com.metarouter.analytics.consent.ConsentManager
+import com.metarouter.analytics.consent.ConsentStorage
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.session.SessionManager
@@ -75,7 +77,12 @@ class EventEnrichmentServiceTest {
             identityManager = identityManager,
             contextProvider = contextProvider,
             writeKey = testWriteKey,
-            sessionManager = sessionManager
+            sessionManager = sessionManager,
+            // A stub that reads as never-set, not a relaxed mock that happens to.
+            consentManager = ConsentManager(
+                mockk<ConsentStorage>(relaxUnitFun = true) { every { get() } returns null },
+                dispatch = { }
+            )
         )
     }
 

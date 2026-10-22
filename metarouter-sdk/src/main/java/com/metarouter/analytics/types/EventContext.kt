@@ -3,6 +3,7 @@ package com.metarouter.analytics.types
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.utils.Logger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -14,6 +15,15 @@ import kotlinx.serialization.json.JsonObject
 @Serializable
 data class EventContext(
     val app: AppContext? = null,
+    /**
+     * The consent block, set per event by enrichment from the consent manager's
+     * current state — never captured in the provider's cached context, because
+     * consent changes over the app's lifetime and the stamp must be point-in-time.
+     * Nullable with a null default for the same disk-compatibility reason as
+     * [providers]: events persisted by a build that predates this key must still
+     * decode.
+     */
+    val consent: ConsentContext? = null,
     val device: DeviceContext? = null,
     val library: LibraryContext,
     val locale: String? = null,
@@ -34,6 +44,21 @@ data class EventContext(
     val screen: ScreenContext? = null,
     val timezone: String? = null
 )
+
+/**
+ * Consent block stamped on every outbound event at `context.consent`. Mirrors the
+ * web SDK's output exactly — the server gates per integration on this shape, so web
+ * and mobile traffic must be indistinguishable to downstream config. The internal
+ * [com.metarouter.analytics.consent.Consent.timestamp] deliberately stays off the
+ * wire: this type has no field for it, so no encoder path can leak it.
+ */
+@Serializable
+data class ConsentContext(
+    val explicit: Boolean,
+    val optOut: Map<String, Boolean>
+) {
+    constructor(consent: Consent) : this(consent.explicit, consent.optOut)
+}
 
 /**
  * Application metadata including name, version, build number, and namespace (package name).
