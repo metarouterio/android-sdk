@@ -240,13 +240,24 @@ object MetaRouter {
     }
 
     /**
-     * Loads the previous launch's consent and replays pre-initialize writes over it.
-     * On the init dispatcher, not the caller's thread: the first SharedPreferences read
-     * blocks on disk. Every event is enriched after this — the client is built after
-     * it, and pre-bind calls replay after the bind.
+     * Loads the previous launch's consent and replays any earlier writes over it. Runs
+     * at process start from [MetaRouterInitProvider]; the call at initialize is the
+     * fallback for a host that removed the provider from its manifest, and a no-op
+     * otherwise. Every event is enriched after this — the client is built after it, and
+     * pre-bind calls replay after the bind.
      */
     private fun attachConsentStorage(context: Context) {
         consentManager.attachStorage(ConsentStorage(context.applicationContext))
+    }
+
+    /**
+     * Process-start hook, so consent behaves as on iOS from the first call: persisted
+     * state is readable before `initialize`, writes reach disk at once, and the
+     * staleness rule and debug-build registration check run at the call.
+     */
+    internal fun onProcessStart(context: Context) {
+        attachConsentStorage(context)
+        checkConsentRegistration(context)
     }
 
     private fun isDebuggableBuild(context: Context): Boolean =

@@ -34,6 +34,9 @@ class AnalyticsProxy internal constructor(
 ) : AnalyticsInterface {
 
     /** A standalone proxy holds consent in memory only; MetaRouter's attaches storage. */
+    // @JvmOverloads: only a primary constructor gets Java's no-arg overload for free,
+    // and `new AnalyticsProxy()` compiled against the previous release.
+    @JvmOverloads
     constructor(maxPendingCalls: Int = DEFAULT_MAX_PENDING_CALLS) : this(maxPendingCalls, ConsentManager())
 
     companion object {

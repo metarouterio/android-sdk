@@ -31,13 +31,13 @@ import com.metarouter.analytics.utils.Logger
  * sequence number keeps disk writes in commit order.
  *
  * Storage can arrive after construction. The process-wide manager is built with the
- * proxy, before any `Context` exists, so consent is usable before `initialize`;
- * [attachStorage] hands it the persisted state at `initialize`. Until then the manager
- * runs in memory and records every write, and attaching replays those writes over the
- * persisted state through the same staleness rule — exactly the outcome had storage
- * been there from the start. Only reads before the attach differ: they cannot see the
- * previous launch's state yet. No event is affected, because none is enriched before
- * the client exists, and the client is built after the attach.
+ * proxy, before any `Context` exists; [attachStorage] hands it the persisted state —
+ * at process start through `MetaRouterInitProvider`, or at `initialize` when a host
+ * removed the provider. Until then the manager runs in memory and records every write,
+ * and attaching replays those writes over the persisted state through the same
+ * staleness rule — the outcome had storage been there from the start. No event is
+ * affected either way: none is enriched before the client exists, and the client is
+ * built after the attach.
  *
  * @param storage null until [attachStorage]; tests and the client's own fallback pass
  *   one up front.
@@ -110,8 +110,7 @@ internal class ConsentManager(
     /** Writes made before [attachStorage], replayed over the persisted state there. */
     private val preAttachWrites = mutableListOf<Write?>()
 
-    /** Set by [failFastOnRegistrationProblems]. */
-    @Volatile
+    /** Set by [failFastOnRegistrationProblems]; read and written under [lock]. */
     private var failFastOnRegistrationProblems = false
     private val dispatch: (Runnable) -> Unit = dispatch?.let { injected -> checkedDispatch(injected) }
         ?: mainLooperDispatch()
@@ -170,11 +169,14 @@ internal class ConsentManager(
         val problems = mutableListOf<String>()
         val normalized = normalize(categories, problems)
         problems.forEach(Logger::warn)
-        if (failFastOnRegistrationProblems && problems.isNotEmpty()) {
-            throw IllegalArgumentException(problems.joinToString("; "))
-        }
 
         synchronized(lock) {
+            // Checked under the lock that failFastOnRegistrationProblems takes: a
+            // registration racing it must either throw here or leave its problems for
+            // that call to see, never slip between the two.
+            if (failFastOnRegistrationProblems && problems.isNotEmpty()) {
+                throw IllegalArgumentException(problems.joinToString("; "))
+            }
             val before = visibleLocked()
             registry = normalized
             registrationProblems = problems
@@ -359,13 +361,16 @@ internal class ConsentManager(
     }
 
     /**
-     * Called once a debuggable build is known (at `initialize`): throws if the latest
-     * registration degraded past a problem, and makes every later one throw at the
-     * call — the debug-build fail-fast iOS gets from an assertion at registration.
+     * Called once a debuggable build is known (at process start, or at `initialize`
+     * when the startup provider was removed): throws if the latest registration
+     * degraded past a problem, and makes every later one throw at the call — the
+     * debug-build fail-fast iOS gets from an assertion at registration.
      */
     fun failFastOnRegistrationProblems() {
-        failFastOnRegistrationProblems = true
-        val problems = registrationProblems()
+        val problems = synchronized(lock) {
+            failFastOnRegistrationProblems = true
+            registrationProblems
+        }
         require(problems.isEmpty()) { problems.joinToString("; ") }
     }
 

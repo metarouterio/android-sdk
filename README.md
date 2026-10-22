@@ -804,7 +804,7 @@ val analytics = MetaRouter.Analytics.initialize(applicationContext, options)
 
 Order matters. The registry is not persisted, and until it is registered the implicit default has an empty `optOut`, which the cluster reads as nothing blocked. `initialize` can emit `Application Opened` / `Session Started` during its background setup, so registering afterwards races those events on every launch where the user has not yet set consent.
 
-Keys are trimmed and lowercased, blank keys dropped, and duplicates keep their first occurrence, each with a warning. On a **debuggable build** any of those throws `IllegalArgumentException` at `initialize` (or at the registration itself, once initialized), like invalid `InitOptions`; release builds degrade with the warning.
+Keys are trimmed and lowercased, blank keys dropped, and duplicates keep their first occurrence, each with a warning. On a **debuggable build** any of those throws `IllegalArgumentException` at the registration itself; release builds degrade with the warning.
 
 Registration is what lets the SDK complete a sparse CMP payload into a full block: known keys keep their value, unknown keys are dropped, missing categories take their registered default. Re-registering replaces the set and recomputes the view of any stored consent against it — the stored snapshot itself is kept whole, so a category one build drops and the next re-adds comes back with the user's original choice.
 
@@ -823,11 +823,7 @@ Each `Consent` carries an optional epoch-millisecond `timestamp`. If you supply 
 
 Before the first `setConsent`, `getConsent()` and every outbound event carry the **implicit default** — `explicit: false` with every registered category at its default — which the cluster gates exactly like an implicit-consent web visitor. There is no "unknown" state.
 
-**Before `initialize` on Android.** Reading the previous launch's persisted consent needs a `Context`, which the SDK first gets at `initialize`. Until then consent calls work on an in-memory state, and `initialize` loads the persisted state and replays them over it, so the end state — and every event, none of which is enriched before `initialize` — is the same as if storage had been there all along. Only reads before `initialize` differ:
-
-- `getConsent()` does not reflect the previous launch's consent yet.
-- A subscriber attached before `initialize` hears the persisted consent when it loads, if it differs.
-- A timestamped `setConsent` older than the persisted consent returns `true` before `initialize` and is ignored, with the usual warning, when the persisted state loads.
+**Startup provider.** Consent needs a `Context` to reach disk before `initialize`, so the SDK declares a small, non-exported `ContentProvider` (`MetaRouterInitProvider`) that Android merges into your app's manifest and starts before `Application.onCreate`. It only opens the SDK's storage; it serves no data. If you remove it (`tools:node="remove"`), the SDK opens storage at `initialize` instead and consent calls made earlier are held in memory and applied then. Events are unaffected either way, but until `initialize` the previous launch's consent is not readable, a timestamped `setConsent` older than it returns `true` and is ignored when it loads, a registration problem throws at `initialize` rather than at the call, and nothing set before `initialize` is saved if the process never reaches it.
 
 ### OneTrust
 

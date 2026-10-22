@@ -29,7 +29,7 @@ import org.robolectric.shadows.ShadowLog
  * without the interface defaults, every minor release that grows the interface breaks
  * hosts' builds.
  */
-private class LegacyHostFake : AnalyticsInterface {
+private open class LegacyHostFake : AnalyticsInterface {
     override fun track(event: String, properties: Map<String, Any?>?) {}
     override fun identify(userId: String, traits: Map<String, Any?>?) {}
     override fun group(groupId: String, traits: Map<String, Any?>?) {}
@@ -137,5 +137,24 @@ class InterfaceDefaultsTest {
         assertEquals(1, messages.count { it.startsWith("getConsent is not implemented") })
         assertEquals(1, messages.count { it.startsWith("clearConsent is not implemented") })
         assertEquals(setOf("LegacyHostFake.getConsent", "LegacyHostFake.clearConsent"), InterfaceDefaults.hits)
+    }
+
+    /** Anonymous wrappers each warn, under a real name, not one blank shared key. */
+    @Test
+    fun `anonymous wrappers are named and warned separately`() {
+        val first: AnalyticsInterface = object : LegacyHostFake() {}
+        val second: AnalyticsInterface = object : LegacyHostFake() {}
+
+        first.getConsent()
+        second.getConsent()
+
+        assertEquals(2, InterfaceDefaults.hits.size)
+        assertTrue(InterfaceDefaults.hits.all { !it.startsWith(".") })
+    }
+
+    /** `new AnalyticsProxy()` compiled from Java against the previous release. */
+    @Test
+    fun `proxy keeps a no-arg constructor for Java`() {
+        AnalyticsProxy::class.java.getConstructor().newInstance()
     }
 }

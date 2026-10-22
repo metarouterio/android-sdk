@@ -781,11 +781,17 @@ class MetaRouterAnalyticsClient private constructor(
                 // Circuit breaker info
                 put("circuitState", circuitBreaker.getState()::class.simpleName)
                 put("circuitCooldownMs", circuitBreaker.getRemainingCooldownMs())
-                put("consent", consentManager.getConsent().toDebugInfo())
             } else {
                 put("anonymousId", null)
                 put("userId", null)
                 put("groupId", null)
+            }
+
+            // Outside the READY branch, as on iOS: consent is never lifecycle-gated, and
+            // a bound client mid-reset is exactly when someone debugging a CMP issue
+            // needs it.
+            if (::consentManager.isInitialized) {
+                put("consent", consentManager.getConsent().toDebugInfo())
             }
         }
     }

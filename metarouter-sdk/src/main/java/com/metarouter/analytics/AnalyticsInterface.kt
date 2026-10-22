@@ -250,7 +250,8 @@ interface AnalyticsInterface {
      * and recomputes the view of any stored consent against it; it does not merge. A
      * `setConsent` that arrives first is stored as-is and completed on registration.
      * Keys are trimmed and lowercased; on a debuggable build a key that needed it, a
-     * blank key, or a duplicate throws at `initialize` (or at the call, after it).
+     * blank key, or a duplicate throws at the call (at `initialize` instead, for a
+     * registration made earlier, if the host removed the SDK's startup provider).
      */
     fun registerConsentCategories(categories: List<ConsentCategory>) {
         InterfaceDefaults.warnNotImplemented(this, "registerConsentCategories")
@@ -271,10 +272,7 @@ interface AnalyticsInterface {
      *
      * Usable before `initialize` and immediately effective: an event tracked on the next
      * line carries the new state. Consent never gates delivery — events always send, and
-     * the server gates per integration on the stamped block. Before `initialize` the
-     * previous launch's persisted consent is not loaded yet, so a timestamped snapshot
-     * older than it returns `true` here and is ignored, with the same warning, when
-     * `initialize` loads it.
+     * the server gates per integration on the stamped block.
      *
      * @return `false` when the snapshot was ignored as stale; the previous state stands.
      */
@@ -286,8 +284,7 @@ interface AnalyticsInterface {
     /**
      * The current reconciled consent state. Never null: before the first `setConsent`
      * (and after `clearConsent`) this is the implicit default — `explicit: false` with
-     * every registered category at its default posture. Before `initialize`, consent
-     * persisted by a previous launch is not loaded yet and is not reflected here.
+     * every registered category at its default posture.
      */
     fun getConsent(): Consent {
         InterfaceDefaults.warnNotImplemented(this, "getConsent")
@@ -307,9 +304,7 @@ interface AnalyticsInterface {
     /**
      * Subscribe to consent changes. The handler runs on the main thread, once with the
      * current value right after subscribing (posted, never inline), then on every real
-     * change (value-identical `setConsent` calls do not fire). A subscriber attached
-     * before `initialize` hears the previous launch's persisted consent when
-     * `initialize` loads it, if it differs.
+     * change (value-identical `setConsent` calls do not fire).
      *
      * @return the subscription. Keep it: delivery continues until `close()`, even if
      *   the reference is dropped. After `close()` returns on the main thread, the
@@ -352,7 +347,9 @@ internal object InterfaceDefaults {
      * `getConsent` would otherwise log on every event.
      */
     fun warnNotImplemented(receiver: Any, method: String) {
-        val type = receiver::class.java.simpleName
+        // simpleName is empty for anonymous classes (`object : AnalyticsInterface by
+        // delegate`), which would merge every such wrapper into one blank key.
+        val type = receiver.javaClass.simpleName.ifEmpty { receiver.javaClass.name }
         val first = synchronized(hitsLock) { recorded.add("$type.$method") }
         if (!first) return
         Logger.warn(

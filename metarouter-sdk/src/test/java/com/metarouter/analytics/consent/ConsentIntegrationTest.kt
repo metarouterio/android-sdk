@@ -7,6 +7,7 @@ import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.MetaRouter
 import com.metarouter.analytics.MetaRouterAnalyticsClient
+import com.metarouter.analytics.MetaRouterInitProvider
 import com.metarouter.analytics.consent.adapters.OneTrustAdapter
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.types.ConsentContext
@@ -18,18 +19,21 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * End-to-end consent behavior: through a real client (events captured at the queue)
  * and through the MetaRouter entry point (the process-wide manager shared by proxy and
- * client, attached to storage at initialize, surviving reset).
+ * client, attached to storage at process start or initialize, surviving reset).
  */
 @RunWith(RobolectricTestRunner::class)
 class ConsentIntegrationTest {
@@ -277,5 +281,53 @@ class ConsentIntegrationTest {
             fail("client() still requires initialize")
         } catch (expected: IllegalStateException) {
         }
+    }
+
+    // ===== Startup provider =====
+
+    /**
+     * With the startup provider, consent works before initialize exactly as on iOS: the
+     * previous launch's state is readable, and a write reaches disk at once — so a
+     * process that never initializes still keeps a withdrawal.
+     */
+    @Test
+    fun `startup provider makes consent persistent and readable before initialize`() {
+        storage.set(StoredConsent(Consent(explicit = true, optOut = mapOf("c0004" to true), timestamp = 2_000), lastHostTimestamp = 2_000))
+
+        Robolectric.buildContentProvider(MetaRouterInitProvider::class.java).create()
+        val shared = MetaRouter.Analytics.shared
+
+        assertEquals("previous launch readable before initialize", mapOf("c0004" to true), shared.getConsent().optOut)
+        assertFalse("stale replay rejected at the call", shared.setConsent(Consent(explicit = true, optOut = mapOf("c0004" to false), timestamp = 1_000)))
+        shared.clearConsent()
+        assertNull("written through without initialize", storage.get())
+    }
+
+    @Test
+    fun `on a debuggable build a registration problem throws at the call after process start`() {
+        val context = mockContext(debuggable = true)
+        every { context.getSharedPreferences(any(), any()) } answers {
+            appContext.getSharedPreferences(firstArg(), secondArg())
+        }
+        MetaRouter.onProcessStart(context)
+
+        try {
+            MetaRouter.Analytics.shared.registerConsentCategories(listOf(ConsentCategory("C0004")))
+            fail("must throw at the call, as iOS asserts at the call")
+        } catch (expected: IllegalArgumentException) {
+        }
+    }
+
+    /** Consent is never lifecycle-gated, so neither is its debug info. */
+    @Test
+    fun `debug info carries consent after the client is reset`() = runBlocking {
+        val client = makeClient(ConsentManager(storage, dispatch = { }))
+        client.registerConsentCategories(registry)
+        client.reset()
+
+        assertEquals(
+            mapOf("explicit" to false, "optOut" to mapOf("c0001" to false, "c0002" to true, "c0004" to true)),
+            client.getDebugInfo()["consent"]
+        )
     }
 }
