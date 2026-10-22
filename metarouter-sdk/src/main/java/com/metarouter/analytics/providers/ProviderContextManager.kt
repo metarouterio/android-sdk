@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.util.Collections
 
 /**
  * Owns the host-set `context.providers` map: in-memory state, bounds, persistence. The
@@ -20,10 +21,12 @@ import kotlinx.serialization.json.JsonPrimitive
  * reconciled state machine with a registry, subscribers and staleness arbitration;
  * this is a bounded map written verbatim.
  *
- * Storage arrives at `initialize`, like consent's: the process-wide manager is built
- * before any `Context` exists, runs in memory until [attachStorage], and replays the
- * writes made before it over the persisted map there. The client is built after the
- * attach, so last launch's values are on the cold-launch events.
+ * Storage arrives after construction, like consent's: the process-wide manager is
+ * built before any `Context` exists, and [attachStorage] runs at process start through
+ * `MetaRouterInitializer` (or at `initialize`, when a host removed it). Until then it
+ * runs in memory and replays the writes made before the attach over the persisted map.
+ * The client is built after the attach, so last launch's values are on the cold-launch
+ * events.
  *
  * @param storage null until [attachStorage]; tests and the client's own fallback pass
  *   one up front.
@@ -325,8 +328,14 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
         private fun isReserved(providerName: String): Boolean =
             providerName.lowercase().filter { it.isLetterOrDigit() } == RESERVED_PROVIDER
 
+        /**
+         * Read-only, because this exact map is what every event is stamped from and what
+         * the next persist writes. Kotlin's Map is read-only only at compile time: a
+         * Java host calling `getProviderContext().clear()` would otherwise rewrite them,
+         * past every bound. JsonObject itself is immutable.
+         */
         private fun snapshotOf(map: Map<String, Map<String, JsonElement>>): Map<String, JsonObject> =
-            map.mapValues { (_, keys) -> JsonObject(keys.toMap()) }
+            Collections.unmodifiableMap(map.mapValues { (_, keys) -> JsonObject(keys.toMap()) })
 
         /**
          * The tolerant `toJsonElement` used for event properties stringifies anything it

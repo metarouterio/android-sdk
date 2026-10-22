@@ -934,7 +934,7 @@ if (!analytics.setProviderContext("adjust", "attribution", attribution)) {
 ### Lifetime and timing
 
 - **Usable before `initialize`**, and immediately effective — an event tracked on the next line carries the value. Values never wait for a bind, and are never dropped by the pre-initialize call queue.
-- **Persisted across launches**, so a value set in one launch is already on the wire for the next launch's first event. The previous launch's values load at `initialize`, before any event is enriched; until then `getProviderContext()` shows only what this process has set.
+- **Persisted across launches**, so a value set in one launch is already on the wire for the next launch's first event. Like consent, provider context reaches disk before `initialize` through the SDK's [startup initializer](#consent); a host that removes it gets the previous launch's values at `initialize` instead, with earlier sets applied on top.
 - **Survives `reset()`**. These are install-scoped vendor identifiers, not user state; a logout must not quietly stop events being forwardable. Use `clearProviderContext` to remove one deliberately. Note that `reset()` clears the advertising ID but leaves a GAID-shaped value you put under a provider alone.
 
 **Set values on every launch, and clear the ones that rotate.** The persisted value is stamped on every event until you overwrite it, so an id that changes underneath you — Firebase after `resetAnalyticsData()`, an advertising id the user resets — goes out stale with nothing to flag it. Re-set each value on launch, and call `clearProviderContext` on logout or ad-id reset for privacy-sensitive values.

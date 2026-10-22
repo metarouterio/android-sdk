@@ -14,6 +14,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -370,6 +371,21 @@ class ProviderContextManagerTest {
         assertFalse("not valid JSON", manager.setValue("p", "c", Float.POSITIVE_INFINITY))
 
         assertEquals(emptyMap<String, JsonObject>(), manager.getAll())
+    }
+
+    /** A Java host can call clear() on any Map; the one handed out must refuse it. */
+    @Test
+    fun `map handed out is read-only`() {
+        val manager = makeManager()
+        manager.setValue("p", "a", "1")
+
+        try {
+            @Suppress("UNCHECKED_CAST")
+            (manager.getAll() as MutableMap<String, JsonObject>).clear()
+            fail("the snapshot must not be writable")
+        } catch (expected: UnsupportedOperationException) {
+        }
+        assertEquals(mapOf("p" to block("a" to "1")), manager.getAll())
     }
 
     // ===== Persistence =====

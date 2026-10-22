@@ -336,9 +336,7 @@ interface AnalyticsInterface {
      *
      * Usable before `initialize` and immediately effective: an event tracked on the next
      * line carries the value. Values persist across launches and survive `reset()` —
-     * they are install-scoped vendor metadata, not user state. Before `initialize`, the
-     * previous launch's values are not loaded yet, so [getProviderContext] does not
-     * reflect them; events are unaffected, since none is enriched before `initialize`.
+     * they are install-scoped vendor metadata, not user state.
      *
      * Set each value as early as it exists. `initialize` emits `Application Opened` and
      * can mint the first session in its background setup, so a value that first

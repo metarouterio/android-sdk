@@ -6,6 +6,7 @@ import com.metarouter.analytics.AnalyticsInterface
 import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.MetaRouter
+import com.metarouter.analytics.MetaRouterInitializer
 import com.metarouter.analytics.consent.ConsentManager
 import io.mockk.every
 import io.mockk.mockk
@@ -116,6 +117,19 @@ class ProviderContextProxyTest {
         val merged = mapOf("googleFirebase" to buildJsonObject { put("appInstanceId", "abc123"); put("npa", true) })
         assertEquals(merged, shared.getProviderContext())
         assertEquals(merged, storage.get())
+    }
+
+    /** With the startup initializer, a value set before initialize is on disk at once. */
+    @Test
+    fun `startup initializer makes provider context persistent before initialize`() {
+        storage.set(mapOf("adjust" to buildJsonObject { put("adid", "adj-1") }))
+
+        MetaRouterInitializer().create(appContext)
+        val shared = MetaRouter.Analytics.shared
+
+        assertEquals("previous launch readable before initialize", setOf("adjust"), shared.getProviderContext().keys)
+        shared.setProviderContext("googleFirebase", "appInstanceId", "abc123")
+        assertEquals("written through without initialize", setOf("adjust", "googleFirebase"), storage.get()?.keys)
     }
 
     // ===== Before any bind =====
