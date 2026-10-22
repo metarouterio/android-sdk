@@ -933,7 +933,7 @@ if (!analytics.setProviderContext("adjust", "attribution", attribution)) {
 
 ### Lifetime and timing
 
-- **Usable before `initialize`**, and immediately effective — an event tracked on the next line carries the value. Values never wait for a bind, and are never dropped by the pre-initialize call queue.
+- **Usable before `initialize`**, and immediately effective — an event tracked on the next line carries the value. Values never wait for a bind, and are never dropped by the pre-initialize call queue. The value is read when the event is enriched, just after `track()` returns, not at the call: `track("Logged Out")` followed by `clearProviderContext(…)` on the next line can send that event without it — the same rule as consent.
 - **Persisted across launches**, so a value set in one launch is already on the wire for the next launch's first event. Like consent, provider context reaches disk before `initialize` through the SDK's [startup initializer](#consent); a host that removes it gets the previous launch's values at `initialize` instead, with earlier sets applied on top — and a set the limits reject against those values returns `true` before `initialize` and is dropped, with a warning, when they load.
 - **Survives `reset()`**. These are install-scoped vendor identifiers, not user state; a logout must not quietly stop events being forwardable. Use `clearProviderContext` to remove one deliberately. Note that `reset()` clears the advertising ID but leaves a GAID-shaped value you put under a provider alone.
 
