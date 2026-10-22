@@ -33,8 +33,9 @@ object MetaRouter {
     // initialize() (a CMP callback can fire first), during async init, and across
     // reset()/re-initialize — every client this object binds stamps from this same
     // instance. Consent is a device-scoped compliance record, not identity, which is
-    // why reset() leaves it alone. Storage needs a Context, so it attaches at the
-    // first initialize (see ConsentManager.attachStorage).
+    // why reset() leaves it alone. Storage needs a Context, so it attaches at process
+    // start through MetaRouterInitializer, or at the first initialize when a host
+    // removed it (see ConsentManager.attachStorage).
     private val consentManager = ConsentManager()
     private val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager)
     private val store = RealClientStore()
@@ -241,7 +242,7 @@ object MetaRouter {
 
     /**
      * Loads the previous launch's consent and replays any earlier writes over it. Runs
-     * at process start from [MetaRouterInitProvider]; the call at initialize is the
+     * at process start from [MetaRouterInitializer]; the call at initialize is the
      * fallback for a host that removed the provider from its manifest, and a no-op
      * otherwise. Every event is enriched after this — the client is built after it, and
      * pre-bind calls replay after the bind.
@@ -256,8 +257,29 @@ object MetaRouter {
      * staleness rule and debug-build registration check run at the call.
      */
     internal fun onProcessStart(context: Context) {
+        // Each step guarded on its own: one failing (a storage read in an unexpected
+        // boot state) must not skip the others.
+        runStartupStep("consent storage") { attachConsentStorage(context) }
+        runStartupStep("registration check") { checkConsentRegistration(context) }
+    }
+
+    private inline fun runStartupStep(name: String, step: () -> Unit) {
+        try {
+            step()
+        } catch (e: Exception) {
+            Logger.error("MetaRouter startup: $name failed — initialize retries it: ${e.message}", e)
+        }
+    }
+
+    /**
+     * The process-wide consent manager, storage attached, for a client built directly
+     * through `MetaRouterAnalyticsClient.initialize`. A second manager over the same
+     * preferences file would hold its own copy of the state and overwrite this one's
+     * writes on disk — a clear through one undone by a set through the other.
+     */
+    internal fun processConsentManager(context: Context): ConsentManager {
         attachConsentStorage(context)
-        checkConsentRegistration(context)
+        return consentManager
     }
 
     private fun isDebuggableBuild(context: Context): Boolean =

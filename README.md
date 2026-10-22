@@ -823,7 +823,20 @@ Each `Consent` carries an optional epoch-millisecond `timestamp`. If you supply 
 
 Before the first `setConsent`, `getConsent()` and every outbound event carry the **implicit default** — `explicit: false` with every registered category at its default — which the cluster gates exactly like an implicit-consent web visitor. There is no "unknown" state.
 
-**Startup provider.** Consent needs a `Context` to reach disk before `initialize`, so the SDK declares a small, non-exported `ContentProvider` (`MetaRouterInitProvider`) that Android merges into your app's manifest and starts before `Application.onCreate`. It only opens the SDK's storage; it serves no data. If you remove it (`tools:node="remove"`), the SDK opens storage at `initialize` instead and consent calls made earlier are held in memory and applied then. Events are unaffected either way, but until `initialize` the previous launch's consent is not readable, a timestamped `setConsent` older than it returns `true` and is ignored when it loads, a registration problem throws at `initialize` rather than at the call, and nothing set before `initialize` is saved if the process never reaches it.
+**Startup initializer.** Consent needs a `Context` to reach disk before `initialize`, so the SDK registers `MetaRouterInitializer` with AndroidX App Startup, which runs it before `Application.onCreate` through the `InitializationProvider` AndroidX libraries already share. It only opens the SDK's storage. To opt out, remove it in your manifest:
+
+```xml
+<provider
+    android:name="androidx.startup.InitializationProvider"
+    android:authorities="${applicationId}.androidx-startup"
+    tools:node="merge">
+    <meta-data
+        android:name="com.metarouter.analytics.MetaRouterInitializer"
+        tools:node="remove" />
+</provider>
+```
+
+The SDK then opens storage at `initialize` instead, and consent calls made earlier are held in memory and applied then. Events are unaffected either way, but until `initialize` the previous launch's consent is not readable, a timestamped `setConsent` older than it returns `true` and is ignored when it loads, a registration problem throws at `initialize` rather than at the call, and nothing set before `initialize` is saved if the process never reaches it.
 
 ### OneTrust
 

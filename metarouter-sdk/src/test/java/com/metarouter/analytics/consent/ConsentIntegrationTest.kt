@@ -7,7 +7,7 @@ import com.metarouter.analytics.AnalyticsProxy
 import com.metarouter.analytics.InitOptions
 import com.metarouter.analytics.MetaRouter
 import com.metarouter.analytics.MetaRouterAnalyticsClient
-import com.metarouter.analytics.MetaRouterInitProvider
+import com.metarouter.analytics.MetaRouterInitializer
 import com.metarouter.analytics.consent.adapters.OneTrustAdapter
 import com.metarouter.analytics.queue.EventQueueInterface
 import com.metarouter.analytics.types.ConsentContext
@@ -26,7 +26,6 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -283,18 +282,18 @@ class ConsentIntegrationTest {
         }
     }
 
-    // ===== Startup provider =====
+    // ===== Startup initializer =====
 
     /**
-     * With the startup provider, consent works before initialize exactly as on iOS: the
+     * With the startup initializer, consent works before initialize exactly as on iOS: the
      * previous launch's state is readable, and a write reaches disk at once — so a
      * process that never initializes still keeps a withdrawal.
      */
     @Test
-    fun `startup provider makes consent persistent and readable before initialize`() {
+    fun `startup initializer makes consent persistent and readable before initialize`() {
         storage.set(StoredConsent(Consent(explicit = true, optOut = mapOf("c0004" to true), timestamp = 2_000), lastHostTimestamp = 2_000))
 
-        Robolectric.buildContentProvider(MetaRouterInitProvider::class.java).create()
+        MetaRouterInitializer().create(appContext)
         val shared = MetaRouter.Analytics.shared
 
         assertEquals("previous launch readable before initialize", mapOf("c0004" to true), shared.getConsent().optOut)
@@ -329,5 +328,38 @@ class ConsentIntegrationTest {
             mapOf("explicit" to false, "optOut" to mapOf("c0001" to false, "c0002" to true, "c0004" to true)),
             client.getDebugInfo()["consent"]
         )
+    }
+
+    /**
+     * A client built directly shares the process-wide manager: a second manager over the
+     * same preferences file would stamp its own stale copy and overwrite the other's
+     * writes on disk.
+     */
+    @Test
+    fun `a directly built client shares the process-wide consent manager`() = runBlocking {
+        MetaRouter.consentManagerForTesting.replaceStorageForTesting(storage)
+        MetaRouter.Analytics.shared.registerConsentCategories(registry)
+
+        val client = MetaRouterAnalyticsClient.initialize(mockContext(), options)
+        MetaRouter.Analytics.shared.setConsent(Consent(explicit = true, optOut = mapOf("c0004" to false)))
+
+        assertEquals(false, client.getConsent().optOut["c0004"])
+        client.clearConsent()
+        assertFalse("one manager: the clear is visible through shared", MetaRouter.Analytics.shared.getConsent().explicit)
+    }
+
+    /** One startup step failing must not skip the others. */
+    @Test
+    fun `a failing storage attach at process start still sets up the registration check`() {
+        val context = mockContext(debuggable = true)
+        every { context.getSharedPreferences(any(), any()) } throws IllegalStateException("storage unavailable")
+
+        MetaRouter.onProcessStart(context)
+
+        try {
+            MetaRouter.Analytics.shared.registerConsentCategories(listOf(ConsentCategory("C0004")))
+            fail("the debug check must still be armed")
+        } catch (expected: IllegalArgumentException) {
+        }
     }
 }

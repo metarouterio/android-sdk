@@ -32,7 +32,7 @@ import com.metarouter.analytics.utils.Logger
  *
  * Storage can arrive after construction. The process-wide manager is built with the
  * proxy, before any `Context` exists; [attachStorage] hands it the persisted state —
- * at process start through `MetaRouterInitProvider`, or at `initialize` when a host
+ * at process start through `MetaRouterInitializer`, or at `initialize` when a host
  * removed the provider. Until then the manager runs in memory and records every write,
  * and attaching replays those writes over the persisted state through the same
  * staleness rule — the outcome had storage been there from the start. No event is
@@ -122,9 +122,9 @@ internal class ConsentManager(
     private var implicitDefault: Consent = ConsentReconciler.implicitDefault(emptyList())
 
     /** Null = the host has never set consent (or cleared it). */
-    // Loaded eagerly: the manager is built alongside the identity read from the same
-    // process start, and a consent persisted by a prior launch must be visible to the
-    // very first read.
+    // Loaded at construction when storage is passed in (tests, and the attach does the
+    // same for the process-wide manager), so a consent persisted by a prior launch is
+    // visible to the very first read.
     private var stored: StoredConsent? = storage?.get()
 
     /** [stored] projected onto [registry]; recomputed on every set and registration. */
@@ -362,7 +362,7 @@ internal class ConsentManager(
 
     /**
      * Called once a debuggable build is known (at process start, or at `initialize`
-     * when the startup provider was removed): throws if the latest registration
+     * when the startup initializer was removed): throws if the latest registration
      * degraded past a problem, and makes every later one throw at the call — the
      * debug-build fail-fast iOS gets from an assertion at registration.
      */

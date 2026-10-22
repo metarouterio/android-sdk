@@ -249,9 +249,7 @@ class MetaRouterAnalyticsClient private constructor(
             require(injectedEnrichmentService == null || injectedConsentManager != null) {
                 "injecting enrichmentService requires injecting the same consentManager it was built with"
             }
-            consentManager = injectedConsentManager ?: ConsentManager(
-                storage = ConsentStorage(context)
-            )
+            consentManager = injectedConsentManager ?: MetaRouter.processConsentManager(context)
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,

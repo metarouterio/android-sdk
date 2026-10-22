@@ -251,7 +251,7 @@ interface AnalyticsInterface {
      * `setConsent` that arrives first is stored as-is and completed on registration.
      * Keys are trimmed and lowercased; on a debuggable build a key that needed it, a
      * blank key, or a duplicate throws at the call (at `initialize` instead, for a
-     * registration made earlier, if the host removed the SDK's startup provider).
+     * registration made earlier, if the host removed the SDK's startup initializer).
      */
     fun registerConsentCategories(categories: List<ConsentCategory>) {
         InterfaceDefaults.warnNotImplemented(this, "registerConsentCategories")
