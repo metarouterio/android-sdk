@@ -1249,6 +1249,58 @@ class PersistableEventQueueTest {
         assertFalse("requeued events must not be evicted", ids.contains("retry-0").not())
     }
 
+    // ===== Byte accounting (UTF-8) =====
+
+    private val sizeJson = kotlinx.serialization.json.Json { encodeDefaults = true }
+
+    private fun eventWithName(messageId: String, name: String) = createTestEvent(messageId).copy(
+        properties = kotlinx.serialization.json.buildJsonObject {
+            put("name", kotlinx.serialization.json.JsonPrimitive(name))
+        }
+    )
+
+    private fun utf8Size(event: EnrichedEventPayload): Long =
+        sizeJson.encodeToString(EnrichedEventPayload.serializer(), event).toByteArray(Charsets.UTF_8).size.toLong()
+
+    @Test
+    fun `byte counter is exact UTF-8 for multi-byte events`() {
+        val events = listOf(
+            eventWithName("ascii", "Headphones"),
+            eventWithName("arabic", "سماعات لاسلكية"),
+            eventWithName("emoji", "🎧🎧🎧")
+        )
+        events.forEach { queue.enqueue(it) }
+        assertEquals(events.sumOf { utf8Size(it) }, queue.bufferedBytes)
+    }
+
+    @Test
+    fun `byte counter returns to zero after drain`() {
+        (0 until 5).forEach { queue.enqueue(eventWithName("e$it", "🎧")) }
+        queue.drain(2)
+        queue.drain(10)
+        assertEquals(0L, queue.bufferedBytes)
+    }
+
+    @Test
+    fun `byte counter subtracts the evicted event exactly`() {
+        val ring = PersistableEventQueue(maxCapacity = 2, diskStore = diskStore, maxDiskEvents = 0, eventTTLMs = 0)
+        val big = eventWithName("big", "x".repeat(4000))
+        val small1 = eventWithName("s1", "a")
+        val small2 = eventWithName("s2", "b")
+        listOf(big, small1, small2).forEach { ring.enqueue(it) } // evicts `big`
+        assertEquals(utf8Size(small1) + utf8Size(small2), ring.bufferedBytes)
+    }
+
+    @Test
+    fun `byte counter after requeue matches contents`() {
+        (0 until 3).forEach { queue.enqueue(eventWithName("e$it", "سماعات")) }
+        val batch = queue.drain(2)
+        queue.requeueToFront(batch)
+        val all = queue.drain(10)
+        assertEquals(listOf("e0", "e1", "e2"), all.map { it.messageId })
+        assertEquals(0L, queue.bufferedBytes)
+    }
+
     private fun createTestEvent(messageId: String, timestamp: String = "2026-01-01T00:00:00.000Z"): EnrichedEventPayload {
         return EnrichedEventPayload(
             type = EventType.TRACK,

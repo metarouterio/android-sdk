@@ -84,7 +84,8 @@ class ConsentStampingTest {
             writeKey = "test-key",
             sessionManager = SessionManager(sessionStorage, wallClockMillis = { 1_757_400_000_000L }, monotonicClockMillis = { 50_000L }),
             consentManager = consentManager,
-            providerContextManager = ProviderContextManager()
+            providerContextManager = ProviderContextManager(),
+            networkMonitor = null
         )
     }
 

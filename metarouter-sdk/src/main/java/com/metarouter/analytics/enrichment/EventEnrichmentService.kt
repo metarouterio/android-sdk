@@ -3,11 +3,13 @@ package com.metarouter.analytics.enrichment
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.types.BaseEvent
 import com.metarouter.analytics.types.ConsentContext
 import com.metarouter.analytics.types.EnrichedEventPayload
+import com.metarouter.analytics.types.NetworkContext
 import com.metarouter.analytics.utils.MessageIdGenerator
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -25,7 +27,9 @@ import java.util.TimeZone
  * with different sessionIDs. [consentManager] likewise: a second instance never
  * hears the host's `setConsent` / `clearConsent`, and would stamp a consent the
  * user has since withdrawn. [providerContextManager] too: a second instance never
- * hears `setProviderContext`.
+ * hears `setProviderContext`. [networkMonitor] is required too, though null is
+ * allowed: a default would let a construction silently ship every event without
+ * `context.network`.
  */
 internal class EventEnrichmentService(
     private val identityManager: IdentityManager,
@@ -33,7 +37,8 @@ internal class EventEnrichmentService(
     private val writeKey: String,
     private val sessionManager: SessionManager,
     private val consentManager: ConsentManager,
-    private val providerContextManager: ProviderContextManager
+    private val providerContextManager: ProviderContextManager,
+    private val networkMonitor: NetworkMonitor?
 ) {
 
     /**
@@ -72,6 +77,15 @@ internal class EventEnrichmentService(
             contextWithAdId
         }
 
+        // Network is read live from the persistent monitor at enrichment, so
+        // `network.wifi` is the interface at event time, not at the first event.
+        // Unknown keeps the provider's value — null for the SDK's own provider. The
+        // spec requires `wifi` to be a boolean whenever `network` is present, so an
+        // unknown interface drops the object rather than sending `{"wifi": null}`.
+        val contextWithNetwork = networkMonitor?.isWifi
+            ?.let { contextWithPage.copy(network = NetworkContext(wifi = it)) }
+            ?: contextWithPage
+
         // Every enriched event is session activity, and this is the one funnel all
         // event sources share (native calls, lifecycle events, the webview bridge),
         // so touching here is what makes the session stamp universal. The key names
@@ -99,7 +113,7 @@ internal class EventEnrichmentService(
         // still holds for a value that reached the map another way. Flipping it — one
         // merge with the host map last — hands a customer sessionID, and nothing
         // downstream would flag it.
-        val context = contextWithPage.copy(
+        val context = contextWithNetwork.copy(
             consent = ConsentContext(consentManager.getConsent()),
             providers = providerContextManager.getAll() + (
                 "metarouter" to buildJsonObject {
