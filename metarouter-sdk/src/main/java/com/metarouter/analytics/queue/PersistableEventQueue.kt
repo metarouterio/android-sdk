@@ -69,6 +69,10 @@ class PersistableEventQueue(
     // Tracks estimated serialized size of all events in memory
     private var estimatedBytes: Long = 0L
 
+    /** Test seam: lets tests assert the byte counter against real encoded sizes. */
+    internal val bufferedBytes: Long
+        @Synchronized get() = estimatedBytes
+
     // Cache of per-event byte sizes (parallel to memoryQueue order)
     private val eventSizes = ArrayDeque<Long>()
 
@@ -192,15 +196,19 @@ class PersistableEventQueue(
             return
         }
 
+        // Measured once here and reused below: the size is a full JSON encode per event.
+        val sizes = events.map { estimateEventSize(it) }
+
         // Initial flush: if adding these events would exceed capacity, flush current memory first.
         if ((memoryQueue.size + events.size > maxCapacity ||
-             estimatedBytes + events.sumOf { estimateEventSize(it) } > maxCapacityBytes) &&
+             estimatedBytes + sizes.sum() > maxCapacityBytes) &&
             memoryQueue.isNotEmpty()) {
             flushMemoryToDiskInternal()
         }
 
-        events.asReversed().forEach { event ->
-            val eventSize = estimateEventSize(event)
+        events.indices.reversed().forEach { i ->
+            val event = events[i]
+            val eventSize = sizes[i]
 
             // Mid-loop capacity: the requeue batch itself exceeds capacity after earlier iterations
             // filled the queue. Flush to disk instead of dropping requeued events.
@@ -544,7 +552,11 @@ class PersistableEventQueue(
 
     private fun estimateEventSize(event: EnrichedEventPayload): Long {
         return try {
-            json.encodeToString(event).length.toLong()
+            // UTF-8 bytes, not `String.length`: length counts UTF-16 code units, so
+            // Arabic, CJK and emoji text under-counts (a realistic Arabic product
+            // event measured 9% low; CJK-heavy text up to 3x) and the 5 MB memory cap
+            // and 2 MB flush trigger let the real footprint run past them.
+            json.encodeToString(event).toByteArray(Charsets.UTF_8).size.toLong()
         } catch (e: Exception) {
             Logger.warn("Failed to estimate event size, using 512B fallback: ${e.message}")
             512L

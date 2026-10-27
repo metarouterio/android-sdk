@@ -26,6 +26,14 @@ internal class DebouncedNetworkMonitor(
     override var isConnected: Boolean = inner.isConnected
         private set
 
+    /**
+     * Not debounced: the debounce exists to avoid flapping the dispatcher's offline
+     * gate, whereas `wifi` is a fact stamped on the event — reporting the previous
+     * interface for 2s after a switch would mislabel those events.
+     */
+    override val isWifi: Boolean?
+        get() = inner.isWifi
+
     @Volatile
     private var debounceJob: Job? = null
 

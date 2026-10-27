@@ -3,10 +3,17 @@ package com.metarouter.analytics.network
 /**
  * Test double for [NetworkMonitor] that allows simulating connectivity changes.
  */
-class FakeNetworkMonitor(initialConnected: Boolean = true) : NetworkMonitor {
+class FakeNetworkMonitor(
+    initialConnected: Boolean = true,
+    initialWifi: Boolean? = null
+) : NetworkMonitor {
     @Volatile
     override var isConnected: Boolean = initialConnected
         private set
+
+    /** Settable from tests to simulate a wifi <-> cellular switch. */
+    @Volatile
+    override var isWifi: Boolean? = initialWifi
 
     private var listener: ((Boolean) -> Unit)? = null
 

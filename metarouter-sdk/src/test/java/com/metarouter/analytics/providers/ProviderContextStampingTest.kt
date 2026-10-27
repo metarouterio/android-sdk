@@ -91,7 +91,8 @@ class ProviderContextStampingTest {
             writeKey = "test-key",
             sessionManager = SessionManager(sessionStorage, wallClockMillis = { 1_757_400_000_000L }, monotonicClockMillis = { 50_000L }),
             consentManager = ConsentManager(mockk(relaxed = true), dispatch = { }),
-            providerContextManager = manager
+            providerContextManager = manager,
+            networkMonitor = null
         )
     }
 

@@ -84,7 +84,8 @@ class EventEnrichmentServiceTest {
                 mockk<ConsentStorage>(relaxUnitFun = true) { every { get() } returns null },
                 dispatch = { }
             ),
-            providerContextManager = ProviderContextManager()
+            providerContextManager = ProviderContextManager(),
+            networkMonitor = null
         )
     }
 
