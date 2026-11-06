@@ -32,6 +32,7 @@ import com.metarouter.analytics.session.SessionEventNames
 import com.metarouter.analytics.session.SessionManager
 import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.storage.EventDiskStore
+import com.metarouter.analytics.storage.IdentityStorage
 import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.AppContext
 import com.metarouter.analytics.types.BaseEvent
@@ -298,6 +299,11 @@ class MetaRouterAnalyticsClient private constructor(
                 config = DispatcherConfig()
             )
 
+            // Install detection reads this snapshot, not live storage: the pre-load below
+            // mints an anonymousId, which would make every fresh install look like an
+            // upgrade from a pre-lifecycle build.
+            val hadIdentityBeforeInit = identityManager.hasAnyValue()
+
             // Pre-load anonymous ID to ensure it's generated during init
             identityManager.getAnonymousId()
 
@@ -369,13 +375,17 @@ class MetaRouterAnalyticsClient private constructor(
                         analytics = this,
                         storage = lifecycleStorage,
                         appContext = appContext,
-                        identityManager = identityManager
+                        hadIdentityBeforeInit = hadIdentityBeforeInit
                     )
                     LifecycleCoordinator(tracker)
                 }
             } else {
                 null
             }
+
+            // The snapshot above has read the host-set marker; its window ends once
+            // construction can no longer fail and leave the next launch to read it.
+            identityManager.clearHostSetMarker()
 
             lifecycleState.set(LifecycleState.READY)
             Logger.log("MetaRouter SDK initialized")
@@ -755,6 +765,16 @@ class MetaRouterAnalyticsClient private constructor(
         }
         return identityManager.getAnonymousId()
     }
+
+    override fun setAnonymousId(anonymousId: String): Boolean =
+        identityManager.setAnonymousId(anonymousId)
+
+    /** For a proxy built without MetaRouter; see `AnalyticsProxy.bind`. */
+    internal val identityStorage: IdentityStorage
+        get() = identityManager.storage
+
+    /** The synchronous half of the host's `reset()`; see `AnalyticsProxy.reset`. */
+    internal fun noteResetRequested() = identityManager.noteResetRequested()
 
     override suspend fun getSessionId(): String? {
         // peek, not touch: a diagnostic read is not user activity and must not

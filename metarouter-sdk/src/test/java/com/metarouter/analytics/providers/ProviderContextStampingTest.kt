@@ -269,8 +269,8 @@ class ProviderContextStampingTest {
 
     /**
      * The cold-launch events go through the same enrichment funnel, so a value set before
-     * `initialize` is on them too. Installed or Updated depending on what earlier tests
-     * left in the identity store — either is the cold-launch event under test.
+     * `initialize` is on them too. Identity and lifecycle storage start empty, so the
+     * cold-launch event is `Application Installed`.
      */
     @Test
     fun `cold-launch events carry provider context set beforehand`() = runBlocking {
@@ -289,7 +289,7 @@ class ProviderContextStampingTest {
         )
         try {
             val start = System.currentTimeMillis()
-            val coldLaunch = setOf("Application Installed", "Application Updated")
+            val coldLaunch = setOf("Application Installed")
             while (queue.events.none { it.event in coldLaunch }) {
                 if (System.currentTimeMillis() - start > 2000) {
                     throw AssertionError("no cold-launch event enqueued: ${queue.events.map { it.event }}")

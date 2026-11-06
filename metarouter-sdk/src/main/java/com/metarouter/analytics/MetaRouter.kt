@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.consent.ConsentStorage
+import com.metarouter.analytics.identity.HostIdentity
 import com.metarouter.analytics.lifecycle.AppLifecycleObserver
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.providers.ProviderContextStorage
+import com.metarouter.analytics.storage.IdentityStorage
 import com.metarouter.analytics.utils.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -44,7 +46,15 @@ object MetaRouter {
     // consent's, before the client exists, so last launch's vendor ids are already on
     // the cold-launch events initialize() goes on to emit.
     private val providerContextManager = ProviderContextManager()
-    private val proxy = AnalyticsProxy(AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager, providerContextManager)
+
+    // One per process, for setAnonymousId before any client exists and the synchronous
+    // half of reset(). Its storage attaches with consent's, before the client is built,
+    // so a host id set before initialize is in place for install detection and the
+    // cold-launch events.
+    private val hostIdentity = HostIdentity()
+    private val proxy = AnalyticsProxy(
+        AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager, providerContextManager, hostIdentity
+    )
     private val store = RealClientStore()
     private val initMutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -257,6 +267,7 @@ object MetaRouter {
     private fun attachStorage(context: Context) {
         attachConsentStorage(context)
         attachProviderContextStorage(context)
+        attachIdentityStorage(context)
     }
 
     private fun attachConsentStorage(context: Context) {
@@ -269,6 +280,11 @@ object MetaRouter {
         providerContextManager.attachStorage(ProviderContextStorage(context.applicationContext))
     }
 
+    private fun attachIdentityStorage(context: Context) {
+        if (hostIdentity.hasStorage) return
+        hostIdentity.attachStorage(IdentityStorage(context.applicationContext))
+    }
+
     /**
      * Process-start hook, so consent behaves as on iOS from the first call: persisted
      * state is readable before `initialize`, writes reach disk at once, and the
@@ -279,6 +295,7 @@ object MetaRouter {
         // boot state) must not skip the others.
         runStartupStep("consent storage") { attachConsentStorage(context) }
         runStartupStep("provider context storage") { attachProviderContextStorage(context) }
+        runStartupStep("identity storage") { attachIdentityStorage(context) }
         runStartupStep("registration check") { checkConsentRegistration(context) }
     }
 
@@ -455,6 +472,10 @@ object MetaRouter {
                 initializationStarted.set(false)
                 sessionRefused.set(false)
 
+                // The clear runs later on the dispatcher; a setAnonymousId after this
+                // call must survive it (see AnalyticsProxy.reset).
+                proxy.noteResetRequested()
+
                 // Same FIFO scope as init/disable: a fire-and-forget reset racing
                 // a following initialize has the same ordering hazard as a refusal.
                 initScope.launch {
@@ -477,6 +498,7 @@ object MetaRouter {
                     // Enqueue-time flag flip — see reset() for why.
                     initializationStarted.set(false)
                     sessionRefused.set(false)
+                    proxy.noteResetRequested()
                     initScope.async {
                         try {
                             resetInternal()

@@ -85,6 +85,7 @@ class InterfaceDefaultsTest {
         assertEquals(emptyMap<String, Any>(), host.getProviderContext())
         host.clearProviderContext("googleFirebase")
         host.clearAllProviderContext()
+        assertFalse("the anonymousId is unchanged", host.setAnonymousId("web-anon-1"))
     }
 
     /** Every defaulted member, called through the interface — how a host holding it dispatches. */
@@ -99,6 +100,7 @@ class InterfaceDefaultsTest {
         target.getProviderContext()
         target.clearProviderContext("googleFirebase")
         target.clearAllProviderContext()
+        target.setAnonymousId("web-anon-1")
     }
 
     /**
@@ -132,7 +134,7 @@ class InterfaceDefaultsTest {
     fun `probe records a host implementation falling through`() {
         driveEveryDefaultedMember(LegacyHostFake())
 
-        assertEquals(10, InterfaceDefaults.hits.size)
+        assertEquals(11, InterfaceDefaults.hits.size)
     }
 
     /** A wrapper that forwards `track` but not `getConsent` must not log per event. */
