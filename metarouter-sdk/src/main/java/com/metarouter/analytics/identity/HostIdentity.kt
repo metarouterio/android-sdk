@@ -61,6 +61,18 @@ internal class HostIdentity(storage: IdentityStorage? = null) {
         }
     }
 
+    /**
+     * Test seam: the process-wide instance outlives tests, and Robolectric gives each
+     * test a fresh application, so a storage attached by an earlier test points at
+     * preferences no longer in use. Drops recorded writes too.
+     */
+    fun replaceStorageForTesting(newStorage: IdentityStorage?) {
+        synchronized(lock) {
+            storage = newStorage
+            preAttachWrites.clear()
+        }
+    }
+
     /** See [IdentityStorage.noteResetRequested]. */
     fun noteResetRequested() {
         synchronized(lock) {

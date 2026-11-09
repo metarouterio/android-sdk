@@ -559,6 +559,10 @@ object MetaRouter {
     internal val consentManagerForTesting: ConsentManager
         get() = consentManager
 
+    /** Test seam for the process-wide instance; see `HostIdentity.replaceStorageForTesting`. */
+    internal val hostIdentityForTesting: HostIdentity
+        get() = hostIdentity
+
     /** Test seam for the process-wide manager; see `ProviderContextManager.replaceStorageForTesting`. */
     internal val providerContextManagerForTesting: ProviderContextManager
         get() = providerContextManager

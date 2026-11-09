@@ -127,7 +127,7 @@ class IdentityManager(
             if (bytes > MAX_HOST_ANONYMOUS_ID_BYTES) {
                 Logger.warn(
                     "setAnonymousId rejected: the value is $bytes bytes, over the " +
-                        "$MAX_HOST_ANONYMOUS_ID_BYTES-byte limit (starts '${id.take(40)}'). $unchanged."
+                        "$MAX_HOST_ANONYMOUS_ID_BYTES-byte limit (starts '${id.take(8)}***'). $unchanged."
                 )
                 return null
             }
