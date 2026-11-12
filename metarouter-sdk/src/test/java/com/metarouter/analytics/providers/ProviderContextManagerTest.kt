@@ -3,6 +3,7 @@ package com.metarouter.analytics.providers
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.metarouter.analytics.storage.IdentityStorage
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -290,55 +291,92 @@ class ProviderContextManagerTest {
         assertEquals(mapOf("p" to block("a" to value)), manager.getAll())
     }
 
+    /** Hybrid apps forward ~20 sync providers; the old 10-provider / 10-key caps rejected them. */
     @Test
-    fun `provider count is capped`() {
+    fun `provider and key counts are not capped`() {
         val manager = makeManager()
-        repeat(ProviderContextManager.MAX_PROVIDERS) { manager.setValue("p$it", "a", "1") }
-        assertEquals(ProviderContextManager.MAX_PROVIDERS, manager.getAll().size)
+        repeat(25) { assertTrue(manager.setValue("p$it", "a", "1")) }
+        repeat(25) { assertTrue(manager.setValue("p0", "k$it", "1")) }
 
-        assertFalse(manager.setValue("overflow", "a", "1"))
+        assertEquals(25, manager.getAll().size)
+        assertEquals(26, manager.getAll()["p0"]?.size)
+    }
 
-        assertEquals(ProviderContextManager.MAX_PROVIDERS, manager.getAll().size)
-        assertNull(manager.getAll()["overflow"])
+    private val maxValue = "x".repeat(ProviderContextManager.MAX_VALUE_BYTES - 2)
+
+    /** Fills the map to just under the total budget with max-size values. */
+    private fun fillNearTotalBudget(manager: ProviderContextManager): Int {
+        // Bounded so a budget check that regresses to "always accept" fails here instead
+        // of hanging the suite.
+        val ceiling = ProviderContextManager.MAX_TOTAL_BYTES / ProviderContextManager.MAX_VALUE_BYTES + 2
+        var count = 0
+        while (count < ceiling && manager.setValue("p$count", "a", maxValue)) count++
+        assertTrue("the total budget never rejected a write", count < ceiling)
+        return count
+    }
+
+    private fun encodedSize(map: Map<String, JsonObject>): Int =
+        Json.encodeToString(JsonObject.serializer(), JsonObject(map)).toByteArray(Charsets.UTF_8).size
+
+    @Test
+    fun `write that would exceed the total budget is rejected and keeps prior state`() {
+        val manager = makeManager()
+        assertTrue(fillNearTotalBudget(manager) > 0)
+        val before = manager.getAll()
+        assertTrue(encodedSize(before) <= ProviderContextManager.MAX_TOTAL_BYTES)
+
+        assertFalse(manager.setValue("overflow", "a", maxValue))
+
+        assertEquals(before, manager.getAll())
     }
 
     @Test
-    fun `provider cap does not block writes to providers already present`() {
+    fun `growing an existing key past the total budget is rejected`() {
         val manager = makeManager()
-        repeat(ProviderContextManager.MAX_PROVIDERS) { manager.setValue("p$it", "a", "1") }
-        manager.setValue("p0", "b", "2")
+        manager.setValue("small", "a", "1")
+        fillNearTotalBudget(manager)
+        val before = manager.getAll()
 
-        assertEquals(block("a" to "1", "b" to "2"), manager.getAll()["p0"])
+        assertFalse(manager.setValue("small", "a", maxValue))
+
+        assertEquals(before, manager.getAll())
     }
 
     @Test
-    fun `keys per provider are capped`() {
+    fun `shrinking and removal are not blocked by a full map`() {
         val manager = makeManager()
-        repeat(ProviderContextManager.MAX_KEYS_PER_PROVIDER) { manager.setValue("p", "k$it", "1") }
-        assertEquals(ProviderContextManager.MAX_KEYS_PER_PROVIDER, manager.getAll()["p"]?.size)
+        fillNearTotalBudget(manager)
 
-        assertFalse(manager.setValue("p", "overflow", "1"))
+        assertTrue(manager.setValue("p0", "a", "short"))
+        assertEquals(JsonPrimitive("short"), manager.getAll()["p0"]?.get("a"))
 
-        assertEquals(ProviderContextManager.MAX_KEYS_PER_PROVIDER, manager.getAll()["p"]?.size)
-        assertNull(manager.getAll()["p"]?.get("overflow"))
+        assertTrue(manager.setValue("p1", "a", null))
+        assertNull(manager.getAll()["p1"])
+    }
+
+    /**
+     * A map persisted under the old count caps can exceed the new budget; the host must
+     * still be able to shrink it, and must not be able to grow it.
+     */
+    @Test
+    fun `a map already over budget can shrink but not grow`() {
+        val value = "x".repeat(254)
+        storage.set((0 until 10).associate { p -> "p$p" to JsonObject((0 until 10).associate { "k$it" to JsonPrimitive(value) }) })
+        val manager = makeManager()
+        assertTrue(encodedSize(manager.getAll()) > ProviderContextManager.MAX_TOTAL_BYTES)
+
+        assertTrue("a same-size overwrite (a rotated vendor id) must still land", manager.setValue("p1", "k0", "z".repeat(254)))
+        assertTrue(manager.setValue("p0", "k0", "short"))
+        assertFalse(manager.setValue("p0", "k0", value))
+        assertFalse(manager.setValue("new", "a", "1"))
+        assertEquals(JsonPrimitive("short"), manager.getAll()["p0"]?.get("k0"))
     }
 
     @Test
-    fun `key cap does not block overwriting an existing key`() {
+    fun `an encrypted envelope sized value is accepted`() {
         val manager = makeManager()
-        repeat(ProviderContextManager.MAX_KEYS_PER_PROVIDER) { manager.setValue("p", "k$it", "1") }
-        manager.setValue("p", "k0", "updated")
-
-        assertEquals(JsonPrimitive("updated"), manager.getAll()["p"]?.get("k0"))
-    }
-
-    @Test
-    fun `removal is not blocked by a full map`() {
-        val manager = makeManager()
-        repeat(ProviderContextManager.MAX_KEYS_PER_PROVIDER) { manager.setValue("p", "k$it", "1") }
-        manager.setValue("p", "k0", null)
-
-        assertEquals(ProviderContextManager.MAX_KEYS_PER_PROVIDER - 1, manager.getAll()["p"]?.size)
+        // An enrichment-service envelope is always over the old 256 B value cap.
+        assertTrue(manager.setValue("enrichmentService", "payload", "e".repeat(1_200)))
     }
 
     /**
@@ -549,17 +587,18 @@ class ProviderContextManagerTest {
         assertEquals(mapOf("q" to block("b" to "2")), storage.get())
     }
 
-    /** The bounds hold across the attach: a pre-attach write over the persisted cap is dropped there. */
+    /** The bounds hold across the attach: a pre-attach write over the persisted budget is dropped there. */
     @Test
-    fun `replay at attach applies the provider cap against the persisted map`() {
-        storage.set((0 until ProviderContextManager.MAX_PROVIDERS).associate { "p$it" to block("a" to "1") })
+    fun `replay at attach applies the total budget against the persisted map`() {
+        val full = makeManager().also(::fillNearTotalBudget).getAll()
+        storage.set(full)
         val manager = ProviderContextManager()
-        assertTrue("the persisted map is not known yet", manager.setValue("overflow", "a", "1"))
+        assertTrue("the persisted map is not known yet", manager.setValue("overflow", "a", maxValue))
 
         manager.attachStorage(storage)
 
         assertNull(manager.getAll()["overflow"])
-        assertEquals(ProviderContextManager.MAX_PROVIDERS, manager.getAll().size)
+        assertEquals(full, manager.getAll())
     }
 
     @Test
