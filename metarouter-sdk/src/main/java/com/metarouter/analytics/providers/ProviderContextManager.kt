@@ -157,13 +157,17 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
         is Write.Put -> {
             val existing = providers[write.provider]
             if (write.value != null) {
-                if (existing == null && providers.size >= MAX_PROVIDERS) {
-                    Logger.warn("setProviderContext: at most $MAX_PROVIDERS providers — \"${write.provider}\" ignored")
-                    Outcome.REJECTED
-                } else if (existing != null && write.key !in existing && existing.size >= MAX_KEYS_PER_PROVIDER) {
+                // Checked on the candidate map under the lock: two concurrent writes
+                // that each fit alone must not both land and overshoot together.
+                val candidate = providers + (write.provider to (existing.orEmpty() + (write.key to write.value)))
+                val byteCount = encodedSize(candidate)
+                // Over budget is still accepted when the map does not grow: one persisted
+                // under the old count caps can be ~38 KB, and the host must be able to
+                // shrink it a value at a time. Current size is only measured here.
+                if (byteCount > MAX_TOTAL_BYTES && byteCount > encodedSize(providers)) {
                     Logger.warn(
-                        "setProviderContext: at most $MAX_KEYS_PER_PROVIDER keys per provider — " +
-                            "\"${write.provider}.${write.key}\" ignored"
+                        "setProviderContext(\"${write.provider}\", key: \"${write.key}\"): provider context would be " +
+                            "$byteCount bytes, total limit $MAX_TOTAL_BYTES — ignored, prior values kept"
                     )
                     Outcome.REJECTED
                 } else {
@@ -315,19 +319,31 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
          */
         const val RESERVED_PROVIDER = "metarouter"
 
-        // This map rides on EVERY event and the cluster rejects a single event over
-        // 250 KiB. Worst case here is 10 x 10 x (256 + 64 + 64) ≈ 38 KB — far more than
-        // any real integration needs (a vendor id is a ~36-byte UUID) and well clear of
-        // the cap. Exceeding a bound rejects that one write and keeps prior state; it
-        // never trims, because a truncated vendor id looks valid and matches nothing.
+        // This map rides on EVERY event, so the bound that matters is its total size,
+        // not how many providers or keys it holds: hybrid apps forward ~20 sync
+        // providers, and a count cap rejects them while a few large values pass.
+        // 16 KiB total sits well under the cluster's single-event cap (250 KiB), even
+        // beside a 64 KiB bridge payload. A full map on a 100-event batch exceeds the
+        // 500 KB batch cap: a backlog drain then gets through at 25 events, with a 413
+        // on every other request as the size doubles back. Real maps (~4-5 KB per
+        // event) cost at most an occasional single halving.
+        //
+        // 2 KiB per value fits an encrypted enrichment envelope (always over 256 B) and
+        // stops one key from taking the whole budget. Exceeding a bound rejects that one
+        // write and keeps prior state; it never trims, because a truncated vendor id
+        // looks valid and matches nothing.
         //
         // A rejection warns and returns false — never throws, even on a debuggable
         // build. Values here come from third-party SDKs the host does not control, and
         // a throw would crash the host on vendor data.
-        const val MAX_PROVIDERS = 10
-        const val MAX_KEYS_PER_PROVIDER = 10
-        const val MAX_VALUE_BYTES = 256
+        const val MAX_VALUE_BYTES = 2 * 1024
+        const val MAX_TOTAL_BYTES = 16 * 1024
         const val MAX_NAME_BYTES = 64
+
+        /** The whole map as it would be stamped; names count, they are on the wire too. */
+        private fun encodedSize(map: Map<String, Map<String, JsonElement>>): Int =
+            Json.encodeToString(JsonObject.serializer(), JsonObject(map.mapValues { (_, keys) -> JsonObject(keys) }))
+                .toByteArray(Charsets.UTF_8).size
 
         private fun isReserved(providerName: String): Boolean =
             providerName.lowercase().filter { it.isLetterOrDigit() } == RESERVED_PROVIDER

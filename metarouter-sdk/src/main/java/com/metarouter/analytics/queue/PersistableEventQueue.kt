@@ -194,7 +194,7 @@ class PersistableEventQueue(
             // requeued retry events at the front are preserved.
             events.asReversed().forEach { event ->
                 val eventSize = estimateEventSize(event)
-                dropNewestUntilFits(eventSize)
+                dropNewestUntilFits(eventSize, "maxDiskEvents=0")
                 memoryQueue.addFirst(event)
                 eventSizes.addFirst(eventSize)
                 estimatedBytes += eventSize
@@ -205,11 +205,20 @@ class PersistableEventQueue(
         // Measured once here and reused below: the size is a full JSON encode per event.
         val sizes = events.map { estimateEventSize(it) }
 
+        // One failed flush per call is enough: retrying on every iteration repeats a disk
+        // read and write per requeued event while holding the queue monitor.
+        var diskFailing = false
+        fun flush() {
+            if (diskFailing) return
+            flushMemoryToDiskInternal()
+            diskFailing = memoryQueue.isNotEmpty()
+        }
+
         // Initial flush: if adding these events would exceed capacity, flush current memory first.
         if ((memoryQueue.size + events.size > maxCapacity ||
              estimatedBytes + sizes.sum() > maxCapacityBytes) &&
             memoryQueue.isNotEmpty()) {
-            flushMemoryToDiskInternal()
+            flush()
         }
 
         events.indices.reversed().forEach { i ->
@@ -219,11 +228,16 @@ class PersistableEventQueue(
             // Mid-loop capacity: the requeue batch itself exceeds capacity after earlier iterations
             // filled the queue. Flush to disk instead of dropping requeued events.
             if (estimatedBytes + eventSize > maxCapacityBytes && memoryQueue.isNotEmpty()) {
-                flushMemoryToDiskInternal()
+                flush()
             }
             if (memoryQueue.size >= maxCapacity) {
-                flushMemoryToDiskInternal()
+                flush()
             }
+            // A failed flush leaves memory full, and adding anyway grows it past both caps
+            // for as long as the disk keeps failing. Drop the newest tail, as iOS does: the
+            // requeued events at the front are older and already mid-send. Parking them in
+            // pendingOverflow instead would strand them, since it only leaves via disk.
+            dropNewestUntilFits(eventSize, "disk flush failed")
 
             memoryQueue.addFirst(event)
             eventSizes.addFirst(eventSize)
@@ -524,11 +538,11 @@ class PersistableEventQueue(
     }
 
     /**
-     * In-memory-only mode (requeue path): drop newest events from the back so that
+     * Requeue path (in-memory-only mode, or a failed disk flush): drop newest events from the back so that
      * older requeued retries at the front are preserved.
      * Must be called while holding `synchronized(this)`.
      */
-    private fun dropNewestUntilFits(newEventSize: Long) {
+    private fun dropNewestUntilFits(newEventSize: Long, reason: String) {
         var dropped = 0
         while (memoryQueue.isNotEmpty() &&
                (memoryQueue.size >= maxCapacity ||
@@ -538,7 +552,7 @@ class PersistableEventQueue(
             dropped++
         }
         if (dropped > 0) {
-            Logger.warn("In-memory queue cap reached during requeue — dropped $dropped newest event(s) (maxDiskEvents=0)")
+            Logger.warn("In-memory queue cap reached during requeue — dropped $dropped newest event(s) ($reason)")
         }
     }
 

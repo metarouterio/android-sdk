@@ -1007,6 +1007,41 @@ class PersistableEventQueueTest {
     }
 
 
+    /** Before the fix every requeue after a failed flush grew memory past maxCapacity. */
+    @Test
+    fun `requeueToFront keeps the cap when the disk flush fails`() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val poisonedBase = createTempDirectory("metarouter-pq-requeue-poisoned").toFile()
+        try {
+            File(poisonedBase, "metarouter").apply { mkdirs() }
+                .let { File(it, "disk-queue").writeText("not a directory") }
+            val smallQueue = PersistableEventQueue(
+                maxCapacity = 3,
+                diskStore = EventDiskStore(poisonedBase),
+                maxDiskEvents = 100,
+                eventTTLMs = 0
+            )
+            repeat(3) { smallQueue.enqueue(createTestEvent("fill-$it")) }
+
+            val retries = (0 until 2).map { createTestEvent("retry-$it") }
+            smallQueue.requeueToFront(retries)
+
+            assertEquals(3, smallQueue.size())
+            val expected = listOf(retries[0], retries[1], createTestEvent("fill-0"))
+            assertEquals(expected.sumOf { utf8Size(it) }, smallQueue.bufferedBytes)
+            assertEquals(listOf("retry-0", "retry-1", "fill-0"), smallQueue.drain(10).map { it.messageId })
+            assertEquals(0L, smallQueue.bufferedBytes)
+        } finally {
+            poisonedBase.deleteRecursively()
+            unmockkStatic(Log::class)
+        }
+    }
+
     // ===== Pending Overflow (write-failure retention) =====
 
     @Test
