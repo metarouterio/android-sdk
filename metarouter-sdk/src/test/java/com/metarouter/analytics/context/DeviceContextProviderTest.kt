@@ -47,7 +47,6 @@ class DeviceContextProviderTest {
         assertNotNull(eventContext.os)
         assertNotNull(eventContext.app)
         assertNotNull(eventContext.screen)
-        assertNotNull(eventContext.network)
     }
 
     @Test
@@ -130,13 +129,8 @@ class DeviceContextProviderTest {
     }
 
     @Test
-    fun `network context has wifi status`() {
-        val eventContext = provider.getContext()
-        val network = eventContext.network!!
-
-        // WiFi status can be true, false, or null (permission not granted)
-        // Just verify the field exists
-        assertNotNull(network)
+    fun `cached context carries no network - enrichment stamps it per event`() {
+        assertNull(provider.getContext().network)
     }
 
     @Test

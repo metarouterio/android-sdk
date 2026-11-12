@@ -1,8 +1,6 @@
 package com.metarouter.analytics.context
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
@@ -14,13 +12,14 @@ import java.util.TimeZone
 import kotlin.math.roundToInt
 
 /**
- * Provides device, app, OS, screen, network, locale, and timezone context information.
+ * Provides device, app, OS, screen, locale, and timezone context information.
  *
- * - Context is calculated once and cached for app lifetime
+ * - Context is calculated once and cached for app lifetime. Only static fields belong
+ *   here: network is volatile, and enrichment stamps it per event from the live
+ *   network monitor — the old `by lazy` read froze `wifi` at the first event.
  *
  * Android Considerations:
  * - Requires Application context (not Activity context) to avoid memory leaks
- * - Network WiFi detection requires ACCESS_NETWORK_STATE permission (graceful degradation if missing)
  * - Screen dimensions use DisplayMetrics (no configuration changes handled - cache is static)
  *
  * Thread Safety:
@@ -65,8 +64,7 @@ class DeviceContextProvider(
             device = getDeviceContext(),
             os = getOSContext(),
             app = appContext,
-            screen = getScreenContext(),
-            network = getNetworkContext()
+            screen = getScreenContext()
         )
     }
 
@@ -173,37 +171,6 @@ class DeviceContextProvider(
                 height = 0,
                 density = 1.0
             )
-        }
-    }
-
-    /**
-     * Get network connectivity information (WiFi detection).
-     * Requires ACCESS_NETWORK_STATE permission - gracefully returns null if missing.
-     * Android only feature per spec.
-     */
-    private fun getNetworkContext(): NetworkContext {
-        return try {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-            val isWifi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val network = connectivityManager.activeNetwork
-                val capabilities = connectivityManager.getNetworkCapabilities(network)
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-            } else {
-                @Suppress("DEPRECATION")
-                val networkInfo = connectivityManager.activeNetworkInfo
-                @Suppress("DEPRECATION")
-                networkInfo?.type == ConnectivityManager.TYPE_WIFI
-            }
-
-            NetworkContext(wifi = isWifi)
-        } catch (e: SecurityException) {
-            // Permission not granted - graceful degradation
-            Logger.log("ACCESS_NETWORK_STATE permission not granted, network context unavailable")
-            NetworkContext(wifi = null)
-        } catch (e: Exception) {
-            Logger.warn("Failed to get network context: ${e.message}")
-            NetworkContext(wifi = null)
         }
     }
 }

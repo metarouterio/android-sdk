@@ -288,4 +288,13 @@ class DebouncedNetworkMonitorTest {
         inner.setConnected(false)
         assertEquals(0, callbackCount)
     }
+
+    @Test
+    fun `wifi passes through without debounce`() = runTest {
+        val inner = FakeNetworkMonitor(initialWifi = true)
+        val monitor = DebouncedNetworkMonitor(inner, scope = this)
+        assertEquals(true, monitor.isWifi)
+        inner.isWifi = false
+        assertEquals(false, monitor.isWifi)
+    }
 }

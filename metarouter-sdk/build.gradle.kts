@@ -55,6 +55,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Used directly (utf8Size in PersistableEventQueue); pinned to the version okhttp
+    // 4.12.0 already brings, so the dependency graph is unchanged.
+    implementation("com.squareup.okio:okio:3.6.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     // Already resolved through lifecycle-process; declared because MetaRouterInitializer
     // uses it directly.

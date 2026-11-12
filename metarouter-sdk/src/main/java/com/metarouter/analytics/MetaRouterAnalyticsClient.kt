@@ -264,13 +264,18 @@ class MetaRouterAnalyticsClient private constructor(
             }
             providerContextManager = injectedProviderContextManager
                 ?: MetaRouter.processProviderContextManager(context)
+            // Built before enrichment, which reads the interface type per event;
+            // started further down, once the dispatcher it drives exists.
+            val rawMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
+            networkMonitor = DebouncedNetworkMonitor(rawMonitor, scope)
             enrichmentService = injectedEnrichmentService ?: EventEnrichmentService(
                 identityManager = identityManager,
                 contextProvider = contextProvider,
                 writeKey = options.writeKey,
                 sessionManager = sessionManager,
                 consentManager = consentManager,
-                providerContextManager = providerContextManager
+                providerContextManager = providerContextManager,
+                networkMonitor = networkMonitor
             )
             if (injectedEventQueue != null) {
                 eventQueue = injectedEventQueue
@@ -301,9 +306,7 @@ class MetaRouterAnalyticsClient private constructor(
             // Pre-load anonymous ID to ensure it's generated during init
             identityManager.getAnonymousId()
 
-            // Initialize network monitor with debounced decorator
-            val rawMonitor = injectedNetworkMonitor ?: AndroidNetworkMonitor(context)
-            networkMonitor = DebouncedNetworkMonitor(rawMonitor, scope)
+            // Start the network monitor (built above, before enrichment)
             networkMonitor.start { connected ->
                 if (connected) {
                     circuitBreaker.reset()
