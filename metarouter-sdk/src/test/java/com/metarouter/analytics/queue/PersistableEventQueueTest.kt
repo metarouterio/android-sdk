@@ -1267,7 +1267,8 @@ class PersistableEventQueueTest {
         val events = listOf(
             eventWithName("ascii", "Headphones"),
             eventWithName("arabic", "سماعات لاسلكية"),
-            eventWithName("emoji", "🎧🎧🎧")
+            eventWithName("emoji", "🎧🎧🎧"),
+            eventWithName("lone-surrogate", "a\uD83Db")
         )
         events.forEach { queue.enqueue(it) }
         assertEquals(events.sumOf { utf8Size(it) }, queue.bufferedBytes)

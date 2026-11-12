@@ -7,6 +7,7 @@ import com.metarouter.analytics.storage.QueueSnapshot
 import com.metarouter.analytics.types.EnrichedEventPayload
 import com.metarouter.analytics.utils.Logger
 import kotlinx.serialization.encodeToString
+import okio.utf8Size
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -107,9 +108,14 @@ class PersistableEventQueue(
      * If [maxDiskEvents] is 0, disk persistence is disabled and the queue
      * acts as a pure in-memory ring buffer: at capacity, the oldest event is dropped.
      */
-    @Synchronized
     override fun enqueue(event: EnrichedEventPayload) {
-        val eventSize = estimateEventSize(event)
+        // Measured before taking the lock: the size is a full JSON encode of the event,
+        // and holding the queue monitor through it blocks concurrent track() and drain().
+        enqueueSized(event, estimateEventSize(event))
+    }
+
+    @Synchronized
+    private fun enqueueSized(event: EnrichedEventPayload, eventSize: Long) {
 
         if (maxDiskEvents == 0) {
             dropOldestUntilFits(eventSize)
@@ -556,7 +562,9 @@ class PersistableEventQueue(
             // Arabic, CJK and emoji text under-counts (a realistic Arabic product
             // event measured 9% low; CJK-heavy text up to 3x) and the 5 MB memory cap
             // and 2 MB flush trigger let the real footprint run past them.
-            json.encodeToString(event).toByteArray(Charsets.UTF_8).size.toLong()
+            // Counts without allocating a byte copy. A lone surrogate counts 1 byte,
+            // as the Dispatcher's `toByteArray(UTF_8)` request body encodes it ('?').
+            json.encodeToString(event).utf8Size()
         } catch (e: Exception) {
             Logger.warn("Failed to estimate event size, using 512B fallback: ${e.message}")
             512L

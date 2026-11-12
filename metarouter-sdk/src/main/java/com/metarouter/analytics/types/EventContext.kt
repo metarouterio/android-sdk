@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.utils.Logger
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -27,6 +29,13 @@ data class EventContext(
     val device: DeviceContext? = null,
     val library: LibraryContext,
     val locale: String? = null,
+    /**
+     * Omitted from the JSON when null, unlike this class's other nullable fields:
+     * the spec types `network` as an object whose `wifi` is a boolean, so an unknown
+     * interface leaves the key out — as iOS does — rather than sending `null`.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val network: NetworkContext? = null,
     val os: OSContext? = null,
     val page: PageContext? = null,

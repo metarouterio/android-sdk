@@ -20,6 +20,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -93,6 +94,24 @@ class ContextFreshnessTest {
     fun `unknown interface drops the network object instead of wifi null`() = runBlocking {
         val payload = service(FakeNetworkMonitor(initialWifi = null)).track("a")
         assertNull("spec: wifi must be a boolean when network is present", payload.context.network)
+    }
+
+    @Test
+    fun `wire omits the network key when unknown and keeps it when known`() = runBlocking {
+        // Same Json configuration as the Dispatcher's request body.
+        val wire = kotlinx.serialization.json.Json { encodeDefaults = true }
+        suspend fun contextJson(monitor: NetworkMonitor) = wire.parseToJsonElement(
+            wire.encodeToString(
+                com.metarouter.analytics.types.EnrichedEventPayload.serializer(),
+                service(monitor).track("a")
+            )
+        ).let { (it as kotlinx.serialization.json.JsonObject)["context"] as kotlinx.serialization.json.JsonObject }
+
+        assertFalse("spec + iOS: no network key, not null", "network" in contextJson(FakeNetworkMonitor(initialWifi = null)))
+        assertEquals(
+            kotlinx.serialization.json.JsonPrimitive(true),
+            (contextJson(FakeNetworkMonitor(initialWifi = true))["network"] as kotlinx.serialization.json.JsonObject)["wifi"]
+        )
     }
 
     @Test
