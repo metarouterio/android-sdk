@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.metarouter.analytics.AnalyticsInterface
-import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.AppContext
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,7 +21,11 @@ internal class LifecycleEventTracker(
     private val analytics: AnalyticsInterface,
     private val storage: LifecycleStorage,
     private val appContext: AppContext,
-    private val identityManager: IdentityManager,
+    /**
+     * Whether identity storage held anything before the client minted its anonymousId,
+     * snapshotted at client construction; see [onSdkReady].
+     */
+    private val hadIdentityBeforeInit: Boolean,
     private val foregroundStateProvider: () -> Boolean = { defaultForegroundCheck() }
 ) {
 
@@ -69,7 +72,7 @@ internal class LifecycleEventTracker(
 
         when {
             storedVersion == null && storedBuild == null -> {
-                if (identityManager.hasAnyValue()) {
+                if (hadIdentityBeforeInit) {
                     // Existing user upgrading from a pre-lifecycle SDK build.
                     emitUpdated(currentVersion, currentBuild, LIFECYCLE_UNKNOWN, LIFECYCLE_UNKNOWN)
                 } else {

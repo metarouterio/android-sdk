@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.metarouter.analytics.AnalyticsInterface
-import com.metarouter.analytics.identity.IdentityManager
 import com.metarouter.analytics.storage.LifecycleStorage
 import com.metarouter.analytics.types.AppContext
 import io.mockk.every
@@ -51,7 +50,6 @@ class LifecycleEventTrackerTest {
 
     private lateinit var analytics: RecordingAnalytics
     private lateinit var storage: LifecycleStorage
-    private lateinit var identityManager: IdentityManager
 
     private val currentVersion = "1.4.0"
     private val currentBuild = "42"
@@ -68,17 +66,16 @@ class LifecycleEventTrackerTest {
         analytics = RecordingAnalytics()
         storage = LifecycleStorage(ctx)
         storage.clear()
-        identityManager = mockk()
-        every { identityManager.hasAnyValue() } returns false
     }
 
     private fun newTracker(
-        foreground: Boolean = true
+        foreground: Boolean = true,
+        hadIdentityBeforeInit: Boolean = false
     ): LifecycleEventTracker = LifecycleEventTracker(
         analytics = analytics,
         storage = storage,
         appContext = appContext,
-        identityManager = identityManager,
+        hadIdentityBeforeInit = hadIdentityBeforeInit,
         foregroundStateProvider = { foreground }
     )
 
@@ -86,8 +83,6 @@ class LifecycleEventTrackerTest {
 
     @Test
     fun `cold launch with no stored version and no identity emits Installed then Opened`() {
-        every { identityManager.hasAnyValue() } returns false
-
         newTracker().onSdkReady()
 
         assertEquals(2, analytics.events.size)
@@ -106,9 +101,7 @@ class LifecycleEventTrackerTest {
 
     @Test
     fun `cold launch with no stored version but identity present emits Updated unknown`() {
-        every { identityManager.hasAnyValue() } returns true
-
-        newTracker().onSdkReady()
+        newTracker(hadIdentityBeforeInit = true).onSdkReady()
 
         assertEquals(2, analytics.events.size)
         val updated = analytics.events[0]

@@ -16,7 +16,7 @@ import java.util.UUID
  * All operations are non-blocking (uses apply() for writes).
  */
 class IdentityManager(
-    private val storage: IdentityStorage
+    internal val storage: IdentityStorage
 ) {
     constructor(context: Context) : this(IdentityStorage(context))
 
@@ -25,13 +25,27 @@ class IdentityManager(
      * If no ID exists, generates a new UUID and persists it.
      */
     fun getAnonymousId(): String {
-        storage.get(KEY_ANONYMOUS_ID)?.let { return it }
-
-        val newId = UUID.randomUUID().toString()
-        storage.set(KEY_ANONYMOUS_ID, newId)
-        Logger.log("Generated new anonymous ID: ${newId.take(8)}***")
-        return newId
+        // Check-and-set under the storage's lock: setAnonymousId can write from the
+        // proxy, before a client is bound, while this mints the first id.
+        val (id, created) = storage.getOrCreateAnonymousId { UUID.randomUUID().toString() }
+        if (created) Logger.log("Generated new anonymous ID: ${id.take(8)}***")
+        return id
     }
+
+    /**
+     * Replaces the anonymous ID with one the host owns (e.g. the id a WebView's web SDK
+     * already uses). See [applyHostAnonymousId].
+     */
+    fun setAnonymousId(anonymousId: String): Boolean = applyHostAnonymousId(anonymousId, storage)
+
+    /** See [IdentityStorage.noteResetRequested]. */
+    internal fun noteResetRequested() = storage.noteResetRequested()
+
+    /**
+     * Ends the window in which a host-set anonymousId doesn't count as prior identity.
+     * Called once install detection has read [hasAnyValue].
+     */
+    internal fun clearHostSetMarker() = storage.clearHostSetMarker()
 
     fun getUserId(): String? = storage.get(KEY_USER_ID)
 
@@ -90,4 +104,48 @@ class IdentityManager(
      * SDK build (where the version/build keys would be missing despite prior usage).
      */
     fun hasAnyValue(): Boolean = storage.hasAnyValue()
+
+    companion object {
+        /**
+         * Longest accepted host anonymousId, in UTF-8 bytes. Generous for any web or
+         * vendor id (a UUID is 36), and it rides on every event.
+         */
+        internal const val MAX_HOST_ANONYMOUS_ID_BYTES = 256
+
+        /**
+         * The trimmed id, or null (with a warning) when it is rejected. [current] is
+         * only for the warning.
+         */
+        internal fun validateHostAnonymousId(raw: String, current: String?): String? {
+            val id = raw.trim()
+            val unchanged = "anonymousId unchanged (${current?.let { "${it.take(8)}***" } ?: "none stored yet"})"
+            if (id.isEmpty()) {
+                Logger.warn("setAnonymousId rejected: the value is empty after trimming whitespace. $unchanged.")
+                return null
+            }
+            val bytes = id.toByteArray(Charsets.UTF_8).size
+            if (bytes > MAX_HOST_ANONYMOUS_ID_BYTES) {
+                Logger.warn(
+                    "setAnonymousId rejected: the value is $bytes bytes, over the " +
+                        "$MAX_HOST_ANONYMOUS_ID_BYTES-byte limit (starts '${id.take(8)}***'). $unchanged."
+                )
+                return null
+            }
+            return id
+        }
+
+        /**
+         * Validates and stores a host-provided anonymousId. Shared by the proxy (which
+         * writes before any client exists) and the client.
+         * @return false when rejected; the stored anonymousId is unchanged.
+         */
+        internal fun applyHostAnonymousId(raw: String, storage: IdentityStorage): Boolean {
+            val id = validateHostAnonymousId(raw, storage.get(KEY_ANONYMOUS_ID)) ?: return false
+            val (previous, changed) = storage.setHostAnonymousId(id)
+            if (changed) {
+                Logger.log("Anonymous ID set by host: ${id.take(8)}*** (was ${previous?.let { "${it.take(8)}***" } ?: "none stored yet"})")
+            }
+            return true
+        }
+    }
 }

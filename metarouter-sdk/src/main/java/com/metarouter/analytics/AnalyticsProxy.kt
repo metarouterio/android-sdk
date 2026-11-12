@@ -7,6 +7,7 @@ import com.metarouter.analytics.consent.Consent
 import com.metarouter.analytics.consent.ConsentCategory
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.consent.ConsentSubscription
+import com.metarouter.analytics.identity.HostIdentity
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.utils.Logger
 import com.metarouter.analytics.webview.BridgeMessageProcessor
@@ -42,7 +43,14 @@ class AnalyticsProxy internal constructor(
      */
     // No default: a caller passing only a shared consent manager would otherwise get a
     // fresh provider-context manager no client stamps from.
-    private val providerContextManager: ProviderContextManager
+    private val providerContextManager: ProviderContextManager,
+    /**
+     * Before bind, setAnonymousId and the synchronous half of reset() land here, for the
+     * same reasons as provider context. Every client's IdentityManager reads the
+     * anonymousId from the same preferences, so a write landing between a client's
+     * creation and its bind still reaches that client's next event.
+     */
+    private val hostIdentity: HostIdentity = HostIdentity()
 ) : AnalyticsInterface {
 
     /**
@@ -85,6 +93,11 @@ class AnalyticsProxy internal constructor(
                 Logger.warn("AnalyticsProxy already bound - ignoring duplicate bind")
                 return
             }
+
+            // MetaRouter attaches identity storage before building the client; a proxy
+            // built without it lands its pre-bind setAnonymousId/reset notes here, before
+            // the replay below runs the queued reset they order against.
+            (client as? MetaRouterAnalyticsClient)?.let { hostIdentity.attachStorage(it.identityStorage) }
 
             // Publish the client and snapshot the backlog in one critical section on
             // the pendingCalls monitor. enqueue() checks realClient under that same
@@ -218,6 +231,10 @@ class AnalyticsProxy internal constructor(
 
     override suspend fun reset() {
         val client = realClient.get()
+        // First, before any suspension or enqueue: this is the host's call site, while
+        // the clear runs later (in the client, or on a replay at bind), where it would
+        // also discard a setAnonymousId made after this call.
+        noteResetRequested(client)
         if (client != null) {
             client.reset()
         } else {
@@ -260,6 +277,20 @@ class AnalyticsProxy internal constructor(
                 }
             }
         }
+    }
+
+    /**
+     * The synchronous half of every host reset entry point (this proxy's [reset] and
+     * `MetaRouter.Analytics.reset`/`resetAndWait`). Routed like [setAnonymousId] so both
+     * touch the same storage.
+     */
+    internal fun noteResetRequested(client: AnalyticsInterface? = realClient.get()) {
+        (client as? MetaRouterAnalyticsClient)?.noteResetRequested() ?: hostIdentity.noteResetRequested()
+    }
+
+    override fun setAnonymousId(anonymousId: String): Boolean {
+        val client = realClient.get() as? MetaRouterAnalyticsClient
+        return client?.setAnonymousId(anonymousId) ?: hostIdentity.setAnonymousId(anonymousId)
     }
 
     override suspend fun getAnonymousId(): String {
