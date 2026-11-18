@@ -1065,6 +1065,53 @@ class PersistableEventQueueTest {
         unmockkStatic(Log::class)
     }
 
+    /**
+     * Failing disk, pendingOverflow already holding events, repeated drain → track →
+     * failed send → requeue: memory stays within one batch of the cap and every event
+     * is still held somewhere.
+     */
+    @Test
+    fun `requeue on a failing disk keeps every event and memory within one batch of cap`() {
+        mockkStatic(Log::class)
+        every { Log.d(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any()) } returns 0
+        every { Log.e(any(), any(), any()) } returns 0
+
+        val poisonedBase = createTempDirectory("metarouter-pq-requeue").toFile()
+        try {
+            val blocker = File(poisonedBase, "metarouter").apply { mkdirs() }
+                .let { File(it, "disk-queue").apply { writeText("not a directory") } }
+            val store = EventDiskStore(poisonedBase)
+            val cap = 3
+            val batch = 2
+            val smallQueue = PersistableEventQueue(
+                maxCapacity = cap,
+                diskStore = store,
+                maxDiskEvents = 100,
+                eventTTLMs = 0
+            )
+            repeat(cap + 1) { smallQueue.enqueue(createTestEvent("fill-$it")) }
+
+            repeat(20) { cycle ->
+                val inFlight = smallQueue.drain(batch)
+                repeat(batch) { smallQueue.enqueue(createTestEvent("c$cycle-$it")) }
+                smallQueue.requeueToFront(inFlight)
+                assertTrue("cycle $cycle: ${smallQueue.size()}", smallQueue.size() <= cap + batch)
+            }
+
+            blocker.delete()
+            val ids = smallQueue.drain(100).map { it.messageId }.toMutableList()
+            smallQueue.flushToDisk()
+            ids += store.read()!!.events.map { it.messageId }
+            assertEquals(cap + 1 + 20 * batch, ids.size)
+            assertEquals(ids.size, ids.toSet().size)
+        } finally {
+            poisonedBase.deleteRecursively()
+            unmockkStatic(Log::class)
+        }
+    }
+
     @Test
     fun `pendingOverflow retained across repeated failures`() {
         mockkStatic(Log::class)

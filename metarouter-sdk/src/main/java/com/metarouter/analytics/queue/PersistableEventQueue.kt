@@ -186,6 +186,12 @@ class PersistableEventQueue(
      * (older) events take priority at the front since they were drained first and a send
      * already started for them. If the requeue batch itself exceeds capacity mid-loop,
      * we flush again so no requeued events get dropped.
+     *
+     * If the disk flush fails too, the batch is added anyway, so memory can sit over
+     * the cap by the batches in flight (normally one: one drain at a time, and enqueue
+     * sends anything over the cap to pendingOverflow, which has a count cap only).
+     * iOS drops the newest tail here instead; both move to the pendingOverflow
+     * redesign (sc-46764).
      */
     @Synchronized
     override fun requeueToFront(events: List<EnrichedEventPayload>) {
