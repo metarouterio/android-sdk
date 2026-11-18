@@ -20,6 +20,7 @@ internal class HostIdentity(storage: IdentityStorage? = null) {
     private sealed class Write {
         class SetAnonymousId(val id: String) : Write()
         object NoteReset : Write()
+        object Clear : Write()
     }
 
     private val lock = Any()
@@ -40,6 +41,7 @@ internal class HostIdentity(storage: IdentityStorage? = null) {
                 when (write) {
                     is Write.SetAnonymousId -> newStorage.setHostAnonymousId(write.id)
                     Write.NoteReset -> newStorage.noteResetRequested()
+                    Write.Clear -> newStorage.clear()
                 }
             }
             preAttachWrites.clear()
@@ -70,6 +72,14 @@ internal class HostIdentity(storage: IdentityStorage? = null) {
         synchronized(lock) {
             storage = newStorage
             preAttachWrites.clear()
+        }
+    }
+
+    /** The clear of a requested reset with no client to run it; see [IdentityStorage.clear]. */
+    fun clear() {
+        synchronized(lock) {
+            storage?.let { return it.clear() }
+            preAttachWrites += Write.Clear
         }
     }
 

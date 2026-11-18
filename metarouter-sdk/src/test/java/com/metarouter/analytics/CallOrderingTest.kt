@@ -11,7 +11,12 @@ import com.metarouter.analytics.queue.EventQueue
 import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.storage.IdentityStorage
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -21,6 +26,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,6 +34,7 @@ import org.robolectric.RobolectricTestRunner
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Host calls reach the wire in call order, each carrying the identity set before it.
@@ -172,5 +179,55 @@ class CallOrderingTest {
         host.join(5000)
 
         assertEquals(listOf("queued-0", "queued-1", "queued-2", "during-bind"), client.tracked)
+    }
+
+    @Test
+    fun `a queued flush waiting on the network does not hold getAnonymousId`() = runBlocking {
+        val proxy = AnalyticsProxy()
+        val network = CompletableDeferred<Unit>()
+        val client = object : AnalyticsInterface by BlockingClient(CountDownLatch(0)) {
+            override suspend fun flush() = network.await()
+        }
+        proxy.track("queued")
+        launch { proxy.flush() }
+        yield()
+
+        val bind = launch(Dispatchers.Default) { proxy.bind(client) }
+        val id = withTimeoutOrNull(1000) { proxy.getAnonymousId() }
+        network.complete(Unit)
+        bind.join()
+
+        assertEquals("anon", id)
+    }
+
+    @Test
+    fun `bind finishes while a host thread keeps calling faster than replay`() = runBlocking {
+        val proxy = AnalyticsProxy()
+        // Each replayed call costs 10µs, more than a queued call does, so every pass
+        // finds a bigger backlog than the last: bind must publish anyway.
+        val client = object : AnalyticsInterface by BlockingClient(CountDownLatch(0)) {
+            override fun track(event: String, properties: Map<String, Any?>?) {
+                val until = System.nanoTime() + 10_000
+                while (System.nanoTime() < until) Thread.onSpinWait()
+            }
+        }
+        repeat(500) { proxy.track("queued-$it") }
+        val stop = AtomicBoolean(false)
+        val host = Thread { while (!stop.get()) proxy.track("flood") }.apply { start() }
+        val stopper = Thread {
+            try { Thread.sleep(5000) } catch (_: InterruptedException) { return@Thread }
+            stop.set(true)
+        }.apply { start() }
+
+        val start = System.nanoTime()
+        proxy.bind(client)
+        val bindMs = (System.nanoTime() - start) / 1_000_000
+        val stillFlooding = !stop.get()
+        stop.set(true)
+        host.join()
+        stopper.interrupt()
+
+        assertTrue("bind waited for the host to stop calling (${bindMs}ms)", stillFlooding)
+        assertTrue("bind took ${bindMs}ms", bindMs < 1000)
     }
 }
