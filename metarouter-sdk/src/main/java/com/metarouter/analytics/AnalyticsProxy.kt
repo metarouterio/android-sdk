@@ -99,40 +99,58 @@ class AnalyticsProxy internal constructor(
             // the replay below runs the queued reset they order against.
             (client as? MetaRouterAnalyticsClient)?.let { hostIdentity.attachStorage(it.identityStorage) }
 
-            // Publish the client and snapshot the backlog in one critical section on
-            // the pendingCalls monitor. enqueue() checks realClient under that same
-            // monitor, so once the client is set no further call can be queued: a call
-            // racing this transition either lands in `pending` (replayed below) or sees
-            // the client in enqueue() and runs directly. Nothing can be stranded.
-            val pending = synchronized(pendingCalls) {
-                realClient.set(client)
-                val calls = pendingCalls.toList()
-                pendingCalls.clear()
-                calls
-            }
-            // A successful (re)initialize supersedes an earlier config refusal.
-            configDisabled = false
-            configErrorDescription = null
-            boundSignal.complete(Unit)
-
+            // The client is published only once the backlog is empty, in the same
+            // critical section on the pendingCalls monitor that enqueue() checks
+            // realClient under. Until then a call made during replay queues behind the
+            // backlog instead of overtaking it, and is replayed on the next pass; once
+            // the client is set, no further call can be queued. Nothing can be stranded.
+            //
             // Each replay is guarded individually: one throwing call (bad input,
             // platform exception) must not abort the bind — that would strand the
             // remaining queue and leave boundSignal incomplete.
+            var replayed = 0
             var dropped = 0
-            for (call in pending) {
-                try {
-                    replayCall(client, call)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    dropped++
-                    Logger.error("Dropped queued ${call::class.simpleName} during replay", e)
+            try {
+                while (true) {
+                    val pending = synchronized(pendingCalls) {
+                        if (pendingCalls.isEmpty()) {
+                            realClient.set(client)
+                            null
+                        } else {
+                            pendingCalls.toList().also { pendingCalls.clear() }
+                        }
+                    } ?: break
+                    for (call in pending) {
+                        replayed++
+                        try {
+                            replayCall(client, call)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            dropped++
+                            Logger.error("Dropped queued ${call::class.simpleName} during replay", e)
+                        }
+                    }
                 }
+            } finally {
+                // Cancelled mid-replay: still bind, as before, rather than leave every
+                // later call queueing for a bind that already happened. What is still
+                // queued can't replay on a cancelled coroutine; say so rather than hold it.
+                val stranded = synchronized(pendingCalls) {
+                    realClient.set(client)
+                    pendingCalls.size.also { pendingCalls.clear() }
+                }
+                if (stranded > 0) Logger.warn("Bind cancelled - dropped $stranded queued call(s)")
+                // A successful (re)initialize supersedes an earlier config refusal.
+                configDisabled = false
+                configErrorDescription = null
+                boundSignal.complete(Unit)
             }
+
             if (dropped > 0) {
                 // Per-call errors scatter in the log; one summary line is the signal
                 // that the pre-bind buffer (partially) failed to replay.
-                Logger.warn("Replay dropped $dropped of ${pending.size} queued call(s)")
+                Logger.warn("Replay dropped $dropped of $replayed queued call(s)")
             }
         }
     }
@@ -341,7 +359,7 @@ class AnalyticsProxy internal constructor(
         if (client != null) {
             client.recordOpenedUrl(uri, sourceApplication)
         } else {
-            enqueue(PendingCall.RecordOpenedUrl(uri, sourceApplication))
+            enqueue(PendingCall.RecordOpenedUrl(uri, sourceApplication))?.recordOpenedUrl(uri, sourceApplication)
         }
     }
 

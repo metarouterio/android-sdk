@@ -17,6 +17,7 @@ import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.identity.IdentitySnapshot
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.lifecycle.LifecycleCoordinator
 import com.metarouter.analytics.lifecycle.LifecycleEventTracker
@@ -50,7 +51,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.atomic.AtomicReference
 
 class MetaRouterAnalyticsClient private constructor(
@@ -152,7 +155,11 @@ class MetaRouterAnalyticsClient private constructor(
     // Coroutine scope for async operations
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private lateinit var eventChannel: Channel<BaseEvent>
+    private lateinit var eventChannel: Channel<QueuedEvent>
+
+    // The ids of the event being enriched: a session it starts announces itself with
+    // them, not with an identify() made since. Only the processor touches it.
+    private var enrichingIdentity: IdentitySnapshot? = null
 
     // Core components
     private lateinit var identityManager: IdentityManager
@@ -238,10 +245,15 @@ class MetaRouterAnalyticsClient private constructor(
             // with the session it announces.
             if (options.fireSessionStarted) {
                 sessionManager.onSessionStart.set {
+                    // Fires inside the processor's enrichment; read before the launch.
+                    val identity = enrichingIdentity
                     scope.launch {
                         try {
                             eventChannel.send(
-                                BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED)
+                                QueuedEvent(
+                                    BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED),
+                                    identity = identity
+                                )
                             )
                         } catch (e: Exception) {
                             // Channel closed = session torn down mid-mint; the
@@ -428,19 +440,12 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.IDENTIFY,
-                        traits = traits?.toJsonElementMap()
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue identify event: ${e.message}")
-            }
-        }
+        enqueueEvent(
+            BaseEvent(
+                type = EventType.IDENTIFY,
+                traits = traits?.toJsonElementMap()
+            )
+        )
     }
 
     override fun group(groupId: String, traits: Map<String, Any?>?) {
@@ -455,27 +460,22 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.GROUP,
-                        traits = traits?.toJsonElementMap()
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue group event: ${e.message}")
-            }
-        }
+        enqueueEvent(
+            BaseEvent(
+                type = EventType.GROUP,
+                traits = traits?.toJsonElementMap()
+            )
+        )
     }
 
+    // The name also rides in `properties.name`, where iOS puts it and integrations read
+    // it; `event` stays for anyone already mapping it.
     override fun screen(name: String, properties: Map<String, Any?>?) {
         enqueueEvent(
             BaseEvent(
                 type = EventType.SCREEN,
                 event = name,
-                properties = properties?.toJsonElementMap()
+                properties = properties.orEmpty().toJsonElementMap() + ("name" to JsonPrimitive(name))
             )
         )
     }
@@ -485,7 +485,7 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = EventType.PAGE,
                 event = name,
-                properties = properties?.toJsonElementMap()
+                properties = properties.orEmpty().toJsonElementMap() + ("name" to JsonPrimitive(name))
             )
         )
     }
@@ -502,18 +502,7 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.ALIAS
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue alias event: ${e.message}")
-            }
-        }
+        enqueueEvent(BaseEvent(type = EventType.ALIAS))
     }
 
     override fun setAdvertisingId(advertisingId: String) {
@@ -521,9 +510,7 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.warn("Cannot set advertisingId - SDK not ready")
             return
         }
-        scope.launch {
-            identityManager.setAdvertisingId(advertisingId)
-        }
+        identityManager.storeAdvertisingId(advertisingId)
     }
 
     override fun clearAdvertisingId() {
@@ -531,9 +518,7 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.warn("Cannot clear advertisingId - SDK not ready")
             return
         }
-        scope.launch {
-            identityManager.clearAdvertisingId()
-        }
+        identityManager.removeAdvertisingId()
     }
 
     /**
@@ -543,9 +528,10 @@ class MetaRouterAnalyticsClient private constructor(
      */
     private fun startEventProcessor() {
         scope.launch {
-            for (baseEvent in eventChannel) {
+            for (queued in eventChannel) {
                 try {
-                    val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
+                    enrichingIdentity = queued.identity
+                    val enrichedEvent = enrichmentService.enrichEvent(queued.event, queued.identity)
                     dispatcher.offer(enrichedEvent)
 
                     // Check if disk flush threshold is reached
@@ -572,7 +558,7 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Try to send to channel - drops if buffer is full (backpressure)
-        val result = eventChannel.trySend(baseEvent)
+        val result = eventChannel.trySend(QueuedEvent(baseEvent, identityManager.snapshot()))
         if (result.isFailure) {
             Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
             return false
@@ -690,10 +676,28 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = envelope.type,
                 event = envelope.name,
-                properties = envelope.properties,
+                properties = if (envelope.type == EventType.PAGE) pageProperties(envelope) else envelope.properties,
                 page = envelope.page
             )
         )
+    }
+
+    /**
+     * A bridge page event's properties as the web SDK sends them: the page facts, the
+     * host's properties over them, then the name. Integrations that map a page view
+     * from `properties` (GA4's page_title / page_location) see nothing in `context.page`.
+     */
+    private fun pageProperties(envelope: BridgeEnvelope): Map<String, JsonElement> {
+        val facts = envelope.page?.let { page ->
+            listOf(
+                "path" to page.path,
+                "referrer" to page.referrer,
+                "search" to page.search,
+                "title" to page.title,
+                "url" to page.url
+            ).mapNotNull { (key, value) -> value?.let { key to JsonPrimitive(it) } }.toMap()
+        }.orEmpty()
+        return facts + envelope.properties + ("name" to JsonPrimitive(envelope.name))
     }
 
     override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {
@@ -871,3 +875,6 @@ class MetaRouterAnalyticsClient private constructor(
         dispatcher.setTracing(enabled)
     }
 }
+
+/** An event and the ids it carries, read when the host made the call. */
+private class QueuedEvent(val event: BaseEvent, val identity: IdentitySnapshot?)

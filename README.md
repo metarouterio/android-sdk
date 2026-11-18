@@ -234,8 +234,8 @@ The analytics client provides the following methods:
 - `track(event: String, properties: Map<String, Any?>?)`: Track custom events
 - `identify(userId: String, traits: Map<String, Any?>?)`: Identify users
 - `group(groupId: String, traits: Map<String, Any?>?)`: Group users
-- `screen(name: String, properties: Map<String, Any?>?)`: Track screen views
-- `page(name: String, properties: Map<String, Any?>?)`: Track page views
+- `screen(name: String, properties: Map<String, Any?>?)`: Track screen views; the name is sent in `properties.name` and `event`
+- `page(name: String, properties: Map<String, Any?>?)`: Track page views; the name is sent in `properties.name` and `event`
 - `alias(newUserId: String)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: String)`: Set the Google Advertising ID (GAID) for ad tracking. See [Advertising ID](#advertising-id-gaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
@@ -1025,6 +1025,8 @@ Bridged events go through the same enrichment as native events. The page contrib
 |---|---|
 | event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context |
 | `context.page` — url, path, search, title, referrer | `messageId`, `timestamp`, `context.consent`, session (`context.providers.metarouter`), and any [provider context](#provider-context) the app has set |
+
+A `page` event also carries the page facts and its name in `properties`, as the web SDK sends them; properties the page passed win over the facts.
 
 Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message on the underlying channel — malformed input is rejected, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
 

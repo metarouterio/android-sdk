@@ -154,14 +154,24 @@ class Dispatcher(
 
     /**
      * Enqueue an event and trigger auto-flush if threshold is reached.
+     *
+     * The flush is launched, not awaited: the client's single event processor calls
+     * this, and awaiting would hold every later event, unenriched, behind a request.
      */
     suspend fun offer(event: EnrichedEventPayload) {
         Logger.log("Enqueuing event {\"messageId\": \"${event.messageId}\", \"type\": \"${event.type}\"}")
         queue.enqueue(event)
         Logger.log("Event enqueued, queue length: ${queue.size()}")
 
-        if (queue.size() >= config.autoFlushThreshold) {
-            flush()
+        // Skips the launch when a flush or retry would turn it away anyway.
+        if (queue.size() >= config.autoFlushThreshold && !isFlushing.get() && retryJob?.isActive != true) {
+            scope.launch {
+                try {
+                    flush()
+                } catch (e: Exception) {
+                    Logger.error("Auto-flush error: ${e.message}")
+                }
+            }
         }
     }
 
