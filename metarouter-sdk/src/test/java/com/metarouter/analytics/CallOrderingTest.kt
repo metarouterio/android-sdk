@@ -8,6 +8,7 @@ import com.metarouter.analytics.network.FakeNetworkMonitor
 import com.metarouter.analytics.network.NetworkResponse
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.queue.EventQueue
+import com.metarouter.analytics.session.SessionStorage
 import com.metarouter.analytics.storage.IdentityStorage
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.delay
@@ -40,7 +41,10 @@ class CallOrderingTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Before
-    fun clearIdentity() = IdentityStorage(context).clear()
+    fun clearStorage() {
+        IdentityStorage(context).clear()
+        SessionStorage(context).clear()
+    }
 
     private val clients = mutableListOf<MetaRouterAnalyticsClient>()
 
@@ -48,14 +52,15 @@ class CallOrderingTest {
     @After
     fun resetClients() = runBlocking { clients.forEach { it.reset() } }
 
-    private suspend fun makeClient(): MetaRouterAnalyticsClient {
+    private suspend fun makeClient(fireSessionStarted: Boolean = false): MetaRouterAnalyticsClient {
         return MetaRouterAnalyticsClient.initialize(
             context,
             InitOptions(
                 writeKey = "wk",
                 ingestionHost = "https://events.example.com",
                 flushIntervalSeconds = 999,
-                trackLifecycleEvents = false
+                trackLifecycleEvents = false,
+                fireSessionStarted = fireSessionStarted
             ),
             eventQueue = EventQueue(),
             networkClient = network,
@@ -108,6 +113,19 @@ class CallOrderingTest {
             (0 until 50).map { if (it == 0) null else "g${it - 1}" },
             tracks.map { (it["groupId"] as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
         )
+    }
+
+    @Test
+    fun `Session Started carries the identity of the event that started the session`() = runBlocking {
+        val client = makeClient(fireSessionStarted = true)
+
+        client.identify("u1")
+        client.track("first")
+        client.identify("u2")
+
+        val events = postedEvents(client, 4)
+        val sessionStarted = events.single { (it["event"] as? JsonPrimitive)?.content == "Session Started" }
+        assertEquals(JsonPrimitive("u1"), sessionStarted["userId"])
     }
 
     /** Records calls; the first replayed track blocks until the host has made a call. */
