@@ -379,6 +379,13 @@ class ProviderContextManagerTest {
         assertTrue(manager.setValue("enrichmentService", "payload", "e".repeat(1_200)))
     }
 
+    /** iOS measures with unescaped slashes to match this; a value full of `/` counts the same bytes on both. */
+    @Test
+    fun `slashes count one byte like iOS`() {
+        val manager = makeManager()
+        assertTrue(manager.setValue("enrichmentService", "payload", "/".repeat(1_000) + "e".repeat(1_040)))
+    }
+
     /**
      * The tolerant converter used for event properties stringifies what it does not
      * know; here that would stamp a value the host never set on every event.

@@ -340,7 +340,11 @@ internal class ProviderContextManager(storage: ProviderContextStorage? = null) {
         const val MAX_TOTAL_BYTES = 16 * 1024
         const val MAX_NAME_BYTES = 64
 
-        /** The whole map as it would be stamped; names count, they are on the wire too. */
+        /**
+         * The whole map as it would be stamped; names count, they are on the wire too.
+         * Numbers encode differently from iOS (`1.0` vs `1`, `1.0E20` vs `1e+20`), so a
+         * number-heavy value right at a limit can pass on one platform and fail on the other.
+         */
         private fun encodedSize(map: Map<String, Map<String, JsonElement>>): Int =
             Json.encodeToString(JsonObject.serializer(), JsonObject(map.mapValues { (_, keys) -> JsonObject(keys) }))
                 .toByteArray(Charsets.UTF_8).size
