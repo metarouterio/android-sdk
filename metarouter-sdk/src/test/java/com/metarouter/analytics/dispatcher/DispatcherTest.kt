@@ -357,6 +357,30 @@ class DispatcherTest {
     }
 
     @Test
+    fun `after a fatal config error nothing sends again`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(401, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        assertTrue(dispatcher.isDisabled())
+        val requests = networkClient.requests.size
+
+        // Every restart path: start, resume after a pause, offer, flush.
+        dispatcher.start()
+        assertFalse(dispatcher.getDebugInfo().isRunning)
+        dispatcher.pause()
+        dispatcher.resume()
+        assertFalse(dispatcher.getDebugInfo().isRunning)
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.offer(createEvent("msg-2"))
+        dispatcher.flush()
+        runCurrent()
+
+        assertEquals(0, queue.size())
+        assertEquals(requests, networkClient.requests.size)
+    }
+
+    @Test
     fun `403 response clears queue and invokes callback`() = runTest {
         val dispatcher = createDispatcher()
         networkClient.nextResponse = NetworkResponse(403, emptyMap(), null)
