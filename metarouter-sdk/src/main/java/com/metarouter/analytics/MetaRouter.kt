@@ -77,8 +77,10 @@ object MetaRouter {
     // direction or the other: initializationStarted/sessionRefused are written
     // at ENQUEUE time only, under initLock, describing the state the queue
     // will produce once drained; state changes (bind, unbind, disable) happen
-    // at EXECUTION time only, on this dispatcher; execution NEVER writes
-    // flags. An execution-time flag write belongs to work enqueued earlier
+    // at EXECUTION time only, on this dispatcher, with one call-site exception:
+    // proxy.detachCalls(), under initLock, which only reroutes later calls to
+    // the next client and bumps the epoch that stops an earlier-queued bind
+    // from publishing. Execution NEVER writes flags. An execution-time flag write belongs to work enqueued earlier
     // and overwrites the enqueue-time flags of work queued behind it — in
     // either direction that manufactures a terminal state (disabled-but-not-
     // refused, or unbound-but-started) that the entry-point guards can't
@@ -134,6 +136,7 @@ object MetaRouter {
                 // throwing — the refused session must stay call-safe end to end.
                 initializationStarted.set(true)
                 sessionRefused.set(true)
+                proxy.detachCalls()
                 initScope.launch { disableSession(context, options.configError!!) }
             }
             return proxy
@@ -152,9 +155,10 @@ object MetaRouter {
 
             Logger.log("MetaRouter.createAnalyticsClient starting async initialization")
 
+            val epoch = proxy.epoch()
             initScope.launch {
                 try {
-                    initializeInternal(context, options)
+                    initializeInternal(context, options, epoch)
                 } catch (e: Exception) {
                     Logger.error("Background initialization failed: ${e.message}")
                     // Under initLock like every other flag write, so a
@@ -192,6 +196,7 @@ object MetaRouter {
             val disable = synchronized(initLock) {
                 initializationStarted.set(true)
                 sessionRefused.set(true)
+                proxy.detachCalls()
                 initScope.async { disableSession(context, options.configError!!) }
             }
             disable.await()
@@ -208,9 +213,10 @@ object MetaRouter {
         val init = synchronized(initLock) {
             sessionRefused.set(false)
             initializationStarted.set(true)
+            val epoch = proxy.epoch()
             initScope.async {
                 try {
-                    initializeInternal(context, options)
+                    initializeInternal(context, options, epoch)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -343,7 +349,7 @@ object MetaRouter {
             lifecycleObserver = null
             store.get()?.reset()
             store.clear()
-            proxy.unbind()
+            proxy.release()
             proxy.markConfigDisabled(error.description)
         }
     }
@@ -351,10 +357,13 @@ object MetaRouter {
     /**
      * Internal initialization logic with mutex protection.
      */
-    private suspend fun initializeInternal(context: Context, options: InitOptions) {
+    private suspend fun initializeInternal(context: Context, options: InitOptions, epoch: Int) {
         initMutex.withLock {
-            // Double-check after acquiring lock
-            if (proxy.isBound()) {
+            // Double-check after acquiring lock. A superseded init finding a client
+            // stored is one queued before a reset/disable whose teardown is still
+            // queued: that teardown discards the stored client, and a second client
+            // built here would never be reset.
+            if (proxy.isBound() || (proxy.epoch() != epoch && store.hasClient())) {
                 Logger.log("Client already bound, skipping initialization")
                 return
             }
@@ -390,7 +399,11 @@ object MetaRouter {
             )
             lifecycleObserver?.register()
 
-            proxy.bind(client)
+            // Not bound when a reset or disable was called after this initialize: the
+            // teardown queued behind it resets this client from the store.
+            if (!proxy.bindIfCurrent(client, epoch)) {
+                Logger.log("initialize superseded by a later reset() or disable")
+            }
 
             // Deliberately NO flag writes here (see the flag rule on
             // initDispatcher): an execution-time write from this init would
@@ -475,6 +488,8 @@ object MetaRouter {
                 // The clear runs later on the dispatcher; a setAnonymousId after this
                 // call must survive it (see AnalyticsProxy.reset).
                 proxy.noteResetRequested()
+                // A call on the next line must reach the next client, not this one.
+                proxy.detachCalls()
 
                 // Same FIFO scope as init/disable: a fire-and-forget reset racing
                 // a following initialize has the same ordering hazard as a refusal.
@@ -499,6 +514,7 @@ object MetaRouter {
                     initializationStarted.set(false)
                     sessionRefused.set(false)
                     proxy.noteResetRequested()
+                    proxy.detachCalls()
                     initScope.async {
                         try {
                             resetInternal()
@@ -541,8 +557,8 @@ object MetaRouter {
                 // Clear the store
                 store.clear()
 
-                // Reset the proxy so it can be bound to a new client
-                proxy.unbind()
+                // Release the proxy for the next client; calls made since reset() wait for it.
+                proxy.release()
 
                 // No flag writes here: reset()/resetAndWait() flipped them at
                 // enqueue time under initLock. Clearing them again at execution

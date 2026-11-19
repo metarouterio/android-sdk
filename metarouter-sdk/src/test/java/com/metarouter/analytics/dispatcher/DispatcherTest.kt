@@ -16,11 +16,14 @@ import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
@@ -129,9 +132,45 @@ class DispatcherTest {
         repeat(5) { i ->
             dispatcher.offer(createEvent("msg-$i"))
         }
+        runCurrent()
 
         assertEquals(1, networkClient.requests.size)
         assertEquals(0, queue.size())
+    }
+
+    @Test
+    fun `offer at the flush threshold does not wait for the network`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val held = object : NetworkClient {
+            var posts = 0
+            override suspend fun postJson(
+                url: String,
+                body: ByteArray,
+                timeoutMs: Int,
+                additionalHeaders: Map<String, String>?
+            ): NetworkResponse {
+                posts++
+                gate.await()
+                return NetworkResponse(200, emptyMap(), null)
+            }
+        }
+        val dispatcher = Dispatcher(
+            options = options,
+            queue = queue,
+            networkClient = held,
+            circuitBreaker = circuitBreaker,
+            scope = this,
+            config = config
+        )
+
+        val offers = launch { repeat(5) { i -> dispatcher.offer(createEvent("msg-$i")) } }
+        runCurrent()
+
+        assertEquals("the threshold flush is in flight", 1, held.posts)
+        assertTrue("offer returned while the request is held open", offers.isCompleted)
+        gate.complete(Unit)
+        runCurrent()
+        dispatcher.stop()
     }
 
     @Test
@@ -315,6 +354,30 @@ class DispatcherTest {
 
         assertEquals(0, queue.size())
         assertEquals(401, callbackCode)
+    }
+
+    @Test
+    fun `after a fatal config error nothing sends again`() = runTest {
+        val dispatcher = createDispatcher()
+        networkClient.nextResponse = NetworkResponse(401, emptyMap(), null)
+        queue.enqueue(createEvent("msg-1"))
+        dispatcher.flush()
+        assertTrue(dispatcher.isDisabled())
+        val requests = networkClient.requests.size
+
+        // Every restart path: start, resume after a pause, offer, flush.
+        dispatcher.start()
+        assertFalse(dispatcher.getDebugInfo().isRunning)
+        dispatcher.pause()
+        dispatcher.resume()
+        assertFalse(dispatcher.getDebugInfo().isRunning)
+        networkClient.nextResponse = NetworkResponse(200, emptyMap(), null)
+        dispatcher.offer(createEvent("msg-2"))
+        dispatcher.flush()
+        runCurrent()
+
+        assertEquals(0, queue.size())
+        assertEquals(requests, networkClient.requests.size)
     }
 
     @Test

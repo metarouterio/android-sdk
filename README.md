@@ -71,11 +71,15 @@ val analytics = MetaRouter.Analytics.initialize(
 
 ### Kotlin Varargs Style
 
-The SDK provides idiomatic Kotlin extensions using `Pair` varargs for concise property passing:
+The SDK provides idiomatic Kotlin extensions using `Pair` varargs for concise property passing. They are extension functions, so import them explicitly:
 
 ```kotlin
 import com.metarouter.analytics.MetaRouter
 import com.metarouter.analytics.InitOptions
+import com.metarouter.analytics.track
+import com.metarouter.analytics.identify
+import com.metarouter.analytics.screen
+import com.metarouter.analytics.group
 
 val analytics = MetaRouter.Analytics.initialize(
     context = applicationContext,
@@ -159,10 +163,9 @@ lifecycleScope.launch {
     analytics.flush()
 }
 
-// Reset analytics (useful for testing or logout)
-lifecycleScope.launch {
-    analytics.reset()
-}
+// Reset analytics on logout, then initialize again (see Resetting Identity)
+MetaRouter.Analytics.reset()
+MetaRouter.Analytics.initialize(applicationContext, options)
 ```
 
 ### Suspending Initialization
@@ -191,7 +194,7 @@ Initializes the analytics client and returns a **live proxy** to the client inst
 
 `initialize()` returns immediately. You **do not** need to wait before calling analytics methods.
 
-Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and replayed **in order** once the client is fully initialized.
+Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and replayed **in order** once the client is fully initialized. The buffer holds up to 2,000 calls; beyond that the oldest is dropped.
 
 **Options (InitOptions):**
 
@@ -214,14 +217,14 @@ Constructing `InitOptions` never throws. Invalid input (empty write key, non-htt
 
 **Proxy behavior (quick notes):**
 
-- The proxy buffer is **in-memory only** — calls made before the client is ready are lost if the process exits before initialization completes. Once the client is ready, events are persisted to disk and survive process kills (see [Delivery & Backoff](#delivery--backoff-how-events-flow-under-failures)).
+- The proxy buffer is **in-memory only** — calls made before the client is ready are lost if the process exits before initialization completes. Once the client is ready, events are written to disk when the app backgrounds and at size thresholds; events still in memory when the process is killed in the foreground can be lost (see [Delivery & Backoff](#delivery--backoff-how-events-flow-under-failures)).
 - Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
 - On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
-- `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
+- `sentAt` is stamped on every send attempt. Each event's `timestamp` is set when the SDK processes the call, normally within milliseconds of it, so it records when the event happened even if the send goes out later.
 
 ### MetaRouter.Analytics.shared
 
-The analytics client, available at any time — before `initialize`, during initialization, and after `reset()`. It is the same proxy `initialize` returns, and it never throws. Calls made before `initialize` follow the proxy rules above; consent calls act immediately (see [Consent](#consent)). `MetaRouter.Analytics.client()` keeps working and still throws until `initialize` has been called.
+The analytics client, available at any time — before `initialize`, during initialization, and after `reset()`. It is the same proxy `initialize` returns, and it never throws. Calls made before `initialize` follow the proxy rules above; consent calls act immediately (see [Consent](#consent)). `MetaRouter.Analytics.client()` keeps working, but throws before `initialize` and after `MetaRouter.Analytics.reset()` until the next `initialize`; prefer `shared`.
 
 ```kotlin
 MetaRouter.Analytics.shared.track("Button Tapped")
@@ -234,20 +237,21 @@ The analytics client provides the following methods:
 - `track(event: String, properties: Map<String, Any?>?)`: Track custom events
 - `identify(userId: String, traits: Map<String, Any?>?)`: Identify users
 - `group(groupId: String, traits: Map<String, Any?>?)`: Group users
-- `screen(name: String, properties: Map<String, Any?>?)`: Track screen views
-- `page(name: String, properties: Map<String, Any?>?)`: Track page views
+- `screen(name: String, properties: Map<String, Any?>?)`: Track screen views; the name is sent in `properties.name` and `event`
+- `page(name: String, properties: Map<String, Any?>?)`: Track page views; the name is sent in `properties.name` and `event`
 - `alias(newUserId: String)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: String)`: Set the Google Advertising ID (GAID) for ad tracking. See [Advertising ID](#advertising-id-gaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
-- `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls.
+- `getAnonymousId(): String` (suspend): Retrieve the current anonymous ID. Suspends until the SDK is initialized and ready, then returns immediately on subsequent calls. Returns an empty string when `initialize` was refused for invalid config.
 - `setAnonymousId(anonymousId: String): Boolean`: Replace the anonymous ID with one the host already has, such as the web SDK's id from the app's WebViews. Persisted, usable before `initialize`, stamped from the next event on. Returns `false` when rejected. See [Setting the anonymousId](#setting-the-anonymousid)
 - `getSessionId(): String?` (suspend): The current analytics session id, or `null` before the first event of the process. Never suspends for initialization and never starts or extends a session. See [Session Tracking](#session-tracking)
 - `setTracing(enabled: Boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `recordOpenedUrl(uri: Uri, sourceApplication: String? = null)`: Buffer a deep-link URL for the next `Application Opened` event. See [Lifecycle Events](#lifecycle-events) for wiring details
 - `attachWebView(webView: WebView, allowedOrigins: List<String>)`: Capture track/page events emitted by pages inside a host-owned WebView. See [WebView Bridge](#webview-bridge) for wiring details
 - `flush()`: Flush events immediately (suspending)
-- `reset()`: Reset analytics state: clears identity (user, anonymous and group ids, advertising ID) and the event queue (suspending). Consent is **not** cleared; see `clearConsent()`. Also available as fire-and-forget via `MetaRouter.Analytics.reset()`
-- `enableDebugLogging()`: Enable debug logging
+- `reset()`: **Do not call on the instance** (`analytics.reset()`): it leaves the SDK inactive for the rest of the process. Use `MetaRouter.Analytics.reset()` instead; see [Resetting Identity](#resetting-identity)
+- `MetaRouter.Analytics.reset()` / `MetaRouter.Analytics.resetAndWait()` (suspending): Tear down the client and clear identity (user, anonymous and group ids, advertising ID) and the event queue. Consent and provider context are **not** cleared; see `clearConsent()`. Call `initialize` again afterwards
+- `enableDebugLogging()`: Enable debug logging. `MetaRouter.Analytics.setDebugLogging(enabled)` toggles it without a client
 - `getDebugInfo()`: Get current debug information (suspending)
 - `registerConsentCategories(categories: List<ConsentCategory>)`: Register the consent categories the pipeline gates on and each one's default posture. Call on `MetaRouter.Analytics.shared` before `initialize`. See [Consent](#consent)
 - `setConsent(consent: Consent): Boolean`: Push the user's consent into the SDK. Reconciled against the registered categories, persisted across launches, stamped on every subsequent event as `context.consent`. Usable before `initialize`. Returns `false` when the snapshot was ignored as stale
@@ -259,7 +263,7 @@ The analytics client provides the following methods:
 
 ### Kotlin Extension Methods
 
-Idiomatic Kotlin varargs overloads for all event methods:
+Idiomatic Kotlin varargs overloads for all event methods. They are extension functions in `com.metarouter.analytics`, so import them (`import com.metarouter.analytics.track`, … or `import com.metarouter.analytics.*`):
 
 ```kotlin
 analytics.track("Event", "key1" to value1, "key2" to value2)
@@ -275,8 +279,8 @@ analytics.page("Landing", "url" to "/home")
 | Component              | Supported Versions   |
 | ---------------------- | -------------------- |
 | Android Min SDK        | >= API 23 (6.0)      |
-| Android Target SDK     | API 35 (15)          |
-| Kotlin                 | >= 2.0               |
+| Android Compile SDK    | >= API 34 (host app; library built with 35) |
+| Kotlin                 | >= 2.1 (built with 2.2) |
 | Java                   | >= 17                |
 | Gradle                 | >= 8.0               |
 
@@ -332,16 +336,18 @@ Or in Android Studio: Filter by "MetaRouter"
 
 ### 5. Common Issues
 
-- **Network Permissions**: Ensure your app has `android.permission.INTERNET` in your manifest
+- **Network Permissions**: The SDK declares `android.permission.INTERNET` and `ACCESS_NETWORK_STATE` itself; check that your manifest doesn't remove them
 - **SharedPreferences**: The SDK uses SharedPreferences for identity persistence (anonymousId, userId, groupId, advertisingId)
 - **Endpoint URL**: Verify your ingestion endpoint is correct and accessible
 - **Write Key**: Ensure your write key is valid
 
 ### Delivery & Backoff (How events flow under failures)
 
-Queue capacity: The SDK keeps up to 2,000 events in memory (configurable via `maxQueueEvents` in `InitOptions`) with an additional 5 MB byte cap. When either limit is reached, the oldest events are dropped first (drop-oldest).
+Queue capacity: The SDK keeps up to 2,000 events in memory (configurable via `maxQueueEvents` in `InitOptions`) with an additional 5 MB byte cap. When either limit is reached, the queue is moved to disk (see below). Events are dropped, oldest first, only at the disk cap, or at the memory cap when `maxDiskEvents = 0`.
 
-Disk persistence: The SDK writes a snapshot of the in-memory queue to disk when the app goes to background, when a flush threshold is reached (500 events or 2 MB), and on low-memory callbacks. On next launch, events are rehydrated from disk — events older than 7 days are dropped during rehydration. The snapshot is stored in `noBackupFilesDir` and is deleted after successful rehydration or on `reset()`. Disk capacity is bounded by `maxDiskEvents` (default 10,000) — when the cap is hit, the oldest persisted events are dropped first.
+Sending: a flush starts every `flushIntervalSeconds` and as soon as 20 events are queued. Events go out in batches of up to 100 (`POST {ingestionHost}/v1/batch`, 8 s timeout).
+
+Disk persistence: The SDK writes a snapshot of the in-memory queue to disk when the app goes to background, when a flush threshold is reached (500 events or 2 MB), at the queue caps, while offline, and on `onTrimMemory(TRIM_MEMORY_COMPLETE)`. Events on disk are sent straight to the network when the device is online: at launch, on reconnect, and after each successful flush. Events older than 7 days are dropped at that point. The snapshot is stored in `noBackupFilesDir`; it is removed as it is sent (what fails to send is written back) and deleted on reset. Disk capacity is bounded by `maxDiskEvents` (default 10,000) — when the cap is hit, the oldest persisted events are dropped first.
 
 Opting out of disk persistence: Set `maxDiskEvents = 0` to disable the disk store entirely. In this mode the SDK behaves as a pure in-memory ring buffer — `maxQueueEvents` (and the 5 MB byte cap) still bound the queue, and the oldest event is dropped when full. Background/low-memory crash-safety flushes become no-ops, so events in memory will not survive a process kill. Use this when local persistence is unwanted (privacy constraints, ephemeral environments, tests).
 
@@ -355,21 +361,21 @@ Half-open probe: After cooldown, one probe is allowed.
 Success → breaker CLOSED (keep flushing).
 Failure → breaker OPEN again with longer cooldown.
 
-sentAt semantics: sentAt is stamped when the batch is prepared for transmission. If the client is backing off, the actual transmit may be later; sentAt reflects when the event entered the queue.
+sentAt semantics: `sentAt` is stamped on every send attempt, so after a backoff it reflects the retry. `timestamp` reflects when the event was recorded.
 
 | Status / Failure                    | Action                                                               | Breaker | Queue effect                   |
 | ----------------------------------- | -------------------------------------------------------------------- | ------- | ------------------------------ |
 | `2xx`                               | Success                                                              | close   | Batch removed                  |
-| `5xx`                               | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
-| `408` (timeout)                     | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
+| `5xx`                               | Retry: requeue **front**, wait = `max(backoff floor, Retry-After or breaker cooldown)` | open↑   | Requeued (front)               |
+| `408` (timeout)                     | Retry: requeue **front**, wait = `max(backoff floor, Retry-After or breaker cooldown)` | open↑   | Requeued (front)               |
 | `429` (throttle)                    | Retry: requeue **front**, wait = `max(Retry-After, breaker, 1000ms)` | open↑   | Requeued (front)               |
 | `413` (payload too large)           | Halve `maxBatchSize`; requeue and retry; if already `1`, **drop**    | close   | Requeued or dropped (`size=1`) |
 | `400`, `422`, other non-fatal `4xx` | **Drop** bad batch, continue                                         | close   | Dropped                        |
-| `401`, `403`, `404`                 | **Disable** client (stop timers), clear queue                        | close   | Cleared                        |
-| Network error / Abort / Timeout     | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
+| `401`, `403`, `404`                 | **Disable** client for the session: clear queue, stop flushing, drop later calls (`getAnonymousId()` and `reset()` still work) | —       | Cleared                        |
+| Network error / Abort / Timeout     | Retry: requeue **front**, wait = `max(backoff floor, breaker cooldown)` | open↑   | Requeued (front)               |
 | Reset during flush                  | Do **not** requeue in-flight chunk; **drop** it                      | —       | Dropped                        |
 
-**Defaults:** `failureThreshold=3`, `cooldownMs=10s`, `maxCooldownMs=120s`, `jitter=±20%`, `halfOpenMaxConcurrent=1`.
+**Defaults:** `failureThreshold=3`, `cooldownMs=10s`, `maxCooldownMs=120s`, `jitter=±20%`, `halfOpenMaxConcurrent=1`. The breaker opens (open↑) after 3 consecutive retryable failures; before that, retries wait on a backoff floor of 1 s, 2 s, 4 s, then 8 s.
 
 **Identifiers:**
 
@@ -401,7 +407,7 @@ analytics.identify("user123",
 - Persisted to SharedPreferences (key: `metarouter:user_id`)
 - Automatically loaded on app restart
 - Automatically included in **all** subsequent events (`track`, `page`, `screen`, `group`)
-- Remains set until `reset()` is called or app is uninstalled
+- Remains set until `MetaRouter.Analytics.reset()` is called, app data is cleared, or the app is uninstalled (see [Storage Location](#storage-location) for Auto Backup)
 
 **Example flow:**
 
@@ -432,15 +438,17 @@ The `anonymousId` is a unique identifier automatically generated for each device
 - Persisted to SharedPreferences (key: `metarouter:anonymous_id`)
 - Automatically loaded on app restart
 - Automatically included in **all** events
-- Remains stable across app sessions until `reset()` is called
-- Cleared on `reset()` and a **new** UUID is generated on next `initialize()`
+- Remains stable across app sessions until `MetaRouter.Analytics.reset()` is called
+- Cleared on `MetaRouter.Analytics.reset()` and a **new** UUID is generated on the next `initialize()`
 
 **Reading the current value:**
 
 ```kotlin
 // analytics is the AnalyticsInterface returned from initialize() / initializeAndWait()
-val anonId = analytics.getAnonymousId()
-// Suspends until the SDK is ready, then returns the anonymous ID
+lifecycleScope.launch {
+    val anonId = analytics.getAnonymousId()
+    // Suspends until the SDK is ready, then returns the anonymous ID
+}
 ```
 
 **Use case:**
@@ -470,8 +478,8 @@ MetaRouter.Analytics.initialize(context, options)
 > **Pass the id exactly as the web SDK sends it.** The SDK only trims whitespace and stores everything else as given. A raw cookie value (`%22a1b2c3d4-...%22`) is accepted, and native events then carry an id that never matches the web events. Compare the value with the `anonymousId` on a web event before shipping. The cookie's name, domain and encoding depend on the web SDK's configuration.
 
 - **Call it before `initialize` when the id is available.** The launch's first events (`Application Opened`, …) then carry it too. It also works any time later.
-- Applies to every event enriched after the call: native calls, lifecycle events and [WebView Bridge](#webview-bridge) events. Enrichment is asynchronous, so events tracked just before the call (or queued before `initialize`) may carry the new id too.
-- Persisted across launches, like the generated id. `reset()` discards it and a new UUID is generated. An id set after calling `reset()` is kept, so a logout flow can call `reset()` and then hand over the web SDK's new id.
+- Applies to every event enriched after the call: native calls, lifecycle events and [WebView Bridge](#webview-bridge) events. Events tracked before the call keep the previous id. Calls queued before `initialize` are stamped when the client binds, so they carry the new id.
+- Persisted across launches, like the generated id. `MetaRouter.Analytics.reset()` discards it and a new UUID is generated. An id set after calling `MetaRouter.Analytics.reset()` is kept, so a logout flow can call `reset()` and then hand over the web SDK's new id.
 - No format is required (a UUID is not enforced). Empty values and values over 256 UTF-8 bytes are rejected: the call returns `false`, logs a warning, and the anonymousId is unchanged.
 - Setting an id before the first `initialize` on a new install still reports `Application Installed`.
 - The session is not affected.
@@ -495,7 +503,7 @@ analytics.group("company123",
 - Persisted to SharedPreferences (key: `metarouter:group_id`)
 - Automatically loaded on app restart
 - Automatically included in **all** subsequent events after being set
-- Remains set until `reset()` is called
+- Remains set until `MetaRouter.Analytics.reset()` is called
 
 **Example use case:**
 
@@ -561,41 +569,38 @@ analytics.track("Button Clicked", "buttonName" to "Submit")
 
 ### Resetting Identity
 
-Call `reset()` to clear **all** identity data, typically when a user logs out:
-
-```kotlin
-lifecycleScope.launch {
-    analytics.reset()
-}
-
-// Or fire-and-forget
-MetaRouter.Analytics.reset()
-```
-
-**What `reset()` does:**
-
-- Clears `userId`, `anonymousId`, `groupId`, and `advertisingId` from memory
-- Removes all identity fields from SharedPreferences
-- Stops background flush loops
-- Clears event queue and deletes the disk snapshot
-- Next `initialize()` will generate a **new** `anonymousId`
-
-**Common logout flow:**
+Call `MetaRouter.Analytics.reset()` (or the suspending `resetAndWait()`) to clear **all** identity data, typically when a user logs out, then call `initialize` again:
 
 ```kotlin
 // User logs out
-lifecycleScope.launch {
-    analytics.reset()
-}
+MetaRouter.Analytics.reset()
+MetaRouter.Analytics.initialize(applicationContext, options)
 
-// User is now tracked with a new anonymousId (auto-generated on next event)
-// No userId or groupId until they log in again
+// Or, from a coroutine
+lifecycleScope.launch {
+    MetaRouter.Analytics.resetAndWait()
+    MetaRouter.Analytics.initialize(applicationContext, options)
+}
 ```
+
+> **Do not call `reset()` on the instance** (`analytics.reset()`). It leaves the SDK inactive for the rest of the process: events are dropped, `getAnonymousId()` throws, and a later `initialize` cannot recover it. Reset behaviour will be unified in a future major version.
+
+**What `MetaRouter.Analytics.reset()` does:**
+
+- Clears `userId`, `anonymousId`, `groupId`, and `advertisingId` from memory
+- Removes all identity fields from SharedPreferences
+- Stops background flush loops and tears down the client
+- Clears event queue and deletes the disk snapshot. Events still being processed when the reset runs may be dropped
+- Keeps consent and provider context
+- Calls made between `reset()` and the next `initialize()` are held in memory and sent by the new client
+- The next `initialize()` generates a **new** `anonymousId`
+
+After the reset, the user is tracked with the new `anonymousId`, with no `userId` or `groupId` until they log in again.
 
 ### Best Practices
 
 1. **On Login:** Call `identify()` immediately after successful authentication
-2. **On Logout:** Call `reset()` to clear user identity
+2. **On Logout:** Call `MetaRouter.Analytics.reset()`, then `initialize` again, to clear user identity
 3. **Cross-Session Tracking:** The SDK handles this automatically — no action needed
 4. **Group Associations:** Set `groupId` after determining the user's organization/team
 5. **Pre-Login Tracking:** Events are tracked with `anonymousId` before login
@@ -627,10 +632,9 @@ analytics.track("App Reopened")
 // STILL includes: userId: "user456", anonymousId: "abc-123"
 
 // User logs out
-lifecycleScope.launch {
-    analytics.reset()
-}
-// All IDs cleared, new anonymousId will be generated on next init
+MetaRouter.Analytics.reset()
+MetaRouter.Analytics.initialize(context, options)
+// All IDs cleared, new anonymousId generated by the new client
 ```
 
 ### Storage Location
@@ -639,7 +643,9 @@ All identity data is stored in **Android SharedPreferences** (`com.metarouter.an
 
 - Persistent storage across app sessions
 - Thread-safe access with built-in synchronization
-- Cleared only on app uninstall or explicit `reset()` call
+- Cleared on app uninstall, when app data is cleared, or by an explicit `MetaRouter.Analytics.reset()` call
+
+The SDK does not exclude these files from Android Auto Backup. If your app has backup enabled, persisted ids can be restored after a reinstall; exclude `com.metarouter.analytics*.xml` in your backup rules if that matters.
 
 ## Lifecycle Events
 
@@ -669,7 +675,7 @@ When the flag is `false` (the default), the SDK never emits these events and `re
 | `Application Installed` | First launch after a truly fresh install (no prior identity, no prior lifecycle storage) | `version`, `build` |
 | `Application Updated` | First launch after a `(version, build)` change OR first launch after upgrading from a pre-lifecycle SDK build (existing identity, no lifecycle storage) | `version`, `build`, `previous_version`, `previous_build` (set to `"unknown"` for the SDK-upgrade case) |
 | `Application Opened` | Cold launch (foreground at SDK init) and on every `ProcessLifecycleOwner.ON_START` resume | `version`, `build`, `from_background` (false on cold launch, true on resume), optional `url` and `referring_application` from `recordOpenedUrl(...)` |
-| `Application Backgrounded` | `ProcessLifecycleOwner.ON_STOP`. Emitted **before** the dispatcher's flush-to-disk so the event ships in the same drain | (none) |
+| `Application Backgrounded` | `ProcessLifecycleOwner.ON_STOP`, just before the SDK flushes. It usually ships in that flush; otherwise it is sent on the next one | (none) |
 
 ### Cold-launch sequencing
 
@@ -711,7 +717,7 @@ class MainActivity : AppCompatActivity() {
         // (Don't use `Intent.EXTRA_REFERRER` with `getStringExtra` — it's documented as
         // a `Uri`, so the String overload returns null.)
         val source = referrer?.host
-        MetaRouter.Analytics.client().recordOpenedUrl(uri, source)
+        MetaRouter.Analytics.shared.recordOpenedUrl(uri, source)
     }
 }
 ```
@@ -752,7 +758,7 @@ private fun sanitize(uri: Uri): Uri {
 }
 
 intent.data?.let { uri ->
-    MetaRouter.Analytics.client().recordOpenedUrl(sanitize(uri), referrer?.host)
+    MetaRouter.Analytics.shared.recordOpenedUrl(sanitize(uri), referrer?.host)
 }
 ```
 
@@ -852,7 +858,7 @@ analytics.setConsent(Consent(
 ))
 ```
 
-`setConsent` fully replaces the previous state, persists it across launches, and takes effect immediately. Events are stamped when they are enriched, which happens in the background right after `track()` returns, so set consent *before* tracking the events it should cover; `track(); setConsent()` on adjacent lines can stamp the new state on that event. Before the client is ready, calls are queued and enriched when it binds, so every queued event carries the consent current at bind, not at its call. It is safe to call before `initialize` (CMP callbacks often fire first), and the state survives both `analytics.reset()` and `MetaRouter.Analytics.reset()` + re-initialize: consent is a compliance record scoped to the device and person, not to the analytics identity, so a logout must not resurrect tracking the user opted out of. Only `clearConsent()` removes it.
+`setConsent` fully replaces the previous state, persists it across launches, and takes effect immediately. Events are stamped when they are enriched, which happens in the background right after `track()` returns, so set consent *before* tracking the events it should cover; `track(); setConsent()` on adjacent lines can stamp the new state on that event. Before the client is ready, calls are queued and enriched when it binds, so every queued event carries the consent current at bind, not at its call. It is safe to call before `initialize` (CMP callbacks often fire first), and the state survives `MetaRouter.Analytics.reset()` + re-initialize: consent is a compliance record scoped to the device and person, not to the analytics identity, so a logout must not resurrect tracking the user opted out of. Only `clearConsent()` removes it.
 
 Each `Consent` carries an optional epoch-millisecond `timestamp`. If you supply timestamps (for example from the CMP's own record), a snapshot older than the newest timestamp you have supplied is ignored, so a CMP replaying a cached choice cannot overwrite a fresher one; `setConsent` returns `false` when that happens. `clearConsent()` resets that history, so after a clear any snapshot applies — do not re-push one from before the clear. Use one unit: a single millisecond timestamp followed by seconds rejects every seconds call until the next clear. A call without a timestamp is always applied as the user's current choice; the SDK stamps the device clock for information only and never compares it with yours. The timestamp never goes on the wire.
 
@@ -1026,20 +1032,22 @@ Bridged events go through the same enrichment as native events. The page contrib
 | event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context |
 | `context.page` — url, path, search, title, referrer | `messageId`, `timestamp`, `context.consent`, session (`context.providers.metarouter`), and any [provider context](#provider-context) the app has set |
 
-Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message on the underlying channel — malformed input is rejected, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
+A `page` event also carries the page facts and its name in `properties`, as the web SDK sends them; properties the page passed win over the facts.
+
+Each bridge message carries a producer-minted ID used to drop duplicate deliveries (bounded window). The page receives an ack or a coded error for every message that reaches native — malformed input is rejected, not silently dropped (the page script itself silently ignores calls with an empty name), and events arriving while the SDK cannot accept them are answered `not_ready` rather than acked.
 
 ### Lifecycle
 
 Attachment is per-WebView and lives as long as the WebView does:
 
 - Attaching before SDK initialization completes is safe — registration happens immediately, so the first page load is captured.
-- `reset()` + re-initialization does **not** require re-attaching: an attached WebView keeps delivering to the current client.
+- `MetaRouter.Analytics.reset()` + re-initialization does **not** require re-attaching: an attached WebView keeps delivering to the current client.
 - A page loaded *before* attach is never captured — that page's JS world has no bridge. Attach first, then load.
 - Destroying the WebView tears everything down; there is no detach API because the platform offers no listener removal.
 
 ### Debugging
 
-- `adb logcat -s MetaRouter` shows attach confirmations, rejected messages with their error codes, and duplicate drops — the primary debugging surface.
+- `adb logcat -s MetaRouter` shows attach confirmations, rejected messages with their error codes, and duplicate drops — the primary debugging surface. Attach confirmations and duplicate drops need `debug = true`.
 - From Chrome DevTools (`chrome://inspect` → the WebView), check `typeof window.metarouterBridge` to verify injection, and read the native replies live with `window.__metaRouterNativeChannel.onmessage = e => console.log(e.data)`.
 - On devices whose WebView provider lacks the required features, attach logs a warning and captures nothing — it never falls back to an unscoped mechanism.
 

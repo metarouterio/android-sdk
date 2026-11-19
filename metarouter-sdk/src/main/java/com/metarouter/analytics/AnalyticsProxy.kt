@@ -65,6 +65,10 @@ class AnalyticsProxy internal constructor(
 
     companion object {
         const val DEFAULT_MAX_PENDING_CALLS = 2000
+
+        // Passes over a backlog a host keeps refilling before the client is published
+        // anyway; calls made after that may overtake the last pass's.
+        private const val MAX_REPLAY_PASSES = 8
     }
 
     private val realClient = AtomicReference<AnalyticsInterface?>(null)
@@ -73,6 +77,16 @@ class AnalyticsProxy internal constructor(
 
     @Volatile
     private var boundSignal = CompletableDeferred<Unit>()
+
+    // Bumped on the host's call site by every reset or disable (detachCalls), under the
+    // pendingCalls monitor that a bind publishes its client under. A bind for an
+    // initialize called before the bump must not publish: calls made after the reset
+    // would replay into the client that reset is about to discard.
+    private var epoch = 0
+
+    // True while a bind replays the backlog, before the client is published. Guarded
+    // by the pendingCalls monitor, like epoch.
+    private var binding = false
 
     // Set when initialize was refused over invalid config: no bind is coming this
     // session, so awaiting APIs must resolve (degraded) instead of suspending forever
@@ -88,52 +102,134 @@ class AnalyticsProxy internal constructor(
      * This is idempotent - calling bind() again after binding is a no-op.
      */
     suspend fun bind(client: AnalyticsInterface) {
+        bind(client, expectedEpoch = null)
+    }
+
+    /**
+     * Binds unless a reset or disable has detached the proxy since [epoch] was read,
+     * returning whether it did.
+     */
+    internal suspend fun bindIfCurrent(client: AnalyticsInterface, epoch: Int): Boolean =
+        bind(client, expectedEpoch = epoch)
+
+    internal fun epoch(): Int = synchronized(pendingCalls) { epoch }
+
+    /**
+     * The call-site half of a reset or disable: a call made on the next line queues for
+     * the next client instead of reaching the one being discarded. Calls queued before
+     * it are dropped, as the queued teardown dropped them.
+     */
+    internal fun detachCalls() {
+        synchronized(pendingCalls) {
+            epoch++
+            // Fresh signal before the client goes, as in unbind(): a waiter that sees
+            // no client must also see a new signal to wait on.
+            val outgoing = boundSignal
+            boundSignal = CompletableDeferred()
+            realClient.set(null)
+            pendingCalls.clear()
+            outgoing.complete(Unit)
+        }
+    }
+
+    private suspend fun bind(client: AnalyticsInterface, expectedEpoch: Int?): Boolean {
         mutex.withLock {
             if (realClient.get() != null) {
                 Logger.warn("AnalyticsProxy already bound - ignoring duplicate bind")
-                return
+                return false
             }
 
             // MetaRouter attaches identity storage before building the client; a proxy
             // built without it lands its pre-bind setAnonymousId/reset notes here, before
             // the replay below runs the queued reset they order against.
             (client as? MetaRouterAnalyticsClient)?.let { hostIdentity.attachStorage(it.identityStorage) }
+            synchronized(pendingCalls) { binding = true }
 
-            // Publish the client and snapshot the backlog in one critical section on
-            // the pendingCalls monitor. enqueue() checks realClient under that same
-            // monitor, so once the client is set no further call can be queued: a call
-            // racing this transition either lands in `pending` (replayed below) or sees
-            // the client in enqueue() and runs directly. Nothing can be stranded.
-            val pending = synchronized(pendingCalls) {
-                realClient.set(client)
-                val calls = pendingCalls.toList()
-                pendingCalls.clear()
-                calls
-            }
-            // A successful (re)initialize supersedes an earlier config refusal.
-            configDisabled = false
-            configErrorDescription = null
-            boundSignal.complete(Unit)
-
+            // The client is published once the backlog is empty (or after
+            // MAX_REPLAY_PASSES, so a host that keeps calling can't hold it), in the same
+            // critical section on the pendingCalls monitor that enqueue() checks
+            // realClient under. Until then a call made during replay queues behind the
+            // backlog instead of overtaking it, and is replayed on the next pass; once
+            // the client is set, no further call can be queued. Nothing can be stranded.
+            //
             // Each replay is guarded individually: one throwing call (bad input,
             // platform exception) must not abort the bind — that would strand the
             // remaining queue and leave boundSignal incomplete.
+            var replayed = 0
             var dropped = 0
-            for (call in pending) {
-                try {
-                    replayCall(client, call)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    dropped++
-                    Logger.error("Dropped queued ${call::class.simpleName} during replay", e)
+            var signal: CompletableDeferred<Unit>? = null
+            // A queued flush waits on the network. Run in the replay, it would hold
+            // getAnonymousId and every other bind waiter for the request; it runs once,
+            // after those waiters are released, and covers every call replayed before
+            // it. It still runs under this bind's lock.
+            var flushRequested = false
+            fun current() = expectedEpoch == null || epoch == expectedEpoch
+            var passes = 0
+            try {
+                while (signal == null) {
+                    val pending = synchronized(pendingCalls) {
+                        if (!current()) return@synchronized null
+                        val calls = pendingCalls.toList().also { pendingCalls.clear() }
+                        if (calls.isEmpty() || ++passes > MAX_REPLAY_PASSES) {
+                            realClient.set(client)
+                            signal = boundSignal
+                        }
+                        calls
+                    } ?: break
+                    for (call in pending) {
+                        replayed++
+                        if (call is PendingCall.Flush) {
+                            flushRequested = true
+                            continue
+                        }
+                        try {
+                            replayCall(client, call)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            dropped++
+                            Logger.error("Dropped queued ${call::class.simpleName} during replay", e)
+                        }
+                    }
+                }
+            } finally {
+                // Cancelled mid-replay: still bind, as before, rather than leave every
+                // later call queueing for a bind that already happened. What is still
+                // queued can't replay on a cancelled coroutine; say so rather than hold it.
+                val stranded = synchronized(pendingCalls) {
+                    binding = false
+                    if (signal == null && current()) {
+                        realClient.set(client)
+                        signal = boundSignal
+                        pendingCalls.size.also { pendingCalls.clear() }
+                    } else {
+                        0
+                    }
+                }
+                if (stranded > 0) Logger.warn("Bind cancelled - dropped $stranded queued call(s)")
+                if (signal != null) {
+                    // A successful (re)initialize supersedes an earlier config refusal.
+                    configDisabled = false
+                    configErrorDescription = null
+                    signal?.complete(Unit)
                 }
             }
+
             if (dropped > 0) {
                 // Per-call errors scatter in the log; one summary line is the signal
                 // that the pre-bind buffer (partially) failed to replay.
-                Logger.warn("Replay dropped $dropped of ${pending.size} queued call(s)")
+                Logger.warn("Replay dropped $dropped of $replayed queued call(s)")
             }
+            if (flushRequested && signal != null) {
+                try {
+                    client.flush()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.error("Dropped queued Flush during replay", e)
+                }
+            }
+            return signal != null
         }
     }
 
@@ -237,9 +333,28 @@ class AnalyticsProxy internal constructor(
         noteResetRequested(client)
         if (client != null) {
             client.reset()
-        } else {
-            enqueue(PendingCall.Reset)?.reset()
+            return
         }
+        // Decided under the monitor a bind publishes under, so a bind can't land in
+        // between. With no client and none being bound, clear here: a queued Reset
+        // would replay into the next client and leave it IDLE while bound. A bind in
+        // progress gets the Reset queued behind the calls it is replaying, which
+        // would otherwise write their identity back after a clear made here. (On a
+        // standalone proxy with no storage attached yet, the clear is applied at
+        // attach, once that bind's client is built.)
+        val bound = synchronized(pendingCalls) {
+            val current = realClient.get()
+            when {
+                current != null -> current
+                binding -> enqueue(PendingCall.Reset)
+                else -> {
+                    pendingCalls.clear()
+                    hostIdentity.clear()
+                    null
+                }
+            }
+        }
+        bound?.reset()
     }
 
     override fun enableDebugLogging() {
@@ -324,6 +439,8 @@ class AnalyticsProxy internal constructor(
         // diagnostic read into a process-lifetime hang whenever initialize()
         // is never called (or a reset() is never followed by one). The same
         // null also serves the config-disabled session without a sentinel.
+        // Also null from reset() until the next client is bound, although the
+        // persisted session carries on into it.
         return realClient.get()?.getSessionId()
     }
 
@@ -341,7 +458,7 @@ class AnalyticsProxy internal constructor(
         if (client != null) {
             client.recordOpenedUrl(uri, sourceApplication)
         } else {
-            enqueue(PendingCall.RecordOpenedUrl(uri, sourceApplication))
+            enqueue(PendingCall.RecordOpenedUrl(uri, sourceApplication))?.recordOpenedUrl(uri, sourceApplication)
         }
     }
 
@@ -441,10 +558,18 @@ class AnalyticsProxy internal constructor(
     }
 
     /**
-     * Unbind the proxy and clear pending calls.
-     * Used when resetting the SDK to allow re-initialization.
+     * Unbind the proxy and clear pending calls. Tests only: reset and disable use
+     * [detachCalls] then [release].
      */
-    internal suspend fun unbind() {
+    internal suspend fun unbind() = teardown(dropPending = true)
+
+    /**
+     * The queued half of a reset or disable: unbinds like [unbind] but keeps the calls
+     * made since [detachCalls], which wait for the next client.
+     */
+    internal suspend fun release() = teardown(dropPending = false)
+
+    private suspend fun teardown(dropPending: Boolean) {
         mutex.withLock {
             // Publish the fresh signal FIRST, tear state down, and complete the
             // outgoing signal LAST. A waiter parked on the outgoing signal then
@@ -457,17 +582,20 @@ class AnalyticsProxy internal constructor(
             // hang the resolve-degraded contract exists to prevent — and
             // completing it before the swap is visible reintroduces the
             // client-null/flag-false/same-signal throw.
-            val outgoing = boundSignal
-            boundSignal = CompletableDeferred()
-            realClient.set(null)
-            synchronized(pendingCalls) {
-                pendingCalls.clear()
+            // Under the pendingCalls monitor, as in detachCalls: a swap there between
+            // our read and write would be lost, stranding its waiters.
+            val outgoing = synchronized(pendingCalls) {
+                val outgoing = boundSignal
+                boundSignal = CompletableDeferred()
+                realClient.set(null)
+                if (dropPending) pendingCalls.clear()
+                // reset() tears down a session without refusing one. Leaving the flag set
+                // would make every later awaiting call resolve degraded for a session
+                // that was never gated. disableSession() marks it again after this.
+                configDisabled = false
+                configErrorDescription = null
+                outgoing
             }
-            // reset() tears down a session without refusing one. Leaving the flag set
-            // would make every later awaiting call resolve degraded for a session
-            // that was never gated. disableSession() marks it again after this.
-            configDisabled = false
-            configErrorDescription = null
             outgoing.complete(Unit)
         }
     }
@@ -479,9 +607,11 @@ class AnalyticsProxy internal constructor(
      */
     internal suspend fun markConfigDisabled(errorDescription: String) {
         mutex.withLock {
-            configDisabled = true
-            configErrorDescription = errorDescription
-            boundSignal.complete(Unit)
+            synchronized(pendingCalls) {
+                configDisabled = true
+                configErrorDescription = errorDescription
+                boundSignal.complete(Unit)
+            }
         }
     }
 
@@ -493,7 +623,8 @@ class AnalyticsProxy internal constructor(
      */
     internal suspend fun clearConfigDisabled() {
         mutex.withLock {
-            if (configDisabled) {
+            val outgoing = synchronized(pendingCalls) {
+                if (!configDisabled) return
                 // Fresh signal BEFORE clearing the flag: a waiter woken by the
                 // refusal reads the flag and then the signal, lock-free. In
                 // that order of volatile writes, a waiter that observed
@@ -502,10 +633,15 @@ class AnalyticsProxy internal constructor(
                 // reads flag=false with the awaited signal still current — the
                 // invariant-breach throw, on exactly the refusal→recovery
                 // sequence this method exists to serve.
+                val outgoing = boundSignal
                 boundSignal = CompletableDeferred()
                 configDisabled = false
                 configErrorDescription = null
+                outgoing
             }
+            // Usually the refusal's, already completed; after a detachCalls it is a
+            // fresh one with waiters parked on it, who re-await the new signal.
+            outgoing.complete(Unit)
         }
     }
 

@@ -17,6 +17,7 @@ import com.metarouter.analytics.dispatcher.Dispatcher
 import com.metarouter.analytics.dispatcher.DispatcherConfig
 import com.metarouter.analytics.enrichment.EventEnrichmentService
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.identity.IdentitySnapshot
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.lifecycle.LifecycleCoordinator
 import com.metarouter.analytics.lifecycle.LifecycleEventTracker
@@ -50,7 +51,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.atomic.AtomicReference
 
 class MetaRouterAnalyticsClient private constructor(
@@ -152,7 +155,11 @@ class MetaRouterAnalyticsClient private constructor(
     // Coroutine scope for async operations
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private lateinit var eventChannel: Channel<BaseEvent>
+    private lateinit var eventChannel: Channel<QueuedEvent>
+
+    // The ids of the event being enriched: a session it starts announces itself with
+    // them, not with an identify() made since. Only the processor touches it.
+    private var enrichingIdentity: IdentitySnapshot? = null
 
     // Core components
     private lateinit var identityManager: IdentityManager
@@ -238,10 +245,15 @@ class MetaRouterAnalyticsClient private constructor(
             // with the session it announces.
             if (options.fireSessionStarted) {
                 sessionManager.onSessionStart.set {
+                    // Fires inside the processor's enrichment; read before the launch.
+                    val identity = enrichingIdentity
                     scope.launch {
                         try {
                             eventChannel.send(
-                                BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED)
+                                QueuedEvent(
+                                    BaseEvent(type = EventType.TRACK, event = SessionEventNames.SESSION_STARTED),
+                                    identity = identity
+                                )
                             )
                         } catch (e: Exception) {
                             // Channel closed = session torn down mid-mint; the
@@ -303,6 +315,14 @@ class MetaRouterAnalyticsClient private constructor(
                 scope = scope,
                 config = DispatcherConfig()
             )
+            // 401/403/404: this writeKey and host will never be accepted. The dispatcher has
+            // cleared its queue and won't send again; stop taking events for the session, as
+            // iOS does. Only from a live state: a reset in progress or done stays as it is.
+            dispatcher.onFatalConfigError = { status ->
+                Logger.error("Fatal config error $status. Disabling client.")
+                lifecycleState.compareAndSet(LifecycleState.READY, LifecycleState.DISABLED) ||
+                    lifecycleState.compareAndSet(LifecycleState.INITIALIZING, LifecycleState.DISABLED)
+            }
 
             // Install detection reads this snapshot, not live storage: the pre-load below
             // mints an anonymousId, which would make every fresh install look like an
@@ -390,7 +410,11 @@ class MetaRouterAnalyticsClient private constructor(
             // construction can no longer fail and leave the next launch to read it.
             identityManager.clearHostSetMarker()
 
-            lifecycleState.set(LifecycleState.READY)
+            // Not over DISABLED: init's own disk drain may already have hit a fatal error.
+            if (!lifecycleState.compareAndSet(LifecycleState.INITIALIZING, LifecycleState.READY)) {
+                Logger.warn("SDK disabled during initialization (state: ${lifecycleState.get()})")
+                return
+            }
             Logger.log("MetaRouter SDK initialized")
 
             // Run cold-launch detection + emission. Must happen after READY so enqueueEvent
@@ -428,19 +452,12 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.IDENTIFY,
-                        traits = traits?.toJsonElementMap()
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue identify event: ${e.message}")
-            }
-        }
+        enqueueEvent(
+            BaseEvent(
+                type = EventType.IDENTIFY,
+                traits = traits?.toJsonElementMap()
+            )
+        )
     }
 
     override fun group(groupId: String, traits: Map<String, Any?>?) {
@@ -455,27 +472,22 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.GROUP,
-                        traits = traits?.toJsonElementMap()
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue group event: ${e.message}")
-            }
-        }
+        enqueueEvent(
+            BaseEvent(
+                type = EventType.GROUP,
+                traits = traits?.toJsonElementMap()
+            )
+        )
     }
 
+    // The name also rides in `properties.name`, where iOS puts it and integrations read
+    // it; `event` stays for anyone already mapping it.
     override fun screen(name: String, properties: Map<String, Any?>?) {
         enqueueEvent(
             BaseEvent(
                 type = EventType.SCREEN,
                 event = name,
-                properties = properties?.toJsonElementMap()
+                properties = properties.orEmpty().toJsonElementMap() + ("name" to JsonPrimitive(name))
             )
         )
     }
@@ -485,7 +497,7 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = EventType.PAGE,
                 event = name,
-                properties = properties?.toJsonElementMap()
+                properties = properties.orEmpty().toJsonElementMap() + ("name" to JsonPrimitive(name))
             )
         )
     }
@@ -502,38 +514,30 @@ class MetaRouterAnalyticsClient private constructor(
             return
         }
 
-        // Enqueue event async (non-blocking)
-        scope.launch {
-            try {
-                enqueueEvent(
-                    BaseEvent(
-                        type = EventType.ALIAS
-                    )
-                )
-            } catch (e: Exception) {
-                Logger.error("Failed to queue alias event: ${e.message}")
-            }
-        }
+        enqueueEvent(BaseEvent(type = EventType.ALIAS))
+    }
+
+    // Disabled by a fatal config error, identity is still the host's to change (an ad-ID
+    // opt-out must land); only sending stopped.
+    private fun acceptsIdentityWrites(): Boolean {
+        val state = lifecycleState.get()
+        return state == LifecycleState.READY || state == LifecycleState.DISABLED
     }
 
     override fun setAdvertisingId(advertisingId: String) {
-        if (lifecycleState.get() != LifecycleState.READY) {
+        if (!acceptsIdentityWrites()) {
             Logger.warn("Cannot set advertisingId - SDK not ready")
             return
         }
-        scope.launch {
-            identityManager.setAdvertisingId(advertisingId)
-        }
+        identityManager.storeAdvertisingId(advertisingId)
     }
 
     override fun clearAdvertisingId() {
-        if (lifecycleState.get() != LifecycleState.READY) {
+        if (!acceptsIdentityWrites()) {
             Logger.warn("Cannot clear advertisingId - SDK not ready")
             return
         }
-        scope.launch {
-            identityManager.clearAdvertisingId()
-        }
+        identityManager.removeAdvertisingId()
     }
 
     /**
@@ -543,9 +547,10 @@ class MetaRouterAnalyticsClient private constructor(
      */
     private fun startEventProcessor() {
         scope.launch {
-            for (baseEvent in eventChannel) {
+            for (queued in eventChannel) {
                 try {
-                    val enrichedEvent = enrichmentService.enrichEvent(baseEvent)
+                    enrichingIdentity = queued.identity
+                    val enrichedEvent = enrichmentService.enrichEvent(queued.event, queued.identity)
                     dispatcher.offer(enrichedEvent)
 
                     // Check if disk flush threshold is reached
@@ -572,7 +577,7 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Try to send to channel - drops if buffer is full (backpressure)
-        val result = eventChannel.trySend(baseEvent)
+        val result = eventChannel.trySend(QueuedEvent(baseEvent, identityManager.snapshot()))
         if (result.isFailure) {
             Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
             return false
@@ -690,10 +695,28 @@ class MetaRouterAnalyticsClient private constructor(
             BaseEvent(
                 type = envelope.type,
                 event = envelope.name,
-                properties = envelope.properties,
+                properties = if (envelope.type == EventType.PAGE) pageProperties(envelope) else envelope.properties,
                 page = envelope.page
             )
         )
+    }
+
+    /**
+     * A bridge page event's properties as the web SDK sends them: the page facts, the
+     * host's properties over them, then the name. Integrations that map a page view
+     * from `properties` (GA4's page_title / page_location) see nothing in `context.page`.
+     */
+    private fun pageProperties(envelope: BridgeEnvelope): Map<String, JsonElement> {
+        val facts = envelope.page?.let { page ->
+            listOf(
+                "path" to page.path,
+                "referrer" to page.referrer,
+                "search" to page.search,
+                "title" to page.title,
+                "url" to page.url
+            ).mapNotNull { (key, value) -> value?.let { key to JsonPrimitive(it) } }.toMap()
+        }.orEmpty()
+        return facts + envelope.properties + ("name" to JsonPrimitive(envelope.name))
     }
 
     override fun recordOpenedUrl(uri: Uri, sourceApplication: String?) {
@@ -714,7 +737,13 @@ class MetaRouterAnalyticsClient private constructor(
     }
 
     override suspend fun reset() {
-        if (!lifecycleState.compareAndSet(LifecycleState.READY, LifecycleState.RESETTING)) {
+        // A disabled client resets too: a logout must still clear identity.
+        val entered = when {
+            lifecycleState.compareAndSet(LifecycleState.READY, LifecycleState.RESETTING) -> LifecycleState.READY
+            lifecycleState.compareAndSet(LifecycleState.DISABLED, LifecycleState.RESETTING) -> LifecycleState.DISABLED
+            else -> null
+        }
+        if (entered == null) {
             Logger.warn("Cannot reset - SDK not in READY state (current: ${lifecycleState.get()})")
             return
         }
@@ -754,8 +783,8 @@ class MetaRouterAnalyticsClient private constructor(
 
         } catch (e: Exception) {
             Logger.error("Failed to reset SDK: ${e.message}")
-            // Try to recover to READY state
-            lifecycleState.set(LifecycleState.READY)
+            // Back to the state it was entered from: a disabled client stays disabled.
+            lifecycleState.set(entered)
             throw e
         }
     }
@@ -763,7 +792,9 @@ class MetaRouterAnalyticsClient private constructor(
     // ===== Identity Read Methods =====
 
     override suspend fun getAnonymousId(): String {
-        check(lifecycleState.get() == LifecycleState.READY) {
+        // Answers when disabled too: identity is still valid, only sending stopped.
+        val state = lifecycleState.get()
+        check(state == LifecycleState.READY || state == LifecycleState.DISABLED) {
             "Cannot get anonymousId - SDK not ready (state: ${lifecycleState.get()})"
         }
         return identityManager.getAnonymousId()
@@ -810,7 +841,7 @@ class MetaRouterAnalyticsClient private constructor(
             put("flushIntervalSeconds", options.flushIntervalSeconds)
             put("maxQueueEvents", options.maxQueueEvents)
 
-            if (state == LifecycleState.READY) {
+            if (state == LifecycleState.READY || state == LifecycleState.DISABLED) {
                 put("networkStatus", if (networkMonitor.isConnected) "connected" else "disconnected")
                 put("anonymousId", maskId(identityManager.getAnonymousId()))
                 put("userId", identityManager.getUserId()?.let { maskId(it) })
@@ -871,3 +902,6 @@ class MetaRouterAnalyticsClient private constructor(
         dispatcher.setTracing(enabled)
     }
 }
+
+/** An event and the ids it carries, read when the host made the call. */
+private class QueuedEvent(val event: BaseEvent, val identity: IdentitySnapshot?)

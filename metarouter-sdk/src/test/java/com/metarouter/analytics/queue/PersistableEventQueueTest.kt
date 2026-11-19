@@ -789,6 +789,11 @@ class PersistableEventQueueTest {
 
         assertEquals(0, drained)
         assertNull(diskStore.read()) // Overflow store deleted on fatal error
+        // The main pipeline is shut down the same way as on the flush path.
+        assertTrue(dispatcher.isDisabled())
+        diskStore.write(QueueSnapshot(version = 1, events = events))
+        assertEquals(0, overflowQueue.drainDiskOverflowToNetwork(dispatcher))
+        assertEquals("no drain after the disable", 1, fakeClient.requests.size)
 
         unmockkStatic(Log::class)
     }

@@ -5,7 +5,7 @@ package com.metarouter.analytics.types
  *
  * State transitions:
  * - idle → initializing → ready → resetting → idle
- * - ready → disabled (terminal state for fatal errors)
+ * - initializing/ready → disabled (fatal config error) → resetting (on reset only)
  */
 enum class LifecycleState {
     /**
@@ -29,8 +29,8 @@ enum class LifecycleState {
     RESETTING,
 
     /**
-     * Permanently disabled due to fatal configuration error (e.g., 401, 403).
-     * Terminal state - no transitions allowed.
+     * Disabled by a fatal configuration error (401, 403, 404): events are dropped for
+     * the session. Only reset() leaves it.
      */
     DISABLED;
 
