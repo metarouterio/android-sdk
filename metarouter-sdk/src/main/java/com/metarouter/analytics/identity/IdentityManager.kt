@@ -79,7 +79,12 @@ class IdentityManager(
 
     suspend fun getAdvertisingId(): String? = storage.get(KEY_ADVERTISING_ID)
 
-    suspend fun setAdvertisingId(advertisingId: String): Boolean {
+    suspend fun setAdvertisingId(advertisingId: String): Boolean = storeAdvertisingId(advertisingId)
+
+    suspend fun clearAdvertisingId() = removeAdvertisingId()
+
+    // Non-suspending halves, so the client writes on the host's call site, in call order.
+    internal fun storeAdvertisingId(advertisingId: String): Boolean {
         if (advertisingId.isBlank()) {
             Logger.warn("Cannot set empty advertising ID")
             return false
@@ -88,10 +93,21 @@ class IdentityManager(
         return true
     }
 
-    suspend fun clearAdvertisingId() {
+    internal fun removeAdvertisingId() {
         storage.remove(KEY_ADVERTISING_ID)
         Logger.log("Advertising ID cleared")
     }
+
+    /**
+     * The ids an event carries, read on the host's call site. Enrichment runs later on
+     * the processor, so reading there would stamp an `identify()` made after the call.
+     */
+    internal fun snapshot() = IdentitySnapshot(
+        anonymousId = getAnonymousId(),
+        userId = getUserId(),
+        groupId = getGroupId(),
+        advertisingId = storage.get(KEY_ADVERTISING_ID)
+    )
 
     suspend fun reset() {
         storage.clear()
@@ -149,3 +165,10 @@ class IdentityManager(
         }
     }
 }
+
+internal data class IdentitySnapshot(
+    val anonymousId: String,
+    val userId: String?,
+    val groupId: String?,
+    val advertisingId: String?
+)

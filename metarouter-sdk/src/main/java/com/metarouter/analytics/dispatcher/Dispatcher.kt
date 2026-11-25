@@ -50,6 +50,10 @@ class Dispatcher(
     private var paused = false
     @Volatile
     private var networkPaused = false
+    // Set by a 401/403/404 on either send path (flush or disk drain): this writeKey and
+    // host will never be accepted, so nothing restarts sending afterwards.
+    @Volatile
+    private var disabled = false
     private val consecutiveRetries = AtomicInteger(0)
 
     private val json = Json { encodeDefaults = true }
@@ -59,6 +63,19 @@ class Dispatcher(
      * The dispatcher stops and the queue is cleared when this happens.
      */
     var onFatalConfigError: ((Int) -> Unit)? = null
+
+    /**
+     * Where a fatal configuration error takes effect, for both the flush and the disk
+     * drain: clear the queue, stop, and refuse to send again.
+     */
+    internal fun disableForFatalConfig(statusCode: Int) {
+        disabled = true
+        queue.clear()
+        stop()
+        onFatalConfigError?.invoke(statusCode)
+    }
+
+    fun isDisabled(): Boolean = disabled
 
     /**
      * Callback invoked after a successful flush cycle completes.
@@ -73,7 +90,7 @@ class Dispatcher(
      * Idempotent — if already running, this is a no-op (avoids cancelling in-flight requests).
      */
     fun start() {
-        if (flushJob != null) return
+        if (disabled || flushJob != null) return
         flushJob = scope.launch {
             while (isActive) {
                 delay(options.flushIntervalSeconds * 1000L)
@@ -115,7 +132,7 @@ class Dispatcher(
      * Resume the dispatcher - restarts flush loop if paused.
      */
     fun resume() {
-        if (!paused) return
+        if (!paused || disabled) return
         paused = false
         flushJob = null // Clear so start() doesn't no-op
         start()
@@ -154,14 +171,25 @@ class Dispatcher(
 
     /**
      * Enqueue an event and trigger auto-flush if threshold is reached.
+     *
+     * The flush is launched, not awaited: the client's single event processor calls
+     * this, and awaiting would hold every later event, unenriched, behind a request.
      */
     suspend fun offer(event: EnrichedEventPayload) {
+        if (disabled) return
         Logger.log("Enqueuing event {\"messageId\": \"${event.messageId}\", \"type\": \"${event.type}\"}")
         queue.enqueue(event)
         Logger.log("Event enqueued, queue length: ${queue.size()}")
 
-        if (queue.size() >= config.autoFlushThreshold) {
-            flush()
+        // Skips the launch when a flush or retry would turn it away anyway.
+        if (queue.size() >= config.autoFlushThreshold && !isFlushing.get() && retryJob?.isActive != true) {
+            scope.launch {
+                try {
+                    flush()
+                } catch (e: Exception) {
+                    Logger.error("Auto-flush error: ${e.message}")
+                }
+            }
         }
     }
 
@@ -174,7 +202,7 @@ class Dispatcher(
         // ticks and offer() auto-flushes during the backoff window would otherwise
         // re-enter processUntilEmpty, log redundantly, and cancel/relaunch the
         // retry — visible as decreasing "retrying in Xms" log spam in a retry loop.
-        if (retryJob?.isActive == true) return
+        if (disabled || retryJob?.isActive == true) return
         if (!isFlushing.compareAndSet(false, true)) return
         if (queue.size() == 0) { isFlushing.set(false); return }
 
@@ -408,9 +436,7 @@ class Dispatcher(
             }
             ResponseCategory.FATAL_CONFIG -> {
                 Logger.error("Fatal configuration error: ${response.statusCode} - clearing queue and stopping")
-                queue.clear()
-                stop()
-                onFatalConfigError?.invoke(response.statusCode)
+                disableForFatalConfig(response.statusCode)
                 FlushAction.Stop
             }
             ResponseCategory.CLIENT_ERROR -> {

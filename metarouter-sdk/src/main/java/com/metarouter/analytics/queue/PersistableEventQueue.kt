@@ -334,7 +334,7 @@ class PersistableEventQueue(
      */
     suspend fun drainDiskOverflowToNetwork(dispatcher: Dispatcher): Int {
         // Bail early if offline — no point burning network call timeouts.
-        if (dispatcher.isNetworkPaused()) return 0
+        if (dispatcher.isNetworkPaused() || dispatcher.isDisabled()) return 0
         if (!isDraining.compareAndSet(false, true)) return 0
 
         var totalDrained = 0
@@ -406,9 +406,8 @@ class PersistableEventQueue(
                     }
                     ResponseCategory.FATAL_CONFIG -> {
                         Logger.error("Disk drain: fatal config error ${response.statusCode} — discarding ${events.size - offset} events")
-                        // Notify the dispatcher so the main pipeline also shuts down. Matches
-                        // the main flush path's handling of auth/config failures.
-                        dispatcher.onFatalConfigError?.invoke(response.statusCode)
+                        // The main pipeline shuts down the same way as on the flush path.
+                        dispatcher.disableForFatalConfig(response.statusCode)
                         return totalDrained
                     }
                     ResponseCategory.CLIENT_ERROR -> {

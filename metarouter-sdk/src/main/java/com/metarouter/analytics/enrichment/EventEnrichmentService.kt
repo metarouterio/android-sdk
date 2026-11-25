@@ -3,6 +3,7 @@ package com.metarouter.analytics.enrichment
 import com.metarouter.analytics.consent.ConsentManager
 import com.metarouter.analytics.context.DeviceContextProvider
 import com.metarouter.analytics.identity.IdentityManager
+import com.metarouter.analytics.identity.IdentitySnapshot
 import com.metarouter.analytics.network.NetworkMonitor
 import com.metarouter.analytics.providers.ProviderContextManager
 import com.metarouter.analytics.session.SessionManager
@@ -45,14 +46,14 @@ internal class EventEnrichmentService(
      * Enrich a base event with identity, context, and metadata.
      *
      * @param baseEvent The event from user input
+     * @param identity The ids read when the host made the call; null reads them now
      * @return Fully enriched event payload ready for queueing
      */
-    suspend fun enrichEvent(baseEvent: BaseEvent): EnrichedEventPayload {
-        // Fetch identity
-        val anonymousId = identityManager.getAnonymousId()
-        val userId = identityManager.getUserId()
-        val groupId = identityManager.getGroupId()
-        val advertisingId = identityManager.getAdvertisingId()
+    suspend fun enrichEvent(baseEvent: BaseEvent, identity: IdentitySnapshot? = null): EnrichedEventPayload {
+        val anonymousId = identity?.anonymousId ?: identityManager.getAnonymousId()
+        val userId = if (identity != null) identity.userId else identityManager.getUserId()
+        val groupId = if (identity != null) identity.groupId else identityManager.getGroupId()
+        val advertisingId = if (identity != null) identity.advertisingId else identityManager.getAdvertisingId()
 
         // Use provided timestamp or generate new one
         val timestamp = baseEvent.timestamp ?: getCurrentTimestamp()

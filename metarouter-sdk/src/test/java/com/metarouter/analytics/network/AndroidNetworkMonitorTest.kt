@@ -23,10 +23,17 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetwork
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [Build.VERSION_CODES.TIRAMISU])
 class AndroidNetworkMonitorTest {
+
+    private companion object {
+        const val WIFI = 100
+        const val CELLULAR = 101
+        const val ETHERNET = 102
+    }
 
     @Before
     fun setup() {
@@ -42,7 +49,7 @@ class AndroidNetworkMonitorTest {
     }
 
     @Test
-    fun `onLost fires offline when lost network matches stale activeNetwork on WiFi-only device`() {
+    fun `losing the only network goes offline even while activeNetwork still reads it`() {
         val context = mockk<Context>()
         val cm = mockk<ConnectivityManager>(relaxed = true)
         val wifiNetwork = mockk<Network>()
@@ -65,6 +72,7 @@ class AndroidNetworkMonitorTest {
             if (connected) onlineCalls++ else offlineCalls++
         }
 
+        cbSlot.captured.onAvailable(wifiNetwork)
         // Simulate the race: WiFi is torn down, but cm.activeNetwork hasn't
         // been cleared yet — it still returns the dying network with INTERNET cap.
         cbSlot.captured.onLost(wifiNetwork)
@@ -72,6 +80,130 @@ class AndroidNetworkMonitorTest {
         assertEquals("offline listener should fire exactly once", 1, offlineCalls)
         assertEquals("online listener should not fire", 0, onlineCalls)
         assertFalse("monitor should report disconnected", monitor.isConnected)
+    }
+
+    /**
+     * Wifi drops while cellular was reported earlier. activeNetwork reads null (or the
+     * lost wifi) mid-handoff, and cellular gets no new onAvailable, so deciding from
+     * activeNetwork left the SDK offline until the next network appeared. Each callback
+     * gets its own Network object, as unparcelled on a device; they match by netId.
+     */
+    @Test
+    fun `wifi lost with cellular already reported stays online`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns null
+        every { cm.getNetworkCapabilities(any()) } returns mockk(relaxed = true)
+        val cbSlot = slot<ConnectivityManager.NetworkCallback>()
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(cbSlot)) } just Runs
+
+        val monitor = AndroidNetworkMonitor(context)
+        var offlineCalls = 0
+        monitor.start { connected -> if (!connected) offlineCalls++ }
+        cbSlot.captured.onAvailable(ShadowNetwork.newInstance(WIFI))
+        cbSlot.captured.onAvailable(ShadowNetwork.newInstance(CELLULAR))
+
+        cbSlot.captured.onLost(ShadowNetwork.newInstance(WIFI))
+        assertEquals(true, monitor.isConnected)
+        assertEquals(0, offlineCalls)
+
+        cbSlot.captured.onLost(ShadowNetwork.newInstance(CELLULAR))
+        assertFalse(monitor.isConnected)
+        assertEquals("offline listener fires once, on the last loss", 1, offlineCalls)
+    }
+
+    /** A network whose onLost never arrived reads no capabilities; it doesn't keep the SDK online. */
+    @Test
+    fun `a network lost without its own onLost is dropped at the next loss`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        val wifi = ShadowNetwork.newInstance(WIFI)
+        val cellular = ShadowNetwork.newInstance(CELLULAR)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns null
+        every { cm.getNetworkCapabilities(any()) } returns mockk(relaxed = true)
+        val cbSlot = slot<ConnectivityManager.NetworkCallback>()
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(cbSlot)) } just Runs
+
+        val monitor = AndroidNetworkMonitor(context)
+        monitor.start { }
+        cbSlot.captured.onAvailable(wifi)
+        cbSlot.captured.onAvailable(cellular)
+        every { cm.getNetworkCapabilities(cellular) } returns null  // gone, onLost dropped
+
+        cbSlot.captured.onLost(wifi)
+
+        assertFalse(monitor.isConnected)
+    }
+
+    /** A restart gets a fresh set; a late callback from the old registration can't touch it. */
+    @Test
+    fun `restart forgets networks from the previous registration`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns null
+        every { cm.getNetworkCapabilities(any()) } returns mockk(relaxed = true)
+        val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(callbacks)) } just Runs
+
+        val monitor = AndroidNetworkMonitor(context)
+        monitor.start { }
+        val old = callbacks.last()
+        old.onAvailable(ShadowNetwork.newInstance(CELLULAR))
+        monitor.start { }  // second start without stop
+        val current = callbacks.last()
+        old.onAvailable(ShadowNetwork.newInstance(ETHERNET))  // in flight at unregister
+        current.onAvailable(ShadowNetwork.newInstance(WIFI))
+        current.onLost(ShadowNetwork.newInstance(WIFI))
+
+        assertFalse("a network from the old registration kept it online", monitor.isConnected)
+    }
+
+    /**
+     * A loss for a network this registration never reported is stale, not a disconnect:
+     * e.g. one from an unregistered callback, arriving before the new one reports anything.
+     */
+    @Test
+    fun `losing a network that was never reported changes nothing`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        val wifi = ShadowNetwork.newInstance(WIFI)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns wifi  // seeds online
+        every { cm.getNetworkCapabilities(wifi) } returns mockk(relaxed = true) {
+            every { hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) } returns true
+        }
+        val cbSlot = slot<ConnectivityManager.NetworkCallback>()
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(cbSlot)) } just Runs
+
+        val monitor = AndroidNetworkMonitor(context)
+        var offlineCalls = 0
+        monitor.start { connected -> if (!connected) offlineCalls++ }
+        cbSlot.captured.onLost(ShadowNetwork.newInstance(CELLULAR))
+
+        assertEquals(true, monitor.isConnected)
+        assertEquals(0, offlineCalls)
+    }
+
+    /** Registration can throw past SecurityException (TooManyRequestsException on API 30+). */
+    @Test
+    fun `a failed registration does not fail start`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns null  // startup read says offline
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), any<ConnectivityManager.NetworkCallback>()) } throws RuntimeException("too many requests")
+
+        val monitor = AndroidNetworkMonitor(context)
+        assertFalse(monitor.isConnected)
+        var onlineCalls = 0
+        monitor.start { connected -> if (connected) onlineCalls++ }
+
+        // No callback will ever arrive, so the startup read must not stick.
+        assertEquals(true, monitor.isConnected)
+        assertEquals(1, onlineCalls)
     }
 
     private fun wifiFixture(
@@ -132,7 +264,7 @@ class AndroidNetworkMonitorTest {
 
     @Test
     @Config(sdk = [Build.VERSION_CODES.M])
-    fun `API 23 re-reads the active network on connectivity callbacks`() {
+    fun `API 23 reads wifi from the networks left after a loss`() {
         val context = mockk<Context>()
         val cm = mockk<ConnectivityManager>(relaxed = true)
         val wifi = mockk<Network>()
@@ -154,12 +286,17 @@ class AndroidNetworkMonitorTest {
 
         val monitor = AndroidNetworkMonitor(context)
         monitor.start { }
+        cbSlot.captured.onAvailable(wifi)
+        cbSlot.captured.onAvailable(cellular)
         assertEquals(true, monitor.isWifi)
 
-        // Wifi drops while cellular is already up: handoff, still online.
-        every { cm.activeNetwork } returns cellular
+        // Wifi drops while cellular is already up: handoff, still online. activeNetwork
+        // still reads the lost wifi, so wifi comes from the networks left.
+        every { cm.activeNetwork } returns wifi
         cbSlot.captured.onLost(wifi)
+        every { cm.activeNetwork } returns cellular
         assertEquals(false, monitor.isWifi)
+        assertEquals(true, monitor.isConnected)
 
         every { cm.activeNetwork } returns wifi
         cbSlot.captured.onAvailable(wifi)

@@ -157,6 +157,12 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         // A second start() without stop() would otherwise leak the first registration.
         unregister(callback)
         callback = null
+        // Networks this registration reported and has not lost; online while any remain.
+        // activeNetwork can't decide this in onLost: it may still read the lost network,
+        // or read nothing during a wifi → cellular handoff whose cellular was reported
+        // earlier and gets no new onAvailable (stuck offline until the next network).
+        // Per registration, so a late callback from an unregistered one can't touch it.
+        val live = mutableSetOf<Network>()
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -164,6 +170,7 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                synchronized(live) { live.add(network) }
                 if (reReadWifi) setIsWifi(readActiveIsWifi(cm))
                 if (!isConnected) {
                     isConnected = true
@@ -172,23 +179,27 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
             }
 
             override fun onLost(network: Network) {
-                // activeNetwork may not be cleared yet when this fires, so we
-                // can't rely on re-querying capabilities. Instead, treat the
-                // loss as offline unless a *different* network is still active
-                // (handoff case, e.g. WiFi → cellular).
-                val activeNet = try {
-                    cm.activeNetwork
-                } catch (e: SecurityException) {
-                    null
+                // A registration reports a network before losing it; anything else is stale.
+                if (!synchronized(live) { live.remove(network) }) return
+                // A network whose own onLost never arrived reads no capabilities; drop it
+                // rather than stay online on it for the life of the process.
+                val gone = synchronized(live) { live.toList() }.filter { n ->
+                    try { cm.getNetworkCapabilities(n) == null } catch (e: Exception) { false }
                 }
-                val stillOnline = activeNet != null && activeNet != network
+                val remaining = synchronized(live) {
+                    live.removeAll(gone.toSet())
+                    live.toList()
+                }
+                val stillOnline = remaining.isNotEmpty()
+                // Wifi from the networks left, not activeNetwork, which may still be the lost one.
                 if (reReadWifi) {
+                    val reads = remaining.map { readIsWifi(cm, it) }
                     setIsWifi(
-                        if (stillOnline) {
-                            try {
-                                cm.getNetworkCapabilities(activeNet)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-                            } catch (e: Exception) { null }
-                        } else false
+                        when {
+                            reads.any { it == true } -> true
+                            reads.any { it == null } -> null
+                            else -> false
+                        }
                     )
                 }
                 if (!stillOnline && isConnected) {
@@ -208,8 +219,15 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         try {
             cm.registerNetworkCallback(request, cb)
             callback = cb
-        } catch (e: SecurityException) {
-            Logger.log("NetworkMonitor: missing permission, falling back to always-connected")
+        } catch (e: Exception) {
+            // SecurityException without the permission; TooManyRequestsException (API 30+)
+            // when the app already holds ~100 network requests. Neither may fail initialize.
+            Logger.log("NetworkMonitor: callback registration failed (${e.javaClass.simpleName}), falling back to always-connected")
+            // No callback will ever correct a startup read of offline, so really fall back.
+            if (!isConnected) {
+                isConnected = true
+                listener?.invoke(true)
+            }
         }
     }
 

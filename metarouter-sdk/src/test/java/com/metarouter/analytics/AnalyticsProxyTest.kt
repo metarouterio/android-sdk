@@ -92,10 +92,11 @@ class AnalyticsProxyTest {
     }
 
     @Test
-    fun `queues reset calls before binding`() = runTest {
+    fun `reset before binding drops queued calls instead of queueing itself`() = runTest {
+        proxy.track("before reset")
         proxy.reset()
 
-        assertEquals(1, proxy.pendingCallCount())
+        assertEquals(0, proxy.pendingCallCount())
     }
 
     @Test
@@ -188,16 +189,16 @@ class AnalyticsProxyTest {
 
         proxy.bind(mockClient)
 
-        coVerify { mockClient.flush() }
+        coVerify(timeout = 2_000) { mockClient.flush() }  // launched after the bind, not awaited in it
     }
 
     @Test
-    fun `replays reset call`() = runTest {
+    fun `reset before binding is not replayed into the bound client`() = runTest {
         proxy.reset()
 
         proxy.bind(mockClient)
 
-        coVerify { mockClient.reset() }
+        coVerify(exactly = 0) { mockClient.reset() }
     }
 
     @Test
