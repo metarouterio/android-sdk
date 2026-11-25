@@ -58,12 +58,6 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
     private var connectivityManager: ConnectivityManager? = null
     @Volatile private var listener: ((Boolean) -> Unit)? = null
 
-    // Networks the callback reported and has not lost; online while any remain.
-    // activeNetwork can't decide this in onLost: it may still read the lost network,
-    // or read nothing during a wifi → cellular handoff whose cellular was reported
-    // earlier and gets no new onAvailable (stuck offline until the next network).
-    private val liveNetworks = mutableSetOf<Network>()
-
     init {
         connectivityManager = try {
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -163,8 +157,12 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         // A second start() without stop() would otherwise leak the first registration.
         unregister(callback)
         callback = null
-        // A new registration reports the current networks again through onAvailable.
-        synchronized(liveNetworks) { liveNetworks.clear() }
+        // Networks this registration reported and has not lost; online while any remain.
+        // activeNetwork can't decide this in onLost: it may still read the lost network,
+        // or read nothing during a wifi → cellular handoff whose cellular was reported
+        // earlier and gets no new onAvailable (stuck offline until the next network).
+        // Per registration, so a late callback from an unregistered one can't touch it.
+        val live = mutableSetOf<Network>()
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -172,7 +170,7 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                synchronized(liveNetworks) { liveNetworks.add(network) }
+                synchronized(live) { live.add(network) }
                 if (reReadWifi) setIsWifi(readActiveIsWifi(cm))
                 if (!isConnected) {
                     isConnected = true
@@ -181,9 +179,16 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
             }
 
             override fun onLost(network: Network) {
-                val remaining = synchronized(liveNetworks) {
-                    liveNetworks.remove(network)
-                    liveNetworks.toList()
+                // A registration reports a network before losing it; anything else is stale.
+                if (!synchronized(live) { live.remove(network) }) return
+                // A network whose own onLost never arrived reads no capabilities; drop it
+                // rather than stay online on it for the life of the process.
+                val gone = synchronized(live) { live.toList() }.filter { n ->
+                    try { cm.getNetworkCapabilities(n) == null } catch (e: Exception) { false }
+                }
+                val remaining = synchronized(live) {
+                    live.removeAll(gone.toSet())
+                    live.toList()
                 }
                 val stillOnline = remaining.isNotEmpty()
                 // Wifi from the networks left, not activeNetwork, which may still be the lost one.
@@ -214,8 +219,10 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         try {
             cm.registerNetworkCallback(request, cb)
             callback = cb
-        } catch (e: SecurityException) {
-            Logger.log("NetworkMonitor: missing permission, falling back to always-connected")
+        } catch (e: Exception) {
+            // SecurityException without the permission; TooManyRequestsException (API 30+)
+            // when the app already holds ~100 network requests. Neither may fail initialize.
+            Logger.log("NetworkMonitor: callback registration failed (${e.javaClass.simpleName}), falling back to always-connected")
         }
     }
 
@@ -231,6 +238,5 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         callback = null
         wifiCallback = null
         listener = null
-        synchronized(liveNetworks) { liveNetworks.clear() }
     }
 }
