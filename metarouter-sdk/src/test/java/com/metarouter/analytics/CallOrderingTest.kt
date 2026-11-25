@@ -230,4 +230,42 @@ class CallOrderingTest {
         assertTrue("bind waited for the host to stop calling (${bindMs}ms)", stillFlooding)
         assertTrue("bind took ${bindMs}ms", bindMs < 1000)
     }
+
+    /** `track(x); flush()` sends x: the flush waits for the events still in the channel. */
+    @Test
+    fun `a flush sends the events tracked before it`() = runBlocking {
+        val client = makeClient()
+
+        val missed = (0 until 50).filter { i ->
+            client.track("t$i")
+            client.flush()
+            network.requests.none { it.body.decodeToString().contains("\"t$i\"") }
+        }
+
+        assertEquals("tracks the flush right after them did not send", emptyList<Int>(), missed)
+    }
+
+    /** Two threads identifying at once: each identify event carries its own userId. */
+    @Test
+    fun `concurrent identifies each carry their own userId`() = runBlocking {
+        val client = makeClient()
+        val rounds = 200
+
+        repeat(rounds) { i ->
+            val start = CountDownLatch(1)
+            val threads = listOf("a$i", "b$i").map { id ->
+                Thread { start.await(); client.identify(id) }.apply { start() }
+            }
+            start.countDown()
+            threads.forEach { it.join() }
+        }
+
+        // A mixed-up pair sends one id twice and the other not at all.
+        val sent = postedEvents(client, rounds * 2)
+            .filter { it["type"] == JsonPrimitive("identify") }
+            .map { (it["userId"] as JsonPrimitive).content }
+        val duplicated = sent.groupingBy { it }.eachCount().filterValues { it > 1 }.keys.sorted()
+        assertEquals(rounds * 2, sent.size)
+        assertEquals("identify events with another call's userId", emptyList<String>(), duplicated)
+    }
 }

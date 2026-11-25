@@ -44,13 +44,17 @@ import com.metarouter.analytics.utils.toJsonElementMap
 import com.metarouter.analytics.webview.BridgeEnvelope
 import com.metarouter.analytics.webview.BridgeMessageProcessor
 import com.metarouter.analytics.webview.WebViewBridge
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -78,6 +82,8 @@ class MetaRouterAnalyticsClient private constructor(
 ) : AnalyticsInterface {
 
     companion object {
+        private const val QUEUED_EVENTS_WAIT_MS = 5_000L
+
         /**
          * Initialize the MetaRouter Analytics SDK.
          *
@@ -155,11 +161,14 @@ class MetaRouterAnalyticsClient private constructor(
     // Coroutine scope for async operations
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private lateinit var eventChannel: Channel<QueuedEvent>
+    private lateinit var eventChannel: Channel<Queued>
 
     // The ids of the event being enriched: a session it starts announces itself with
     // them, not with an identify() made since. Only the processor touches it.
     private var enrichingIdentity: IdentitySnapshot? = null
+
+    // An id write and the event that carries it happen as one step; see enqueueEvent.
+    private val identityLock = Any()
 
     // Core components
     private lateinit var identityManager: IdentityManager
@@ -447,17 +456,19 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Set identity synchronously to prevent race conditions with subsequent track() calls
-        if (!identityManager.setUserId(userId)) {
-            Logger.warn("Failed to set user ID")
-            return
-        }
+        synchronized(identityLock) {
+            if (!identityManager.setUserId(userId)) {
+                Logger.warn("Failed to set user ID")
+                return
+            }
 
-        enqueueEvent(
-            BaseEvent(
-                type = EventType.IDENTIFY,
-                traits = traits?.toJsonElementMap()
+            enqueueEvent(
+                BaseEvent(
+                    type = EventType.IDENTIFY,
+                    traits = traits?.toJsonElementMap()
+                )
             )
-        )
+        }
     }
 
     override fun group(groupId: String, traits: Map<String, Any?>?) {
@@ -467,17 +478,19 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Set group synchronously to prevent race conditions with subsequent track() calls
-        if (!identityManager.setGroupId(groupId)) {
-            Logger.warn("Failed to set group ID")
-            return
-        }
+        synchronized(identityLock) {
+            if (!identityManager.setGroupId(groupId)) {
+                Logger.warn("Failed to set group ID")
+                return
+            }
 
-        enqueueEvent(
-            BaseEvent(
-                type = EventType.GROUP,
-                traits = traits?.toJsonElementMap()
+            enqueueEvent(
+                BaseEvent(
+                    type = EventType.GROUP,
+                    traits = traits?.toJsonElementMap()
+                )
             )
-        )
+        }
     }
 
     // The name also rides in `properties.name`, where iOS puts it and integrations read
@@ -509,12 +522,14 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Set identity synchronously to prevent race conditions with subsequent track() calls
-        if (!identityManager.setUserId(newUserId)) {
-            Logger.warn("Failed to set user ID for alias")
-            return
-        }
+        synchronized(identityLock) {
+            if (!identityManager.setUserId(newUserId)) {
+                Logger.warn("Failed to set user ID for alias")
+                return
+            }
 
-        enqueueEvent(BaseEvent(type = EventType.ALIAS))
+            enqueueEvent(BaseEvent(type = EventType.ALIAS))
+        }
     }
 
     // Disabled by a fatal config error, identity is still the host's to change (an ad-ID
@@ -548,6 +563,11 @@ class MetaRouterAnalyticsClient private constructor(
     private fun startEventProcessor() {
         scope.launch {
             for (queued in eventChannel) {
+                if (queued is QueuedMarker) {
+                    queued.reached.complete(Unit)
+                    continue
+                }
+                queued as QueuedEvent
                 try {
                     enrichingIdentity = queued.identity
                     val enrichedEvent = enrichmentService.enrichEvent(queued.event, queued.identity)
@@ -577,7 +597,12 @@ class MetaRouterAnalyticsClient private constructor(
         }
 
         // Try to send to channel - drops if buffer is full (backpressure)
-        val result = eventChannel.trySend(QueuedEvent(baseEvent, identityManager.snapshot()))
+        // Under identityLock: identify/group/alias write an id and enqueue as one step,
+        // so a snapshot taken here can't mix in another thread's write, and events
+        // enter the channel in the order their ids were written.
+        val result = synchronized(identityLock) {
+            eventChannel.trySend(QueuedEvent(baseEvent, identityManager.snapshot()))
+        }
         if (result.isFailure) {
             Logger.warn("Event channel buffer full - dropping ${baseEvent.type} event (system at capacity)")
             return false
@@ -592,7 +617,29 @@ class MetaRouterAnalyticsClient private constructor(
             Logger.warn("Cannot flush - SDK not ready (state: ${lifecycleState.get()})")
             return
         }
+        awaitQueuedEvents()
+        // reset() may have torn this client down while the flush waited.
+        if (lifecycleState.get() != LifecycleState.READY) return
         dispatcher.flush()
+    }
+
+    /**
+     * Returns once every event sent to the processor before this call has reached the
+     * dispatcher: `track(x); flush()` must send `x`, which may still be in the channel.
+     * Returns early if the client is torn down meanwhile, and gives up after
+     * [QUEUED_EVENTS_WAIT_MS] so a stalled processor can't hold a flush forever.
+     */
+    private suspend fun awaitQueuedEvents() {
+        val reached = CompletableDeferred<Unit>(parent = scope.coroutineContext[Job])
+        try {
+            withTimeoutOrNull(QUEUED_EVENTS_WAIT_MS) {
+                eventChannel.send(QueuedMarker(reached))
+                reached.await()
+            } ?: Logger.warn("Flush stopped waiting for queued events after ${QUEUED_EVENTS_WAIT_MS}ms")
+        } catch (e: Exception) {
+            // Closed channel or cancelled scope: reset() is tearing this client down.
+            currentCoroutineContext().ensureActive()
+        }
     }
 
     /**
@@ -903,5 +950,10 @@ class MetaRouterAnalyticsClient private constructor(
     }
 }
 
+private sealed class Queued
+
 /** An event and the ids it carries, read when the host made the call. */
-private class QueuedEvent(val event: BaseEvent, val identity: IdentitySnapshot?)
+private class QueuedEvent(val event: BaseEvent, val identity: IdentitySnapshot?) : Queued()
+
+/** Completed when the processor reaches it, so everything sent before it is offered. */
+private class QueuedMarker(val reached: CompletableDeferred<Unit>) : Queued()

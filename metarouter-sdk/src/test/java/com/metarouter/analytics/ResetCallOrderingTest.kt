@@ -18,6 +18,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -232,6 +233,48 @@ class ResetCallOrderingTest {
     fun `an instance reset before any initialize leaves the next client usable`() = runBlocking {
         MetaRouter.Analytics.shared.reset()
         assertUsable(MetaRouter.Analytics.initialize(context, options("wk-b222")))
+    }
+
+    /**
+     * The flush a bind replays runs outside the bind: the bind holds the lifecycle
+     * lock getAnonymousId waits for, so awaiting the request there would hold it too.
+     */
+    @Test
+    fun `a bind does not wait for the flush it replays`() = runBlocking {
+        val proxy = AnalyticsProxy()
+        val requestDone = CompletableDeferred<Unit>()
+        val flushStarted = CompletableDeferred<Unit>()
+        val client = object : AnalyticsInterface by FakeClient() {
+            override suspend fun flush() {
+                flushStarted.complete(Unit)
+                requestDone.await()
+            }
+        }
+        proxy.track("before init")
+        proxy.flush()
+
+        val bound = withTimeoutOrNull(1_000) { proxy.bind(client) }
+        requestDone.complete(Unit)
+
+        assertNotNull("bind waited for the replayed flush", bound)
+        assertNotNull(withTimeoutOrNull(1_000) { flushStarted.await() })
+    }
+
+    /** Settings made before the reset are not the user's data and stay. */
+    @Test
+    fun `an instance reset before bind keeps settings`() = runBlocking {
+        val proxy = AnalyticsProxy()
+        val calls = Collections.synchronizedList(mutableListOf<String>())
+        val client = object : AnalyticsInterface by FakeClient() {
+            override fun track(event: String, properties: Map<String, Any?>?) { calls += "track:$event" }
+            override fun setTracing(enabled: Boolean) { calls += "setTracing:$enabled" }
+        }
+        proxy.track("before reset")
+        proxy.setTracing(true)
+        proxy.reset()
+        proxy.bind(client)
+
+        assertEquals(listOf("setTracing:true"), calls.toList())
     }
 
     /**

@@ -14,6 +14,10 @@ import com.metarouter.analytics.webview.BridgeMessageProcessor
 import com.metarouter.analytics.webview.WebViewBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
@@ -50,7 +54,10 @@ class AnalyticsProxy internal constructor(
      * anonymousId from the same preferences, so a write landing between a client's
      * creation and its bind still reaches that client's next event.
      */
-    private val hostIdentity: HostIdentity = HostIdentity()
+    private val hostIdentity: HostIdentity = HostIdentity(),
+    // Waits for any initialize/reset/refusal already called, as iOS's settled(): a
+    // read right after one must not be answered from the session before it.
+    private val settled: suspend () -> Unit = {}
 ) : AnalyticsInterface {
 
     /**
@@ -72,6 +79,9 @@ class AnalyticsProxy internal constructor(
     }
 
     private val realClient = AtomicReference<AnalyticsInterface?>(null)
+
+    // Runs the flush a bind replays, outside the bind.
+    private val flushScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val pendingCalls = ArrayDeque<PendingCall>()
     private val mutex = Mutex()
 
@@ -221,12 +231,14 @@ class AnalyticsProxy internal constructor(
                 Logger.warn("Replay dropped $dropped of $replayed queued call(s)")
             }
             if (flushRequested && signal != null) {
-                try {
-                    client.flush()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Logger.error("Dropped queued Flush during replay", e)
+                // Not awaited: bind runs under the lifecycle lock, and getAnonymousId
+                // waits for that lock, so awaiting would hold it for the request.
+                flushScope.launch {
+                    try {
+                        client.flush()
+                    } catch (e: Exception) {
+                        Logger.error("Dropped queued Flush during replay", e)
+                    }
                 }
             }
             return signal != null
@@ -348,7 +360,9 @@ class AnalyticsProxy internal constructor(
                 current != null -> current
                 binding -> enqueue(PendingCall.Reset)
                 else -> {
-                    pendingCalls.clear()
+                    // The user's queued calls go, as a bound client's reset drops its
+                    // unsent events; settings stay.
+                    pendingCalls.removeAll { it !is PendingCall.SetTracing && it !is PendingCall.EnableDebugLogging }
                     hostIdentity.clear()
                     null
                 }
@@ -409,6 +423,7 @@ class AnalyticsProxy internal constructor(
     }
 
     override suspend fun getAnonymousId(): String {
+        settled()
         while (true) {
             val signal = boundSignal
             signal.await()

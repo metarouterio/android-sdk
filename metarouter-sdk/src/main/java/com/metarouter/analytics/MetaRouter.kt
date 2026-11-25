@@ -53,7 +53,8 @@ object MetaRouter {
     // cold-launch events.
     private val hostIdentity = HostIdentity()
     private val proxy = AnalyticsProxy(
-        AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager, providerContextManager, hostIdentity
+        AnalyticsProxy.DEFAULT_MAX_PENDING_CALLS, consentManager, providerContextManager, hostIdentity,
+        settled = { settled() }
     )
     private val store = RealClientStore()
     private val initMutex = Mutex()
@@ -352,6 +353,15 @@ object MetaRouter {
             proxy.release()
             proxy.markConfigDisabled(error.description)
         }
+    }
+
+    /**
+     * Returns once every lifecycle call made before it has run. Each queued task takes
+     * initMutex first thing, and the mutex is fair, so a no-op queued behind them
+     * acquires it only after they release it.
+     */
+    private suspend fun settled() {
+        synchronized(initLock) { initScope.async { initMutex.withLock {} } }.await()
     }
 
     /**
