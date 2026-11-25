@@ -65,6 +65,7 @@ class AndroidNetworkMonitorTest {
             if (connected) onlineCalls++ else offlineCalls++
         }
 
+        cbSlot.captured.onAvailable(wifiNetwork)
         // Simulate the race: WiFi is torn down, but cm.activeNetwork hasn't
         // been cleared yet — it still returns the dying network with INTERNET cap.
         cbSlot.captured.onLost(wifiNetwork)
@@ -72,6 +73,65 @@ class AndroidNetworkMonitorTest {
         assertEquals("offline listener should fire exactly once", 1, offlineCalls)
         assertEquals("online listener should not fire", 0, onlineCalls)
         assertFalse("monitor should report disconnected", monitor.isConnected)
+    }
+
+    /**
+     * Wifi drops while cellular was reported earlier. activeNetwork reads null (or the
+     * lost wifi) mid-handoff, and cellular gets no new onAvailable, so deciding from
+     * activeNetwork left the SDK offline until the next network appeared.
+     */
+    @Test
+    fun `wifi lost with cellular already reported stays online`() {
+        for (activeAtLoss in listOf<String?>(null, "wifi")) {
+            val context = mockk<Context>()
+            val cm = mockk<ConnectivityManager>(relaxed = true)
+            val wifi = mockk<Network>()
+            val cellular = mockk<Network>()
+            every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+            every { cm.activeNetwork } returns wifi
+            every { cm.getNetworkCapabilities(any()) } returns mockk(relaxed = true)
+            val cbSlot = slot<ConnectivityManager.NetworkCallback>()
+            every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(cbSlot)) } just Runs
+
+            val monitor = AndroidNetworkMonitor(context)
+            var offlineCalls = 0
+            monitor.start { connected -> if (!connected) offlineCalls++ }
+            cbSlot.captured.onAvailable(wifi)
+            cbSlot.captured.onAvailable(cellular)
+
+            every { cm.activeNetwork } returns if (activeAtLoss == "wifi") wifi else null
+            cbSlot.captured.onLost(wifi)
+
+            assertEquals("activeNetwork=$activeAtLoss", true, monitor.isConnected)
+            assertEquals("activeNetwork=$activeAtLoss", 0, offlineCalls)
+
+            cbSlot.captured.onLost(cellular)
+            assertFalse("activeNetwork=$activeAtLoss", monitor.isConnected)
+        }
+    }
+
+    /** A restart re-registers, and the new registration reports networks afresh. */
+    @Test
+    fun `restart forgets networks from the previous registration`() {
+        val context = mockk<Context>()
+        val cm = mockk<ConnectivityManager>(relaxed = true)
+        val wifi = mockk<Network>()
+        val cellular = mockk<Network>()
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns wifi
+        every { cm.getNetworkCapabilities(any()) } returns mockk(relaxed = true)
+        val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
+        every { cm.registerNetworkCallback(any<NetworkRequest>(), capture(callbacks)) } just Runs
+
+        val monitor = AndroidNetworkMonitor(context)
+        monitor.start { }
+        callbacks.last().onAvailable(cellular)
+        monitor.stop()
+        monitor.start { }
+        callbacks.last().onAvailable(wifi)
+        callbacks.last().onLost(wifi)
+
+        assertFalse("cellular from the old registration kept it online", monitor.isConnected)
     }
 
     private fun wifiFixture(
@@ -154,12 +214,15 @@ class AndroidNetworkMonitorTest {
 
         val monitor = AndroidNetworkMonitor(context)
         monitor.start { }
+        cbSlot.captured.onAvailable(wifi)
+        cbSlot.captured.onAvailable(cellular)
         assertEquals(true, monitor.isWifi)
 
         // Wifi drops while cellular is already up: handoff, still online.
         every { cm.activeNetwork } returns cellular
         cbSlot.captured.onLost(wifi)
         assertEquals(false, monitor.isWifi)
+        assertEquals(true, monitor.isConnected)
 
         every { cm.activeNetwork } returns wifi
         cbSlot.captured.onAvailable(wifi)

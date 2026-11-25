@@ -58,6 +58,12 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
     private var connectivityManager: ConnectivityManager? = null
     @Volatile private var listener: ((Boolean) -> Unit)? = null
 
+    // Networks the callback reported and has not lost; online while any remain.
+    // activeNetwork can't decide this in onLost: it may still read the lost network,
+    // or read nothing during a wifi → cellular handoff whose cellular was reported
+    // earlier and gets no new onAvailable (stuck offline until the next network).
+    private val liveNetworks = mutableSetOf<Network>()
+
     init {
         connectivityManager = try {
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -157,6 +163,8 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         // A second start() without stop() would otherwise leak the first registration.
         unregister(callback)
         callback = null
+        // A new registration reports the current networks again through onAvailable.
+        synchronized(liveNetworks) { liveNetworks.clear() }
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -164,6 +172,7 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                synchronized(liveNetworks) { liveNetworks.add(network) }
                 if (reReadWifi) setIsWifi(readActiveIsWifi(cm))
                 if (!isConnected) {
                     isConnected = true
@@ -172,23 +181,20 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
             }
 
             override fun onLost(network: Network) {
-                // activeNetwork may not be cleared yet when this fires, so we
-                // can't rely on re-querying capabilities. Instead, treat the
-                // loss as offline unless a *different* network is still active
-                // (handoff case, e.g. WiFi → cellular).
-                val activeNet = try {
-                    cm.activeNetwork
-                } catch (e: SecurityException) {
-                    null
+                val remaining = synchronized(liveNetworks) {
+                    liveNetworks.remove(network)
+                    liveNetworks.toList()
                 }
-                val stillOnline = activeNet != null && activeNet != network
+                val stillOnline = remaining.isNotEmpty()
+                // Wifi from the networks left, not activeNetwork, which may still be the lost one.
                 if (reReadWifi) {
+                    val reads = remaining.map { readIsWifi(cm, it) }
                     setIsWifi(
-                        if (stillOnline) {
-                            try {
-                                cm.getNetworkCapabilities(activeNet)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-                            } catch (e: Exception) { null }
-                        } else false
+                        when {
+                            reads.any { it == true } -> true
+                            reads.any { it == null } -> null
+                            else -> false
+                        }
                     )
                 }
                 if (!stillOnline && isConnected) {
@@ -225,5 +231,6 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
         callback = null
         wifiCallback = null
         listener = null
+        synchronized(liveNetworks) { liveNetworks.clear() }
     }
 }
