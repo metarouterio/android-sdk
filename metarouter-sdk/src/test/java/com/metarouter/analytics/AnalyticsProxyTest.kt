@@ -189,7 +189,7 @@ class AnalyticsProxyTest {
 
         proxy.bind(mockClient)
 
-        coVerify { mockClient.flush() }
+        coVerify(timeout = 2_000) { mockClient.flush() }  // launched after the bind, not awaited in it
     }
 
     @Test
