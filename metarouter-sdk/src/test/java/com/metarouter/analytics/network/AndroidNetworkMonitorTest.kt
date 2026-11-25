@@ -193,9 +193,17 @@ class AndroidNetworkMonitorTest {
         val context = mockk<Context>()
         val cm = mockk<ConnectivityManager>(relaxed = true)
         every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm
+        every { cm.activeNetwork } returns null  // startup read says offline
         every { cm.registerNetworkCallback(any<NetworkRequest>(), any<ConnectivityManager.NetworkCallback>()) } throws RuntimeException("too many requests")
 
-        AndroidNetworkMonitor(context).start { }
+        val monitor = AndroidNetworkMonitor(context)
+        assertFalse(monitor.isConnected)
+        var onlineCalls = 0
+        monitor.start { connected -> if (connected) onlineCalls++ }
+
+        // No callback will ever arrive, so the startup read must not stick.
+        assertEquals(true, monitor.isConnected)
+        assertEquals(1, onlineCalls)
     }
 
     private fun wifiFixture(

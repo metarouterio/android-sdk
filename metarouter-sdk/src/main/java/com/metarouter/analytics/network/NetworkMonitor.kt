@@ -223,6 +223,11 @@ class AndroidNetworkMonitor(context: Context) : NetworkMonitor {
             // SecurityException without the permission; TooManyRequestsException (API 30+)
             // when the app already holds ~100 network requests. Neither may fail initialize.
             Logger.log("NetworkMonitor: callback registration failed (${e.javaClass.simpleName}), falling back to always-connected")
+            // No callback will ever correct a startup read of offline, so really fall back.
+            if (!isConnected) {
+                isConnected = true
+                listener?.invoke(true)
+            }
         }
     }
 
